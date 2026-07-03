@@ -10,6 +10,10 @@ implemented and flags every place an assumption was made instead of an
 explicit rule, so you can correct anything that doesn't match how you
 actually trade before running this live.
 
+This bot needs to run continuously, so it belongs on an always-on server,
+not your laptop or this chat. See **[DEPLOY.md](DEPLOY.md)** for step-by-step
+Hetzner VPS setup (systemd service, firewall, log rotation).
+
 ## Status
 
 - Strategy logic, risk/stop-target calculation, and a mock broker for
