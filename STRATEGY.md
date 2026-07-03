@@ -71,14 +71,39 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
 - `src/broker/base.py` -- abstract interface any broker must implement.
 - `src/broker/mock_broker.py` -- deterministic/simulated bars, for testing
   the whole pipeline with no live account.
-- `src/broker/projectx_gateway.py` -- **stub** for the real TopstepX
-  ProjectX Gateway API. Auth flow (`POST /api/Auth/loginKey` with
-  `userName` + `apiKey` -> session token, then a JWT-authenticated
-  WebSocket for market data) is sketched from public docs at
-  https://gateway.docs.projectx.com/, but the market-data and
-  order-placement endpoint details are left as TODOs -- fill these in
-  tomorrow once you're logged into the docs portal with API access, since
-  the exact request/response schemas need to be confirmed there.
+- `src/broker/projectx_gateway.py` -- the real TopstepX / ProjectX Gateway
+  API broker. Implemented (auth, contract lookup, historical/real-time data,
+  order placement, bracket stop/target, flatten), but **defaults to
+  `dry_run: true`** in `config.yaml` -- it logs what it would do instead of
+  sending real orders until you verify the unverified pieces below against
+  a paper/sim account.
+
+  Confirmed against the public docs (https://gateway.docs.projectx.com/)
+  and the open-source project-x-py SDK
+  (https://github.com/TexasCoding/project-x-py, which wraps this same
+  API):
+  - Auth: `POST {base}/api/Auth/loginKey` `{userName, apiKey}` -> `{token}`,
+    used as `Authorization: Bearer {token}` on later REST calls.
+  - Contract lookup: `POST /api/Contract/search` `{searchText, live}`.
+  - Historical bars: `POST /api/History/retrieveBars`.
+  - Orders: `POST /api/Order/place` / `/Order/cancel` / `/Order/modify` /
+    `/Order/searchOpen`, with order type enum `1=Limit, 2=Market,
+    3=StopLimit, 4=Stop, 5=TrailingStop` and side enum `0=Buy, 1=Sell`.
+  - Positions: `POST /api/Position/searchOpen` / `/Position/closeContract`.
+  - Real-time data: SignalR hubs at `rtc.topstepx.com/hubs/market` (and
+    `/hubs/user` for account/order/position events, not yet used here),
+    JWT passed as an `access_token` URL query param, subscribed via
+    `hub.invoke("SubscribeContractTrades", [contractId])`, events arrive as
+    `GatewayTrade` (ticks, aggregated here into 1-minute bars).
+
+  Still **unverified** -- the docs portal 403's an unauthenticated fetch,
+  so these need a live check once you're logged in tomorrow:
+  - Exact field names inside a `GatewayTrade` payload (guessed defensively).
+  - The exact response envelope key for `/Order/searchOpen` (assumed
+    `"orders"`).
+  - Whether `linkedOrderId` makes the gateway auto-cancel the sibling
+    bracket leg. Not relied upon either way -- `poll_order_status()`
+    explicitly cancels the sibling leg itself once one fills.
 - `src/strategy.py` -- the state machine implementing steps 1-9 above.
 - `src/risk.py` -- stop/target/size calculation described above.
 - `src/session_levels.py`, `src/opening_range.py`, `src/fvg.py` -- level

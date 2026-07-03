@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from zoneinfo import ZoneInfo
 
 from src.broker.base import Broker
@@ -117,9 +118,28 @@ def main() -> None:
 
     from src.broker.projectx_gateway import ProjectXGatewayBroker
 
-    broker = ProjectXGatewayBroker(base_url=cfg.broker.base_url)
+    broker = ProjectXGatewayBroker(
+        base_url=cfg.broker.base_url,
+        realtime_base_url=cfg.broker.realtime_base_url,
+        dry_run=cfg.broker.dry_run,
+    )
     runner = Runner(cfg, broker)
     runner.start()
+
+    if cfg.broker.dry_run:
+        print(
+            "Running in DRY RUN mode (config.yaml: broker.dry_run) -- no real "
+            "orders will be sent. Flip to false only after verifying the "
+            "unverified items in src/broker/projectx_gateway.py."
+        )
+
+    # subscribe_bars() only registers the callback and starts the SignalR
+    # connection; keep the process alive to receive bars.
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

@@ -73,6 +73,8 @@ class RiskLimitsConfig:
 class BrokerConfig:
     provider: str
     base_url: str
+    realtime_base_url: str
+    dry_run: bool
 
 
 @dataclass

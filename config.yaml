@@ -42,3 +42,8 @@ risk_limits:
 broker:
   provider: projectx_gateway
   base_url: https://api.topstepx.com
+  realtime_base_url: https://rtc.topstepx.com
+  # SAFETY: keep this true until you've verified order placement against a
+  # paper/sim account -- see the module docstring in
+  # src/broker/projectx_gateway.py for exactly what's unverified.
+  dry_run: true

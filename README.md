@@ -14,10 +14,15 @@ actually trade before running this live.
 
 - Strategy logic, risk/stop-target calculation, and a mock broker for
   testing are implemented and covered by unit tests.
-- The real broker (`src/broker/projectx_gateway.py`) is a **stub**: auth is
-  wired up, market data / order placement are `NotImplementedError` TODOs
-  waiting on ProjectX Gateway API access and docs review.
-- Nothing in this repo places a real order yet.
+- The real broker (`src/broker/projectx_gateway.py`) is implemented against
+  the ProjectX Gateway API (auth, contract lookup, real-time bars via
+  SignalR, bracket order placement, fill/flatten). It defaults to
+  `dry_run: true` (`config.yaml: broker`) -- it logs what it would do
+  instead of sending real orders. See STRATEGY.md for exactly what's
+  confirmed vs. still unverified.
+- Nothing in this repo places a real order until you set your credentials
+  in `.env` *and* flip `dry_run: false` after verifying the unverified
+  pieces.
 
 ## Setup
 
@@ -51,19 +56,24 @@ src/
   broker/
     base.py                 abstract broker interface
     mock_broker.py           simulated broker, used by tests
-    projectx_gateway.py      real broker -- stub, see TODOs
+    projectx_gateway.py      real broker -- implemented, dry-run by default
 tests/                      unit + integration tests, all using the mock broker
 ```
 
-## Next steps (tomorrow, once you have API access)
+## Next steps (once you have API access)
 
-1. Fill in `.env`.
-2. Implement the TODOs in `src/broker/projectx_gateway.py` (market data
-   subscription, order placement, position/fill polling, flatten) against
-   the real docs at https://gateway.docs.projectx.com/.
-3. Run `python -m src.runner` to start the bot once the broker is wired up
-   and you've reviewed the assumptions in STRATEGY.md.
-4. Watch `trades/trades.csv` build up at `contract_size: 1`
+1. Fill in `.env` (`PROJECTX_USERNAME`, `PROJECTX_API_KEY`, `PROJECTX_ACCOUNT_ID`).
+2. Log into https://gateway.docs.projectx.com/ and check the "still
+   unverified" list in STRATEGY.md / the docstring at the top of
+   `src/broker/projectx_gateway.py` -- mainly the `GatewayTrade` payload
+   field names and the `/Order/searchOpen` response envelope key. Adjust
+   the code if they differ from what's assumed.
+3. Run `python -m src.runner` with `dry_run: true` (the default) first --
+   it will log every order it *would* place without sending anything, so
+   you can sanity-check entries/stops/targets against what you'd expect.
+4. Once that looks right, ideally verify against a paper/sim account if
+   your plan has one, then flip `broker.dry_run: false` in `config.yaml`.
+5. Watch `trades/trades.csv` build up at `contract_size: 1`
    (`config.yaml: position_sizing`) before manually bumping size -- scaling
    is manual-only by design.
 
