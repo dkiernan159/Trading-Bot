@@ -106,6 +106,14 @@ def run_backtest(cfg: BotConfig, bars: list[Bar]) -> list[dict]:
     return results
 
 
+def _pnl_points(trade: dict) -> float:
+    """Signed point P&L: positive on a win, negative on a loss, for either direction."""
+    exit_price = trade["target_price"] if trade["won"] else trade["stop_price"]
+    if trade["direction"] == "long":
+        return exit_price - trade["entry_price"]
+    return trade["entry_price"] - exit_price
+
+
 def print_report(cfg: BotConfig, results: list[dict]) -> None:
     if not results:
         print("No trades were triggered by the strategy in this window.")
@@ -128,12 +136,7 @@ def print_report(cfg: BotConfig, results: list[dict]) -> None:
         trades = by_day[day]
         wins = sum(1 for t in trades if t["won"])
         n = len(trades)
-        day_pnl = sum(
-            (t["target_price"] - t["entry_price"] if t["direction"] == "long" else t["entry_price"] - t["target_price"])
-            if t["won"]
-            else (t["entry_price"] - t["stop_price"] if t["direction"] == "long" else t["stop_price"] - t["entry_price"])
-            for t in trades
-        ) * point_value * contracts
+        day_pnl = sum(_pnl_points(t) for t in trades) * point_value * contracts
         total_trades += n
         total_wins += wins
         total_pnl += day_pnl

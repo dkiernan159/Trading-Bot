@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from src.backtest import run_backtest
+from src.backtest import _pnl_points, run_backtest
 from src.config import load_config
 from src.models import Bar
 
@@ -71,3 +71,23 @@ def test_backtest_reports_no_trades_when_nothing_triggers():
     results = run_backtest(cfg, flat_bars)
 
     assert results == []
+
+
+def test_pnl_points_is_negative_for_a_long_loss():
+    trade = {"direction": "long", "entry_price": 104.6, "stop_price": 101.0, "target_price": 111.8, "won": False}
+    assert _pnl_points(trade) == pytest.approx(-3.6)
+
+
+def test_pnl_points_is_positive_for_a_long_win():
+    trade = {"direction": "long", "entry_price": 104.6, "stop_price": 101.0, "target_price": 111.8, "won": True}
+    assert _pnl_points(trade) == pytest.approx(7.2)
+
+
+def test_pnl_points_is_negative_for_a_short_loss():
+    trade = {"direction": "short", "entry_price": 100.0, "stop_price": 103.0, "target_price": 94.0, "won": False}
+    assert _pnl_points(trade) == pytest.approx(-3.0)
+
+
+def test_pnl_points_is_positive_for_a_short_win():
+    trade = {"direction": "short", "entry_price": 100.0, "stop_price": 103.0, "target_price": 94.0, "won": True}
+    assert _pnl_points(trade) == pytest.approx(6.0)
