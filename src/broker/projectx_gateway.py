@@ -113,7 +113,11 @@ class ProjectXGatewayBroker(Broker):
     def _resolve_contract(self, symbol: str) -> str:
         if self._contract_id is not None:
             return self._contract_id
-        data = self._post("/Contract/search", {"searchText": symbol, "live": True})
+        # `live: True` only returns contracts currently in an active trading
+        # session -- confirmed empty while markets are closed. `live: False`
+        # returns the full listed set regardless of market hours, which is
+        # what contract resolution needs (it can run any time of day).
+        data = self._post("/Contract/search", {"searchText": symbol, "live": False})
         contracts = data.get("contracts") or []
         if not contracts:
             raise RuntimeError(f"No contract found for symbol '{symbol}'")

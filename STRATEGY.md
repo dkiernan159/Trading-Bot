@@ -95,9 +95,15 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
     JWT passed as an `access_token` URL query param, subscribed via
     `hub.invoke("SubscribeContractTrades", [contractId])`, events arrive as
     `GatewayTrade` (ticks, aggregated here into 1-minute bars).
+  - **Confirmed live against a real account (2026-07-03):** `/Contract/search`
+    with `{"searchText": "MNQ", "live": false}` correctly returns the front-month
+    contract (e.g. `CON.F.US.MNQ.U26`). `"live": true` returns an empty list
+    whenever markets are closed -- it filters to contracts in an active
+    trading session, not "all listed contracts" -- so contract resolution
+    always uses `live: false`.
 
   Still **unverified** -- the docs portal 403's an unauthenticated fetch,
-  so these need a live check once you're logged in tomorrow:
+  so these need a live check once you're logged in:
   - Exact field names inside a `GatewayTrade` payload (guessed defensively).
   - The exact response envelope key for `/Order/searchOpen` (assumed
     `"orders"`).
