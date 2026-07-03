@@ -43,6 +43,25 @@ cp .env.example .env   # fill in PROJECTX_USERNAME / PROJECTX_API_KEY / PROJECTX
 pytest tests/ -v
 ```
 
+## Backtest against real history
+
+Once `.env` is filled in, you can backtest the strategy against TopstepX's
+actual historical bars (needs real network access to the API, so run this
+on the VPS, not locally):
+
+```bash
+sudo -u tradingbot bash -c 'cd /home/tradingbot/trading-bot && set -a && source .env && source .venv/bin/activate && python -m src.backtest --days 7'
+```
+
+`--days` controls how many calendar days back to report on (default 7, i.e.
+roughly the last week). It prints a per-day trade count / win rate / net $
+table plus a total row. It reuses the exact same strategy state machine and
+stop/target math the live bot uses, so it's only as good as the assumptions
+in STRATEGY.md -- fix those first if something doesn't match how you
+actually trade. Fills are idealized (no slippage/commissions, and a bar that
+touches both stop and target in the same minute is conservatively counted
+as a stop).
+
 ## Project layout
 
 ```
@@ -56,6 +75,7 @@ src/
   strategy.py               the breakout/retest/FVG state machine
   risk.py                   stop/target calculation, daily risk limits
   logger.py                 CSV trade log (for judging win rate before scaling up)
+  backtest.py                fetches real history and replays the strategy over it
   runner.py                 wires broker -> strategy -> risk -> broker -> logger
   broker/
     base.py                 abstract broker interface

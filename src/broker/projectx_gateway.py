@@ -124,6 +124,30 @@ class ProjectXGatewayBroker(Broker):
         self._contract_id = contracts[0]["id"]
         return self._contract_id
 
+    def fetch_historical_bars(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
+        """Fetches closed 1-minute bars in [start, end) for backtesting.
+        `live: False` is used deliberately -- see _resolve_contract."""
+        contract_id = self._resolve_contract(symbol)
+        data = self._post(
+            "/History/retrieveBars",
+            {
+                "contractId": contract_id,
+                "live": False,
+                "startTime": start.astimezone(timezone.utc).isoformat(),
+                "endTime": end.astimezone(timezone.utc).isoformat(),
+                "unit": 2,  # Minute
+                "unitNumber": 1,
+                "limit": 20000,
+                "includePartialBar": False,
+            },
+        )
+        bars = []
+        for b in data.get("bars", []):
+            ts = datetime.fromisoformat(b["t"].replace("Z", "+00:00"))
+            bars.append(Bar(timestamp=ts, open=b["o"], high=b["h"], low=b["l"], close=b["c"], volume=b.get("v", 0)))
+        bars.sort(key=lambda bar: bar.timestamp)
+        return bars
+
     # -- market data ---------------------------------------------------------
 
     def subscribe_bars(self, symbol: str, timeframe_minutes: int, on_bar: Callable[[Bar], None]) -> None:
