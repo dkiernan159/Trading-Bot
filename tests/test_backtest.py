@@ -10,7 +10,7 @@ from src.config import load_config
 from src.models import Bar
 
 TZ = ZoneInfo("America/New_York")
-PREV_DAY = datetime(2026, 7, 5, 7, 0, tzinfo=TZ)
+PREV_DAY_BASE = datetime(2026, 7, 5, 6, 0, tzinfo=TZ)
 DAY = datetime(2026, 7, 6, 9, 30, tzinfo=TZ)
 
 
@@ -23,46 +23,51 @@ def load_test_config():
 
 
 def breakout_key_level_fvg_bars() -> list[Bar]:
-    """Same setup used in test_strategy.py: previous-day high/low of 105/95,
-    box 9:30-9:45 (high=101/low=99.5), breakout above the box, a strong
-    bullish FVG (gap 103.6-106.0) containing the previous-day high (105),
-    and a retrace bar that fills the resulting limit order at the FVG
-    midpoint (104.8)."""
-    bars = [Bar(timestamp=PREV_DAY, open=100.0, high=105.0, low=95.0, close=100.0)]
+    """Same setup used in test_strategy.py: previous-day high of 105 (set by
+    a 15m candle spanning 100-105) and low of 95 (spanning 95-101), box
+    9:30-9:45 (high=101/low=99.5), breakout above the box, a strong bullish
+    FVG (gap 101.5-104.0) that overlaps the previous-day-high zone without
+    containing the exact tick (105), and a retrace bar that fills the
+    resulting limit order at the FVG midpoint (102.75)."""
+    bars = [
+        Bar(timestamp=PREV_DAY_BASE, open=100.0, high=101.0, low=99.0, close=100.0),
+        Bar(timestamp=PREV_DAY_BASE + timedelta(minutes=15), open=100.0, high=105.0, low=100.0, close=104.0),
+        Bar(timestamp=PREV_DAY_BASE + timedelta(minutes=30), open=100.0, high=101.0, low=95.0, close=98.0),
+    ]
     for i in range(15):
         bars.append(bar(i, 100.0, 101.0, 99.5, 100.5))
     bars.append(bar(15, 100.5, 101.2, 100.0, 100.8))
     bars.append(bar(16, 100.8, 103.0, 100.7, 102.5))
     for i in range(17, 37):
         bars.append(bar(i, 103.0, 103.5, 102.5, 103.0))
-    bars.append(bar(37, 103.0, 103.6, 102.7, 103.3))
-    bars.append(bar(38, 103.3, 107.2, 103.2, 107.0))
-    bars.append(bar(39, 107.0, 107.5, 106.0, 107.3))
-    bars.append(bar(40, 107.3, 107.5, 104.5, 105.0))  # fills the 104.8 limit
+    bars.append(bar(37, 101.2, 101.5, 101.0, 101.4))
+    bars.append(bar(38, 101.4, 105.2, 101.3, 105.0))
+    bars.append(bar(39, 105.0, 105.3, 104.0, 105.1))
+    bars.append(bar(40, 105.1, 105.5, 102.5, 103.0))  # fills the 102.75 limit
     return bars
 
 
 def test_backtest_records_a_win():
     cfg = load_test_config()
     bars = breakout_key_level_fvg_bars()
-    # Runs up to the target (112.4) without dipping to the stop (101.0) first.
-    bars.append(bar(41, 105.0, 113.0, 104.8, 112.5))
+    # Runs up to the target (106.25) without dipping to the stop (101.0) first.
+    bars.append(bar(41, 103.0, 107.0, 102.8, 106.5))
 
     results = run_backtest(cfg, bars)
 
     assert len(results) == 1
     assert results[0]["won"] is True
     assert results[0]["date"] == DAY.date()
-    assert results[0]["entry_price"] == 104.8
+    assert results[0]["entry_price"] == 102.75
     assert results[0]["stop_price"] == 101.0
-    assert results[0]["target_price"] == pytest.approx(112.4)
+    assert results[0]["target_price"] == pytest.approx(106.25)
 
 
 def test_backtest_records_a_loss():
     cfg = load_test_config()
     bars = breakout_key_level_fvg_bars()
-    # Drops to the stop (101.0) without reaching the target (112.4) first.
-    bars.append(bar(41, 105.0, 105.5, 100.5, 101.0))
+    # Drops to the stop (101.0) without reaching the target (106.25) first.
+    bars.append(bar(41, 103.0, 103.2, 100.5, 101.0))
 
     results = run_backtest(cfg, bars)
 
@@ -102,7 +107,7 @@ def test_pnl_points_is_positive_for_a_short_win():
 def test_export_chart_json_writes_candles_and_levels(tmp_path):
     cfg = load_test_config()
     bars = breakout_key_level_fvg_bars()
-    bars.append(bar(41, 105.0, 113.0, 104.8, 112.5))
+    bars.append(bar(41, 103.0, 107.0, 102.8, 106.5))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.json"
@@ -127,7 +132,7 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
 def test_export_chart_html_embeds_trade_data(tmp_path):
     cfg = load_test_config()
     bars = breakout_key_level_fvg_bars()
-    bars.append(bar(41, 105.0, 113.0, 104.8, 112.5))
+    bars.append(bar(41, 103.0, 107.0, 102.8, 106.5))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.html"

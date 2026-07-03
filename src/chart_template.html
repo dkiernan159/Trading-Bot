@@ -281,7 +281,9 @@ function buildChart(trade, index) {
   const candles = trade.candles;
   const refValues = [trade.box_high, trade.box_low, trade.fvg_gap_low, trade.fvg_gap_high,
                       trade.entry_price, trade.stop_price, trade.target_price,
-                      trade.previous_day_high, trade.previous_day_low].filter(v => v !== null && v !== undefined);
+                      trade.previous_day_high, trade.previous_day_low,
+                      ...(trade.previous_day_high_zone || []), ...(trade.previous_day_low_zone || [])]
+                      .filter(v => v !== null && v !== undefined);
   const candleValues = candles.flatMap(c => [c.h, c.l]);
   const allValues = candleValues.concat(refValues);
   let yMin = Math.min(...allValues);
@@ -352,16 +354,23 @@ function buildChart(trade, index) {
     svg.appendChild(line);
   });
 
-  // previous day high/low (dotted, violet) -- only if present
+  // previous day high/low zone -- shaded band showing the 15m candle that
+  // set the extreme, not a single exact tick (only if present)
   if (trade.previous_day_high !== null) {
-    [trade.previous_day_high, trade.previous_day_low].forEach(v => {
-      const line = document.createElementNS(svgNS, "line");
-      line.setAttribute("class", "ref-line");
-      line.setAttribute("stroke", "var(--prevday)");
-      line.setAttribute("stroke-dasharray", "1 3");
-      line.setAttribute("x1", marginL); line.setAttribute("x2", W - marginR);
-      line.setAttribute("y1", yFor(v)); line.setAttribute("y2", yFor(v));
-      svg.appendChild(line);
+    [trade.previous_day_high_zone, trade.previous_day_low_zone].forEach(zone => {
+      if (!zone) return;
+      const [zLow, zHigh] = zone;
+      const rect = document.createElementNS(svgNS, "rect");
+      rect.setAttribute("x", marginL);
+      rect.setAttribute("y", yFor(zHigh));
+      rect.setAttribute("width", plotW);
+      rect.setAttribute("height", Math.max(1, yFor(zLow) - yFor(zHigh)));
+      rect.setAttribute("fill", "var(--prevday)");
+      rect.setAttribute("fill-opacity", "0.12");
+      rect.setAttribute("stroke", "var(--prevday)");
+      rect.setAttribute("stroke-width", "1");
+      rect.setAttribute("stroke-dasharray", "1 3");
+      svg.appendChild(rect);
     });
   }
 

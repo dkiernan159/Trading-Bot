@@ -121,6 +121,8 @@ def run_backtest(cfg: BotConfig, bars: list[Bar]) -> list[dict]:
                 "target_price": bracket.target_price,
                 "previous_day_high": levels.previous_day_high if levels else None,
                 "previous_day_low": levels.previous_day_low if levels else None,
+                "previous_day_high_zone": levels.previous_day_high_zone if levels else None,
+                "previous_day_low_zone": levels.previous_day_low_zone if levels else None,
                 "asia_high": levels.asia_high if levels else None,
                 "asia_low": levels.asia_low if levels else None,
                 "london_high": levels.london_high if levels else None,
@@ -188,6 +190,12 @@ def print_trade_detail(results: list[dict]) -> None:
         print(
             f"    Previous day: high={_fmt(t['previous_day_high'])}  low={_fmt(t['previous_day_low'])}"
         )
+        if t.get("previous_day_high_zone"):
+            zl, zh = t["previous_day_high_zone"]
+            print(f"      high zone: {_fmt(zl)} - {_fmt(zh)}")
+        if t.get("previous_day_low_zone"):
+            zl, zh = t["previous_day_low_zone"]
+            print(f"      low zone: {_fmt(zl)} - {_fmt(zh)}")
         print(f"    Asia session: high={_fmt(t['asia_high'])}  low={_fmt(t['asia_low'])}")
         print(f"    London session: high={_fmt(t['london_high'])}  low={_fmt(t['london_low'])}")
         print(f"    9:30-9:45 box: high={_fmt(t['box_high'])}  low={_fmt(t['box_low'])}")
@@ -236,6 +244,8 @@ def _build_chart_payload(cfg: BotConfig, results: list[dict], all_bars: list[Bar
                 "fvg_gap_high": t["fvg_gap_high"],
                 "previous_day_high": t["previous_day_high"],
                 "previous_day_low": t["previous_day_low"],
+                "previous_day_high_zone": t["previous_day_high_zone"],
+                "previous_day_low_zone": t["previous_day_low_zone"],
                 "candles": candles,
             }
         )

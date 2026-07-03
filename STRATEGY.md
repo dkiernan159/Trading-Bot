@@ -57,13 +57,20 @@ review these and adjust `config.yaml` before running live.
   chart where (a) the gap size is >= `min_gap_points` and (b) the middle
   (displacement) candle's body is >= `displacement_multiplier` times the
   recent average candle range. Both thresholds are configurable.
-- **"At a key level"** (`src/strategy.py: _fvg_contains_key_level`): the key
-  level's exact price must fall inside the FVG's gap range
-  (`gap_low <= level <= gap_high`) -- being merely nearby doesn't count. Any
-  of the 6 marked levels (previous day high/low, Asia high/low, London
+- **"At a key level"** (`src/session_levels.py`, `src/strategy.py:
+  _fvg_contains_key_level`): each key level is a **zone**, not a single
+  exact tick -- the zone is the low/high range of the 15-minute candle that
+  actually set that extreme (previous day/Asia/London high or low). An FVG
+  qualifies if its gap range **overlaps** that zone at all
+  (`gap_low <= zone_high and zone_low <= gap_high`) -- it does not need to
+  contain the precise price. (First version required exact containment of
+  a single tick, which was too strict; corrected 2026-07-06 per
+  clarification that the FVG just needs to be "around that resistance
+  area," and highs/lows should be marked at the 15-minute level.) Any of
+  the 6 marked levels (previous day high/low, Asia high/low, London
   high/low) qualifies; the opening range box itself is not a "key level"
   for this check (it's still used for the breakout and as a stop-loss
-  candidate).
+  candidate, using the exact price there, not a zone).
 - **Asia / London session windows** (`config.yaml: session`): set to common
   ICT-style approximations (Asia 19:00-23:59 ET prior evening, London
   02:00-05:00 ET). Adjust to your exact definition.

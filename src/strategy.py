@@ -138,11 +138,17 @@ class OpeningRangeStrategy:
         return None
 
     def _fvg_contains_key_level(self, fvg: FairValueGap) -> bool:
-        """True if any marked previous-day/Asia/London level falls inside
-        the FVG's gap range -- the "at a key level" requirement."""
+        """True if the FVG's gap overlaps the zone around any marked
+        previous-day/Asia/London level -- the "at a key level" requirement.
+        A key level's zone is the low/high range of the 15-minute candle
+        that set that extreme, not a single exact tick, so the FVG only
+        needs to be in that resistance/support area, not pinpoint it."""
         if self._levels is None:
             return False
-        return any(fvg.gap_low <= level <= fvg.gap_high for level in self._levels.all_levels())
+        return any(
+            fvg.gap_low <= zone_high and zone_low <= fvg.gap_high
+            for zone_low, zone_high in self._levels.all_zones()
+        )
 
     def notify_trade_closed(self, won: bool) -> None:
         """Runner calls this once the broker confirms the open trade hit its
