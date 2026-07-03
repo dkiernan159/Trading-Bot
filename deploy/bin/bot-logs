@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Tails both services' logs together, live. Ctrl-C to stop.
+set -euo pipefail
+sudo journalctl -u trading-bot -u trading-dashboard -f

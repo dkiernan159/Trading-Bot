@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Pulls the latest code, reinstalls dependencies, and restarts both
+# services. Runs git/pip as the tradingbot user to avoid the "dubious
+# ownership" error that comes from running them as root.
+set -euo pipefail
+BRANCH="${1:-claude/topstepx-trading-bot-wqy0at}"
+
+sudo -u tradingbot git -C /home/tradingbot/trading-bot pull origin "${BRANCH}"
+sudo -u tradingbot /home/tradingbot/trading-bot/.venv/bin/pip install -q -r /home/tradingbot/trading-bot/requirements.txt
+sudo systemctl restart trading-bot trading-dashboard
+echo "Pulled latest ${BRANCH} and restarted trading-bot + trading-dashboard."

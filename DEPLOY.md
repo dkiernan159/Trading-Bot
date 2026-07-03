@@ -107,15 +107,28 @@ Then open **http://localhost:8080** in your browser. Closing that SSH
 window closes access to the dashboard -- nothing is exposed when you're not
 actively tunneled in.
 
+## Convenience commands
+
+`setup.sh` installs a few shortcuts to `/usr/local/bin` so you don't have to
+retype the long-form commands (and can't hit the "dubious ownership" git
+error that comes from running git as root instead of `tradingbot`):
+
+| Command | What it does |
+|---|---|
+| `backtest [--days N] [--verbose] [--chart-html PATH]` | Runs a backtest as the `tradingbot` user with `.env` loaded |
+| `bot-pull` | `git pull` + reinstall dependencies + restart both services |
+| `bot-status` | `systemctl status` for both services |
+| `bot-logs` | Tails both services' logs live (`Ctrl-C` to stop) |
+
 ## Updating the bot later
 
 ```bash
 ssh root@<server-ip>
-sudo -u tradingbot git -C /home/tradingbot/trading-bot pull origin claude/topstepx-trading-bot-wqy0at
-sudo -u tradingbot /home/tradingbot/trading-bot/.venv/bin/pip install -r /home/tradingbot/trading-bot/requirements.txt
-sudo systemctl restart trading-bot
-sudo systemctl restart trading-dashboard
+bot-pull
 ```
+
+(Same as: `sudo -u tradingbot git -C ... pull`, reinstall requirements, and
+`systemctl restart trading-bot trading-dashboard` -- see `deploy/bin/bot-pull`.)
 
 ## Stopping it
 

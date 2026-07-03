@@ -66,6 +66,12 @@ systemctl enable trading-dashboard
 echo "==> Installing log rotation"
 cp "${INSTALL_DIR}/deploy/trading-bot.logrotate" /etc/logrotate.d/trading-bot
 
+echo "==> Installing convenience commands (backtest, bot-pull, bot-status, bot-logs)"
+install -m 755 "${INSTALL_DIR}/deploy/bin/backtest" /usr/local/bin/backtest
+install -m 755 "${INSTALL_DIR}/deploy/bin/bot-pull" /usr/local/bin/bot-pull
+install -m 755 "${INSTALL_DIR}/deploy/bin/bot-status" /usr/local/bin/bot-status
+install -m 755 "${INSTALL_DIR}/deploy/bin/bot-logs" /usr/local/bin/bot-logs
+
 echo "==> Configuring firewall (SSH only -- the bot only makes outbound connections)"
 ufw allow OpenSSH
 ufw --force enable
@@ -85,4 +91,10 @@ Next steps:
        sudo systemctl start trading-dashboard
      It binds to 127.0.0.1 only -- view it via an SSH tunnel from your own
      machine (see DEPLOY.md), never expose this port publicly.
+
+Convenience commands (installed to /usr/local/bin):
+  backtest [--days N] [--verbose] [--chart-html PATH]   run a backtest
+  bot-pull                                              git pull + reinstall deps + restart both services
+  bot-status                                             systemctl status for both services
+  bot-logs                                               tail both services' logs live
 EOF

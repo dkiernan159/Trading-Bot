@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Shows systemd status for both services at a glance.
+set -euo pipefail
+echo "== trading-bot =="
+sudo systemctl status trading-bot --no-pager || true
+echo
+echo "== trading-dashboard =="
+sudo systemctl status trading-dashboard --no-pager || true

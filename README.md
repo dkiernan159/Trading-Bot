@@ -50,8 +50,13 @@ actual historical bars (needs real network access to the API, so run this
 on the VPS, not locally):
 
 ```bash
-sudo -u tradingbot bash -c 'cd /home/tradingbot/trading-bot && set -a && source .env && source .venv/bin/activate && python -m src.backtest --days 7'
+backtest --days 7
 ```
+
+(`backtest` is a shortcut installed by `deploy/setup.sh` to
+`/usr/local/bin` -- see DEPLOY.md for the other convenience commands. The
+long form still works if you're on a box that doesn't have it:
+`sudo -u tradingbot bash -c 'cd /home/tradingbot/trading-bot && set -a && source .env && source .venv/bin/activate && python -m src.backtest --days 7'`.)
 
 `--days` controls how many calendar days back to report on (default 7, i.e.
 roughly the last week). It prints a per-day trade count / win rate / net $
@@ -69,7 +74,7 @@ the confirming FVG's gap behind every trade. To actually see it on a
 candlestick chart, add `--chart-html <path>`, e.g.:
 
 ```bash
-sudo -u tradingbot bash -c 'cd /home/tradingbot/trading-bot && set -a && source .env && source .venv/bin/activate && python -m src.backtest --days 7 --chart-html /tmp/chart.html'
+backtest --days 7 --chart-html /tmp/chart.html
 ```
 
 This writes one self-contained HTML file (no server, no dependencies) --

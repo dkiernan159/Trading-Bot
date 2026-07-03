@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Shortcut for running the backtest as the tradingbot user with .env loaded.
+# Usage: backtest [--days N] [--verbose] [--chart-html PATH] [--chart-json PATH]
+set -euo pipefail
+sudo -u tradingbot bash -c 'cd /home/tradingbot/trading-bot && set -a && source .env && source .venv/bin/activate && python -m src.backtest "$@"' _ "$@"
