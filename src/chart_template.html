@@ -1,0 +1,479 @@
+<title>MNQ Opening Range Backtest — Trade Verification</title>
+<style>
+  :root {
+    --surface: #fafaf8;
+    --surface-raised: #ffffff;
+    --ink-primary: #14151a;
+    --ink-secondary: #55575f;
+    --ink-muted: #8a8d94;
+    --border: rgba(20,21,26,0.10);
+    --grid: #e7e6e1;
+    --accent: #2457c9;
+    --good: #1c8a4d;
+    --good-fill: rgba(28,138,77,0.14);
+    --bad: #c23b34;
+    --bad-fill: rgba(194,59,52,0.12);
+    --fvg: #b5791a;
+    --fvg-fill: rgba(181,121,26,0.16);
+    --prevday: #6a5aa8;
+    --font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-data: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #101114;
+      --surface-raised: #17181c;
+      --ink-primary: #f3f3f1;
+      --ink-secondary: #b7b8bd;
+      --ink-muted: #7c7e85;
+      --border: rgba(255,255,255,0.09);
+      --grid: #26272c;
+      --accent: #3987e5;
+      --good: #199e70;
+      --good-fill: rgba(25,158,112,0.16);
+      --bad: #e66767;
+      --bad-fill: rgba(230,103,103,0.15);
+      --fvg: #d95926;
+      --fvg-fill: rgba(217,89,38,0.18);
+      --prevday: #9085e9;
+    }
+  }
+  :root[data-theme="dark"] {
+    --surface: #101114; --surface-raised: #17181c; --ink-primary: #f3f3f1;
+    --ink-secondary: #b7b8bd; --ink-muted: #7c7e85; --border: rgba(255,255,255,0.09);
+    --grid: #26272c; --accent: #3987e5; --good: #199e70; --good-fill: rgba(25,158,112,0.16);
+    --bad: #e66767; --bad-fill: rgba(230,103,103,0.15); --fvg: #d95926;
+    --fvg-fill: rgba(217,89,38,0.18); --prevday: #9085e9;
+  }
+  :root[data-theme="light"] {
+    --surface: #fafaf8; --surface-raised: #ffffff; --ink-primary: #14151a;
+    --ink-secondary: #55575f; --ink-muted: #8a8d94; --border: rgba(20,21,26,0.10);
+    --grid: #e7e6e1; --accent: #2457c9; --good: #1c8a4d; --good-fill: rgba(28,138,77,0.14);
+    --bad: #c23b34; --bad-fill: rgba(194,59,52,0.12); --fvg: #b5791a;
+    --fvg-fill: rgba(181,121,26,0.16); --prevday: #6a5aa8;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--ink-primary);
+    font-family: var(--font-ui);
+    padding: 40px 20px 80px;
+  }
+  .page { max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 36px; }
+
+  .masthead { display: flex; flex-direction: column; gap: 6px; }
+  .eyebrow {
+    font-family: var(--font-data);
+    font-size: 12px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  h1 { font-size: 26px; margin: 0; font-weight: 650; text-wrap: balance; letter-spacing: -0.01em; }
+  .sub { color: var(--ink-secondary); font-size: 14.5px; max-width: 62ch; line-height: 1.5; }
+
+  .empty {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 24px;
+    color: var(--ink-secondary);
+    font-size: 14.5px;
+    line-height: 1.6;
+  }
+
+  .trade-card {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px 24px 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .trade-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .trade-date { font-size: 17px; font-weight: 650; font-family: var(--font-data); letter-spacing: -0.01em; }
+  .pill {
+    font-family: var(--font-data);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 100px;
+  }
+  .pill-dir { background: rgba(36,87,201,0.12); color: var(--accent); }
+  .pill-win { background: var(--good-fill); color: var(--good); }
+  .pill-loss { background: var(--bad-fill); color: var(--bad); }
+  .trade-head .spacer { flex: 1; }
+  .trade-head .net {
+    font-family: var(--font-data);
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    color: var(--ink-secondary);
+  }
+
+  .chart-wrap { width: 100%; overflow-x: auto; }
+  svg.chart { display: block; }
+  .cand-up rect { fill: var(--good); }
+  .cand-down rect { fill: var(--bad); }
+  .cand-up line.wick { stroke: var(--good); }
+  .cand-down line.wick { stroke: var(--bad); }
+  .cand-hit { cursor: crosshair; fill: transparent !important; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axis-label { fill: var(--ink-muted); font-family: var(--font-data); font-size: 10.5px; }
+  .ref-line { stroke-width: 1.4; fill: none; }
+  .ref-label {
+    font-family: var(--font-data);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+  .fvg-zone { fill: var(--fvg-fill); stroke: var(--fvg); stroke-width: 1; stroke-dasharray: 2 2; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px 20px; padding-top: 2px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-secondary); }
+  .swatch { width: 14px; height: 3px; border-radius: 2px; flex: none; }
+  .swatch.dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  .levels {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px 18px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+    margin-top: 2px;
+  }
+  .level { display: flex; flex-direction: column; gap: 2px; }
+  .level-label { font-size: 11px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .level-value {
+    font-family: var(--font-data);
+    font-variant-numeric: tabular-nums;
+    font-size: 13.5px;
+    color: var(--ink-primary);
+  }
+
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-family: var(--font-data);
+    font-size: 11.5px;
+    color: var(--ink-primary);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+    opacity: 0;
+    transition: opacity 0.08s ease;
+    white-space: nowrap;
+    z-index: 10;
+  }
+
+  footer {
+    color: var(--ink-muted);
+    font-size: 12px;
+    line-height: 1.6;
+    border-top: 1px solid var(--border);
+    padding-top: 18px;
+  }
+</style>
+
+<div class="page">
+  <div class="masthead">
+    <div class="eyebrow">Backtest verification &middot; MNQ &middot; Opening range breakout + key-level FVG</div>
+    <h1>Where the bot actually entered</h1>
+    <div class="sub">
+      Every trade the strategy took, replayed against real 1-minute TopstepX history. Each chart shows the
+      9:30&ndash;9:45&nbsp;ET opening range box, the confirming fair value gap, and the resulting entry/stop/target
+      &mdash; so the mechanics can be checked by eye, not just the win/loss outcome.
+    </div>
+  </div>
+
+  <div id="trades"></div>
+
+  <footer>
+    Fills are idealized (no slippage or commissions); a bar touching both stop and target in the same minute
+    is conservatively counted as a loss. Candles are TopstepX's official 1-minute history, which may differ
+    slightly from the tick-built bars the live bot uses.
+  </footer>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const TRADES = __TRADE_DATA__;
+
+function fmt(n) {
+  return n === null || n === undefined ? "n/a" : n.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function renderTrade(trade, index) {
+  const card = document.createElement("div");
+  card.className = "trade-card";
+
+  const pnlPoints = trade.won
+    ? (trade.direction === "long" ? trade.target_price - trade.entry_price : trade.entry_price - trade.target_price)
+    : (trade.direction === "long" ? trade.stop_price - trade.entry_price : trade.entry_price - trade.stop_price);
+
+  const head = document.createElement("div");
+  head.className = "trade-head";
+  head.innerHTML = `
+    <span class="trade-date">${trade.date}</span>
+    <span class="pill pill-dir">${trade.direction}</span>
+    <span class="pill ${trade.won ? "pill-win" : "pill-loss"}">${trade.won ? "Win" : "Loss"}</span>
+    <span class="spacer"></span>
+    <span class="net">${pnlPoints >= 0 ? "+" : ""}${pnlPoints.toFixed(2)} pts</span>
+  `;
+  card.appendChild(head);
+
+  const chartWrap = document.createElement("div");
+  chartWrap.className = "chart-wrap";
+  chartWrap.appendChild(buildChart(trade, index));
+  card.appendChild(chartWrap);
+
+  const legend = document.createElement("div");
+  legend.className = "legend";
+  legend.innerHTML = `
+    <span class="legend-item"><span class="swatch" style="background:var(--good)"></span>Up candle</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--bad)"></span>Down candle</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--ink-muted)"></span>9:30&ndash;9:45 box</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--fvg)"></span>Confirming FVG</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--accent)"></span>Entry</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--bad)"></span>Stop</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--good)"></span>Target</span>
+    ${trade.previous_day_high !== null ? '<span class="legend-item"><span class="swatch" style="background:var(--prevday)"></span>Previous day</span>' : ""}
+  `;
+  card.appendChild(legend);
+
+  const levels = document.createElement("div");
+  levels.className = "levels";
+  const rows = [
+    ["Previous day high", trade.previous_day_high],
+    ["Previous day low", trade.previous_day_low],
+    ["Box high", trade.box_high],
+    ["Box low", trade.box_low],
+    ["FVG low", trade.fvg_gap_low],
+    ["FVG high", trade.fvg_gap_high],
+    ["Entry", trade.entry_price],
+    ["Stop", trade.stop_price],
+    ["Target", trade.target_price],
+  ];
+  levels.innerHTML = rows.map(([label, value]) => `
+    <div class="level">
+      <span class="level-label">${label}</span>
+      <span class="level-value">${fmt(value)}</span>
+    </div>
+  `).join("");
+  card.appendChild(levels);
+
+  return card;
+}
+
+function buildChart(trade, index) {
+  const W = 820, H = 380;
+  const marginL = 62, marginR = 14, marginT = 14, marginB = 26;
+  const plotW = W - marginL - marginR;
+  const plotH = H - marginT - marginB;
+
+  const candles = trade.candles;
+  const refValues = [trade.box_high, trade.box_low, trade.fvg_gap_low, trade.fvg_gap_high,
+                      trade.entry_price, trade.stop_price, trade.target_price,
+                      trade.previous_day_high, trade.previous_day_low].filter(v => v !== null && v !== undefined);
+  const candleValues = candles.flatMap(c => [c.h, c.l]);
+  const allValues = candleValues.concat(refValues);
+  let yMin = Math.min(...allValues);
+  let yMax = Math.max(...allValues);
+  const pad = (yMax - yMin) * 0.04 || 1;
+  yMin -= pad; yMax += pad;
+
+  const xFor = i => marginL + (i + 0.5) * (plotW / candles.length);
+  const yFor = v => marginT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
+
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("class", "chart");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", H);
+
+  // gridlines + y labels (5 bands)
+  const gridSteps = 5;
+  for (let s = 0; s <= gridSteps; s++) {
+    const v = yMin + (s / gridSteps) * (yMax - yMin);
+    const y = yFor(v);
+    const line = document.createElementNS(svgNS, "line");
+    line.setAttribute("class", "gridline");
+    line.setAttribute("x1", marginL); line.setAttribute("x2", W - marginR);
+    line.setAttribute("y1", y); line.setAttribute("y2", y);
+    svg.appendChild(line);
+    const label = document.createElementNS(svgNS, "text");
+    label.setAttribute("class", "axis-label");
+    label.setAttribute("x", 4); label.setAttribute("y", y + 3);
+    label.textContent = v.toFixed(1);
+    svg.appendChild(label);
+  }
+
+  // x labels every ~8 candles
+  const xStep = Math.max(1, Math.round(candles.length / 9));
+  candles.forEach((c, i) => {
+    if (i % xStep === 0) {
+      const label = document.createElementNS(svgNS, "text");
+      label.setAttribute("class", "axis-label");
+      label.setAttribute("x", xFor(i));
+      label.setAttribute("y", H - 8);
+      label.setAttribute("text-anchor", "middle");
+      label.textContent = c.t;
+      svg.appendChild(label);
+    }
+  });
+
+  // FVG zone (shaded rect, drawn before candles so candles sit on top)
+  const fvgTop = yFor(Math.max(trade.fvg_gap_low, trade.fvg_gap_high));
+  const fvgBottom = yFor(Math.min(trade.fvg_gap_low, trade.fvg_gap_high));
+  const fvgRect = document.createElementNS(svgNS, "rect");
+  fvgRect.setAttribute("class", "fvg-zone");
+  fvgRect.setAttribute("x", marginL);
+  fvgRect.setAttribute("y", fvgTop);
+  fvgRect.setAttribute("width", plotW);
+  fvgRect.setAttribute("height", Math.max(1, fvgBottom - fvgTop));
+  svg.appendChild(fvgRect);
+
+  // box high/low (dashed, muted)
+  [["box_high", trade.box_high], ["box_low", trade.box_low]].forEach(([key, v]) => {
+    const line = document.createElementNS(svgNS, "line");
+    line.setAttribute("class", "ref-line");
+    line.setAttribute("stroke", "var(--ink-muted)");
+    line.setAttribute("stroke-dasharray", "5 4");
+    line.setAttribute("x1", marginL); line.setAttribute("x2", W - marginR);
+    line.setAttribute("y1", yFor(v)); line.setAttribute("y2", yFor(v));
+    svg.appendChild(line);
+  });
+
+  // previous day high/low (dotted, violet) -- only if present
+  if (trade.previous_day_high !== null) {
+    [trade.previous_day_high, trade.previous_day_low].forEach(v => {
+      const line = document.createElementNS(svgNS, "line");
+      line.setAttribute("class", "ref-line");
+      line.setAttribute("stroke", "var(--prevday)");
+      line.setAttribute("stroke-dasharray", "1 3");
+      line.setAttribute("x1", marginL); line.setAttribute("x2", W - marginR);
+      line.setAttribute("y1", yFor(v)); line.setAttribute("y2", yFor(v));
+      svg.appendChild(line);
+    });
+  }
+
+  // candles
+  const candleW = Math.max(2, (plotW / candles.length) * 0.62);
+  candles.forEach((c, i) => {
+    const up = c.c >= c.o;
+    const g = document.createElementNS(svgNS, "g");
+    g.setAttribute("class", up ? "cand-up" : "cand-down");
+
+    const wick = document.createElementNS(svgNS, "line");
+    wick.setAttribute("class", "wick");
+    wick.setAttribute("x1", xFor(i)); wick.setAttribute("x2", xFor(i));
+    wick.setAttribute("y1", yFor(c.h)); wick.setAttribute("y2", yFor(c.l));
+    wick.setAttribute("stroke-width", "1");
+    g.appendChild(wick);
+
+    const bodyTop = yFor(Math.max(c.o, c.c));
+    const bodyBottom = yFor(Math.min(c.o, c.c));
+    const rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("x", xFor(i) - candleW / 2);
+    rect.setAttribute("y", bodyTop);
+    rect.setAttribute("width", candleW);
+    rect.setAttribute("height", Math.max(1, bodyBottom - bodyTop));
+    g.appendChild(rect);
+
+    // invisible wider hit target for hover
+    const hit = document.createElementNS(svgNS, "rect");
+    hit.setAttribute("class", "cand-hit");
+    hit.setAttribute("x", xFor(i) - (plotW / candles.length) / 2);
+    hit.setAttribute("y", marginT);
+    hit.setAttribute("width", plotW / candles.length);
+    hit.setAttribute("height", plotH);
+    hit.setAttribute("fill", "transparent");
+    hit.addEventListener("mousemove", (e) => showTooltip(e, c));
+    hit.addEventListener("mouseleave", hideTooltip);
+    g.appendChild(hit);
+
+    svg.appendChild(g);
+  });
+
+  // entry / stop / target: draw the reference line at its true price, but
+  // put the value label in a fixed stacked corner box instead of inline --
+  // these three values are always close together by design, so inline
+  // labels at their true y-position collide.
+  const markers = [
+    ["Entry", trade.entry_price, "var(--accent)"],
+    ["Stop", trade.stop_price, "var(--bad)"],
+    ["Target", trade.target_price, "var(--good)"],
+  ];
+  markers.forEach(([label, v, color]) => {
+    const line = document.createElementNS(svgNS, "line");
+    line.setAttribute("class", "ref-line");
+    line.setAttribute("stroke", color);
+    line.setAttribute("x1", marginL); line.setAttribute("x2", W - marginR);
+    line.setAttribute("y1", yFor(v)); line.setAttribute("y2", yFor(v));
+    svg.appendChild(line);
+  });
+
+  const boxX = W - marginR - 118, boxY = marginT + 6;
+  const boxBg = document.createElementNS(svgNS, "rect");
+  boxBg.setAttribute("x", boxX - 8);
+  boxBg.setAttribute("y", boxY - 14);
+  boxBg.setAttribute("width", 126);
+  boxBg.setAttribute("height", 58);
+  boxBg.setAttribute("rx", 6);
+  boxBg.setAttribute("fill", "var(--surface-raised)");
+  boxBg.setAttribute("stroke", "var(--border)");
+  svg.appendChild(boxBg);
+
+  markers.forEach(([label, v, color], i) => {
+    const y = boxY + i * 16;
+    const swatch = document.createElementNS(svgNS, "line");
+    swatch.setAttribute("x1", boxX); swatch.setAttribute("x2", boxX + 12);
+    swatch.setAttribute("y1", y - 3); swatch.setAttribute("y2", y - 3);
+    swatch.setAttribute("stroke", color);
+    swatch.setAttribute("stroke-width", "2.5");
+    svg.appendChild(swatch);
+
+    const text = document.createElementNS(svgNS, "text");
+    text.setAttribute("class", "ref-label");
+    text.setAttribute("x", boxX + 18);
+    text.setAttribute("y", y);
+    text.setAttribute("fill", "var(--ink-primary)");
+    text.textContent = `${label} ${v.toFixed(2)}`;
+    svg.appendChild(text);
+  });
+
+  return svg;
+}
+
+function showTooltip(e, c) {
+  const tip = document.getElementById("tooltip");
+  tip.innerHTML = `${c.t}&nbsp;&nbsp;O ${c.o.toFixed(2)}&nbsp; H ${c.h.toFixed(2)}&nbsp; L ${c.l.toFixed(2)}&nbsp; C ${c.c.toFixed(2)}`;
+  tip.style.left = (e.pageX + 14) + "px";
+  tip.style.top = (e.pageY - 10) + "px";
+  tip.style.opacity = "1";
+}
+function hideTooltip() {
+  document.getElementById("tooltip").style.opacity = "0";
+}
+
+const container = document.getElementById("trades");
+if (TRADES.length === 0) {
+  const empty = document.createElement("div");
+  empty.className = "empty";
+  empty.textContent = "No trades were triggered by the strategy in this window -- the key-level + FVG requirement is strict by design, so an empty week doesn't necessarily mean something's broken.";
+  container.appendChild(empty);
+} else {
+  container.style.display = "flex";
+  container.style.flexDirection = "column";
+  container.style.gap = "28px";
+  TRADES.forEach((trade, i) => container.appendChild(renderTrade(trade, i)));
+}
+</script>

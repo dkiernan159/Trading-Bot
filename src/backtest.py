@@ -24,6 +24,7 @@ import argparse
 import json
 from collections import defaultdict
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from src.broker.projectx_gateway import ProjectXGatewayBroker
@@ -47,7 +48,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chart-json",
         default=None,
-        help="Path to write a compact JSON file (candles + levels per trade) for visualizing entries on a chart.",
+        help="Path to write a compact JSON file (candles + levels per trade) -- paste its contents into chat to visualize.",
+    )
+    parser.add_argument(
+        "--chart-html",
+        default=None,
+        help="Path to write a complete, self-contained HTML chart page -- download this one file "
+        "(e.g. scp) and open it in a browser directly. No data needs to go through chat.",
     )
     return parser.parse_args()
 
@@ -194,11 +201,10 @@ def _fmt(value: float | None) -> str:
     return f"{value:.2f}" if value is not None else "n/a"
 
 
-def export_chart_json(cfg: BotConfig, results: list[dict], all_bars: list[Bar], path: str) -> None:
-    """Writes a compact JSON file with, per trade: the 1-minute candles from
-    9:30 ET through a few minutes past resolution, plus the levels/box/FVG/
-    entry-stop-target values already computed -- small enough to paste into
-    a chat to render as a chart, without hauling full-day history around."""
+def _build_chart_payload(cfg: BotConfig, results: list[dict], all_bars: list[Bar]) -> list[dict]:
+    """Per trade: the 1-minute candles from 9:30 ET through a few minutes
+    past resolution, plus the levels/box/FVG/entry-stop-target values
+    already computed. Shared by the JSON and HTML chart exports."""
     tz = ZoneInfo(cfg.session.timezone)
     payload = []
 
@@ -234,8 +240,27 @@ def export_chart_json(cfg: BotConfig, results: list[dict], all_bars: list[Bar], 
             }
         )
 
+    return payload
+
+
+def export_chart_json(cfg: BotConfig, results: list[dict], all_bars: list[Bar], path: str) -> None:
+    """Writes the chart payload as compact JSON -- small enough to paste into
+    a chat to render as a chart, without hauling full-day history around."""
+    payload = _build_chart_payload(cfg, results, all_bars)
     with open(path, "w") as f:
         json.dump(payload, f)
+
+
+def export_chart_html(cfg: BotConfig, results: list[dict], all_bars: list[Bar], path: str) -> None:
+    """Writes a complete, self-contained HTML page (candlestick charts with
+    the box/FVG/entry/stop/target overlaid) -- download this one file (e.g.
+    `scp` it to your own machine) and open it in a browser. No data needs to
+    go through chat."""
+    payload = _build_chart_payload(cfg, results, all_bars)
+    template_path = Path(__file__).with_name("chart_template.html")
+    html = template_path.read_text().replace("__TRADE_DATA__", json.dumps(payload))
+    with open(path, "w") as f:
+        f.write(html)
 
 
 def main() -> None:
@@ -261,6 +286,13 @@ def main() -> None:
     if args.chart_json:
         export_chart_json(cfg, results, bars, args.chart_json)
         print(f"\nChart data written to {args.chart_json} -- cat it and paste the contents into chat to visualize.")
+    if args.chart_html:
+        export_chart_html(cfg, results, bars, args.chart_html)
+        print(
+            f"\nChart page written to {args.chart_html} -- download it to your own machine "
+            f"(e.g. `scp -i $HOME\\.ssh\\hetzner_trading_bot root@<server-ip>:{args.chart_html} .` "
+            "from PowerShell) and open it in a browser. No data needs to go through chat."
+        )
 
 
 if __name__ == "__main__":

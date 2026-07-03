@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from src.backtest import _pnl_points, export_chart_json, run_backtest
+from src.backtest import _pnl_points, export_chart_html, export_chart_json, run_backtest
 from src.config import load_config
 from src.models import Bar
 
@@ -122,3 +122,33 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
     # Candles should span from 9:30 through the exit bar.
     assert trade["candles"][0]["t"] == "09:30"
     assert len(trade["candles"]) > 0
+
+
+def test_export_chart_html_embeds_trade_data(tmp_path):
+    cfg = load_test_config()
+    bars = breakout_key_level_fvg_bars()
+    bars.append(bar(41, 105.0, 113.0, 104.8, 112.5))
+
+    results = run_backtest(cfg, bars)
+    out_path = tmp_path / "chart.html"
+    export_chart_html(cfg, results, bars, str(out_path))
+
+    html = out_path.read_text()
+
+    assert "__TRADE_DATA__" not in html  # placeholder was substituted
+    assert '"date": "2026-07-06"' in html
+    assert "<svg" not in html  # charts are built client-side by the embedded script, not pre-rendered
+    assert "function buildChart" in html
+
+
+def test_export_chart_html_handles_no_trades(tmp_path):
+    cfg = load_test_config()
+    flat_bars = [bar(i, 100.0, 100.2, 99.8, 100.0) for i in range(30)]
+
+    results = run_backtest(cfg, flat_bars)
+    out_path = tmp_path / "chart.html"
+    export_chart_html(cfg, results, flat_bars, str(out_path))
+
+    html = out_path.read_text()
+    assert "__TRADE_DATA__" not in html
+    assert "const TRADES = [];" in html

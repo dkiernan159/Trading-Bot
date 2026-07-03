@@ -62,6 +62,28 @@ actually trade. Fills are idealized (no slippage/commissions, and a bar that
 touches both stop and target in the same minute is conservatively counted
 as a stop).
 
+### Visualizing entries on a chart
+
+Add `--verbose` to print the previous-day/Asia/London levels, the box, and
+the confirming FVG's gap behind every trade. To actually see it on a
+candlestick chart, add `--chart-html <path>`, e.g.:
+
+```bash
+sudo -u tradingbot bash -c 'cd /home/tradingbot/trading-bot && set -a && source .env && source .venv/bin/activate && python -m src.backtest --days 7 --chart-html /tmp/chart.html'
+```
+
+This writes one self-contained HTML file (no server, no dependencies) --
+download it to your own machine and open it directly in a browser:
+
+```powershell
+scp -i $HOME\.ssh\hetzner_trading_bot root@<server-ip>:/tmp/chart.html $HOME\Desktop\chart.html
+```
+
+Then double-click `chart.html` on your Desktop. This is the efficient path
+-- no trade data has to be pasted into chat. (`--chart-json <path>` still
+exists if you'd rather paste the raw data into chat and have it rendered
+there instead.)
+
 ## Project layout
 
 ```
