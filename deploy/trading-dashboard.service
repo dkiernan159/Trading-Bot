@@ -1,0 +1,26 @@
+[Unit]
+Description=NQ/MNQ Trading Bot Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tradingbot
+WorkingDirectory=/home/tradingbot/trading-bot
+EnvironmentFile=/home/tradingbot/trading-bot/.env
+ExecStart=/home/tradingbot/trading-bot/.venv/bin/python -m src.dashboard
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/tradingbot/trading-bot/logs/dashboard.log
+StandardError=append:/home/tradingbot/trading-bot/logs/dashboard.log
+
+# Hardening -- binds to 127.0.0.1 only (config.yaml: dashboard.host), so
+# this is unreachable from outside the box even without a firewall rule.
+# View it via an SSH local port-forward -- see DEPLOY.md.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/tradingbot/trading-bot
+
+[Install]
+WantedBy=multi-user.target

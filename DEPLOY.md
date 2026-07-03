@@ -81,6 +81,32 @@ tail -f /home/tradingbot/trading-bot/trades/trades.csv
 
 Logs rotate weekly (8 weeks kept) via `/etc/logrotate.d/trading-bot`.
 
+## 7. View the dashboard
+
+The dashboard shows live trades (auto-refreshing every ~10s from
+`trades/trades.csv`, free -- no API calls) plus a backtest section
+(candlestick charts, refreshed every `dashboard.refresh_interval_seconds`
+in `config.yaml`, default 30 min, since that part costs real API calls).
+
+Start it:
+
+```bash
+sudo systemctl start trading-dashboard
+```
+
+It binds to `127.0.0.1` only -- it is **not reachable from the internet**,
+by design. View it by tunneling it to your own machine over SSH. In a
+PowerShell window on your computer (leave this window open while you're
+watching the dashboard):
+
+```powershell
+ssh -i $HOME\.ssh\hetzner_trading_bot -L 8080:127.0.0.1:8080 root@<server-ip>
+```
+
+Then open **http://localhost:8080** in your browser. Closing that SSH
+window closes access to the dashboard -- nothing is exposed when you're not
+actively tunneled in.
+
 ## Updating the bot later
 
 ```bash
@@ -88,11 +114,12 @@ ssh root@<server-ip>
 sudo -u tradingbot git -C /home/tradingbot/trading-bot pull origin claude/topstepx-trading-bot-wqy0at
 sudo -u tradingbot /home/tradingbot/trading-bot/.venv/bin/pip install -r /home/tradingbot/trading-bot/requirements.txt
 sudo systemctl restart trading-bot
+sudo systemctl restart trading-dashboard
 ```
 
 ## Stopping it
 
 ```bash
-sudo systemctl stop trading-bot     # stop
-sudo systemctl disable trading-bot  # also don't start on next boot
+sudo systemctl stop trading-bot           trading-dashboard     # stop both
+sudo systemctl disable trading-bot        trading-dashboard     # also don't start on next boot
 ```

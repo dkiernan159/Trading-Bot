@@ -98,6 +98,9 @@ src/
   risk.py                   stop/target calculation, daily risk limits
   logger.py                 CSV trade log (for judging win rate before scaling up)
   backtest.py                fetches real history and replays the strategy over it
+  dashboard.py               always-on HTTP server: live trades + auto-refreshing backtest
+  dashboard_template.html    the dashboard page (see DEPLOY.md for how to view it)
+  chart_template.html        standalone chart page used by backtest.py --chart-html
   runner.py                 wires broker -> strategy -> risk -> broker -> logger
   broker/
     base.py                 abstract broker interface

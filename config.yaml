@@ -47,3 +47,15 @@ broker:
   # paper/sim account -- see the module docstring in
   # src/broker/projectx_gateway.py for exactly what's unverified.
   dry_run: true
+
+dashboard:
+  # Binds to localhost only -- view it via an SSH local port-forward
+  # (see DEPLOY.md), never expose this port publicly.
+  host: 127.0.0.1
+  port: 8080
+  # How often the backtest section re-fetches from the real API and
+  # rebuilds its charts. Live trades (from trades/trades.csv) are free to
+  # read and always served fresh on every request -- only the backtest
+  # section is throttled, since it costs real API calls.
+  refresh_interval_seconds: 1800  # 30 minutes
+  backtest_days: 7

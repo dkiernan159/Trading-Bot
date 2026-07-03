@@ -78,6 +78,14 @@ class BrokerConfig:
 
 
 @dataclass
+class DashboardConfig:
+    host: str
+    port: int
+    refresh_interval_seconds: int
+    backtest_days: int
+
+
+@dataclass
 class BotConfig:
     instrument: InstrumentConfig
     session: SessionConfig
@@ -85,6 +93,7 @@ class BotConfig:
     position_sizing: PositionSizingConfig
     risk_limits: RiskLimitsConfig
     broker: BrokerConfig
+    dashboard: DashboardConfig
 
 
 def load_config(path: str | Path = "config.yaml") -> BotConfig:
@@ -119,6 +128,7 @@ def load_config(path: str | Path = "config.yaml") -> BotConfig:
     position_sizing = PositionSizingConfig(**raw["position_sizing"])
     risk_limits = RiskLimitsConfig(**raw["risk_limits"])
     broker = BrokerConfig(**raw["broker"])
+    dashboard = DashboardConfig(**raw["dashboard"])
 
     return BotConfig(
         instrument=instrument,
@@ -127,4 +137,5 @@ def load_config(path: str | Path = "config.yaml") -> BotConfig:
         position_sizing=position_sizing,
         risk_limits=risk_limits,
         broker=broker,
+        dashboard=dashboard,
     )

@@ -1,4 +1,4 @@
-/home/tradingbot/trading-bot/logs/bot.log {
+/home/tradingbot/trading-bot/logs/bot.log /home/tradingbot/trading-bot/logs/dashboard.log {
     weekly
     rotate 8
     compress

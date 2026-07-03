@@ -55,11 +55,13 @@ chmod 600 "${INSTALL_DIR}/.env"
 chown "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}/.env"
 sudo -u "${SERVICE_USER}" mkdir -p "${INSTALL_DIR}/logs"
 
-echo "==> Installing systemd service"
+echo "==> Installing systemd services"
 cp "${INSTALL_DIR}/deploy/trading-bot.service" /etc/systemd/system/trading-bot.service
+cp "${INSTALL_DIR}/deploy/trading-dashboard.service" /etc/systemd/system/trading-dashboard.service
 systemctl daemon-reload
 systemctl enable trading-bot
-# Not started automatically -- .env needs real credentials filled in first.
+systemctl enable trading-dashboard
+# Neither started automatically -- .env needs real credentials filled in first.
 
 echo "==> Installing log rotation"
 cp "${INSTALL_DIR}/deploy/trading-bot.logrotate" /etc/logrotate.d/trading-bot
@@ -79,4 +81,8 @@ Next steps:
      Watch it log the orders it *would* place, then Ctrl-C.
   3. When you're ready: sudo systemctl start trading-bot
   4. Watch logs:  journalctl -u trading-bot -f    or    tail -f ${INSTALL_DIR}/logs/bot.log
+  5. Start the dashboard (live trades + auto-refreshing backtest):
+       sudo systemctl start trading-dashboard
+     It binds to 127.0.0.1 only -- view it via an SSH tunnel from your own
+     machine (see DEPLOY.md), never expose this port publicly.
 EOF
