@@ -21,8 +21,9 @@ Caveats:
 """
 
 import argparse
+import json
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from src.broker.projectx_gateway import ProjectXGatewayBroker
@@ -42,6 +43,11 @@ def parse_args() -> argparse.Namespace:
         "--verbose",
         action="store_true",
         help="Print the levels/box/FVG behind each trade, to verify the mechanics rather than just outcomes.",
+    )
+    parser.add_argument(
+        "--chart-json",
+        default=None,
+        help="Path to write a compact JSON file (candles + levels per trade) for visualizing entries on a chart.",
     )
     return parser.parse_args()
 
@@ -84,6 +90,7 @@ def run_backtest(cfg: BotConfig, bars: list[Bar]) -> list[dict]:
                         "date": open_trade["entry_time"].astimezone(tz).date(),
                         "direction": direction.value,
                         "won": won,
+                        "exit_time": bar.timestamp,
                     }
                 )
                 strategy.notify_trade_closed(won=won)
@@ -187,6 +194,50 @@ def _fmt(value: float | None) -> str:
     return f"{value:.2f}" if value is not None else "n/a"
 
 
+def export_chart_json(cfg: BotConfig, results: list[dict], all_bars: list[Bar], path: str) -> None:
+    """Writes a compact JSON file with, per trade: the 1-minute candles from
+    9:30 ET through a few minutes past resolution, plus the levels/box/FVG/
+    entry-stop-target values already computed -- small enough to paste into
+    a chat to render as a chart, without hauling full-day history around."""
+    tz = ZoneInfo(cfg.session.timezone)
+    payload = []
+
+    for t in results:
+        window_start = datetime.combine(t["date"], time(9, 30), tzinfo=tz)
+        window_end = t["exit_time"].astimezone(tz) + timedelta(minutes=5)
+        candles = [
+            {
+                "t": b.timestamp.astimezone(tz).strftime("%H:%M"),
+                "o": b.open,
+                "h": b.high,
+                "l": b.low,
+                "c": b.close,
+            }
+            for b in all_bars
+            if window_start <= b.timestamp.astimezone(tz) <= window_end
+        ]
+        payload.append(
+            {
+                "date": str(t["date"]),
+                "direction": t["direction"],
+                "won": t["won"],
+                "entry_price": t["entry_price"],
+                "stop_price": t["stop_price"],
+                "target_price": t["target_price"],
+                "box_high": t["box_high"],
+                "box_low": t["box_low"],
+                "fvg_gap_low": t["fvg_gap_low"],
+                "fvg_gap_high": t["fvg_gap_high"],
+                "previous_day_high": t["previous_day_high"],
+                "previous_day_low": t["previous_day_low"],
+                "candles": candles,
+            }
+        )
+
+    with open(path, "w") as f:
+        json.dump(payload, f)
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -207,6 +258,9 @@ def main() -> None:
     print_report(cfg, results)
     if args.verbose:
         print_trade_detail(results)
+    if args.chart_json:
+        export_chart_json(cfg, results, bars, args.chart_json)
+        print(f"\nChart data written to {args.chart_json} -- cat it and paste the contents into chat to visualize.")
 
 
 if __name__ == "__main__":

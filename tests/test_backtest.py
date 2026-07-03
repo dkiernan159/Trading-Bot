@@ -1,10 +1,11 @@
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from src.backtest import _pnl_points, run_backtest
+from src.backtest import _pnl_points, export_chart_json, run_backtest
 from src.config import load_config
 from src.models import Bar
 
@@ -99,3 +100,28 @@ def test_pnl_points_is_negative_for_a_short_loss():
 def test_pnl_points_is_positive_for_a_short_win():
     trade = {"direction": "short", "entry_price": 100.0, "stop_price": 103.0, "target_price": 94.0, "won": True}
     assert _pnl_points(trade) == pytest.approx(6.0)
+
+
+def test_export_chart_json_writes_candles_and_levels(tmp_path):
+    cfg = load_test_config()
+    bars = breakout_retest_fvg_bars()
+    bars.append(bar(22, 104.6, 112.0, 104.0, 111.9))
+
+    results = run_backtest(cfg, bars)
+    out_path = tmp_path / "chart.json"
+    export_chart_json(cfg, results, bars, str(out_path))
+
+    payload = json.loads(out_path.read_text())
+
+    assert len(payload) == 1
+    trade = payload[0]
+    assert trade["date"] == str(DAY.date())
+    assert trade["direction"] == "long"
+    assert trade["won"] is True
+    assert trade["box_high"] == 101.0
+    assert trade["box_low"] == 99.5
+    # Candles should span from 9:30 through the exit bar (9:52, the last
+    # bar available -- window_end reaches 9:57 but there are no more bars).
+    assert trade["candles"][0]["t"] == "09:30"
+    assert trade["candles"][-1]["t"] == "09:52"
+    assert len(trade["candles"]) == 23
