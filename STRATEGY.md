@@ -10,11 +10,23 @@ review these and adjust `config.yaml` before running live.
 1. Mark previous day's high/low, plus Asia session and London session high/low.
 2. At 9:30 ET the NY session opens. Watch the first 15-minute candle; it
    closes at 9:45 ET. Mark its high/low as "the box".
-3. Wait for price to break the box high (bullish) or box low (bearish).
-4. Wait for price to come back and test the broken level from the other side
-   (retest).
-5. Enter on a strong 1-minute fair value gap (FVG) that forms during/after the
-   retest, in the direction of the breakout.
+3. Wait for price to break the box high (bullish) or box low (bearish) --
+   this sets the trade direction/bias, it is not itself the entry.
+4. After the breakout, the **only** valid entry is: price retests one of the
+   marked key levels (previous day high/low, Asia high/low, or London
+   high/low -- any of them, not just the previous day) **and** a strong
+   1-minute FVG forms whose gap range actually contains that key level, in
+   the breakout direction. A strong FVG elsewhere, or at no key level, does
+   not qualify.
+5. Entry is a **limit order at the midpoint of that FVG's gap**
+   (`(gap_low + gap_high) / 2`), not a market order at whatever price the
+   confirming candle closed at. The trade only starts once price actually
+   trades back to that midpoint -- if it never comes back, there's no
+   entry that setup.
+
+   (First version of this bot entered at the confirming candle's close
+   instead, which put entries well outside the FVG zone entirely -- caught
+   by inspecting the backtest charts and corrected 2026-07-06.)
 6. Reward:risk is 2:1.
 7. Stop-loss: **either** the 2:1 ratio itself, **or** placed at a large
    support/resistance level whose break would imply a large move -- but never
@@ -45,6 +57,13 @@ review these and adjust `config.yaml` before running live.
   chart where (a) the gap size is >= `min_gap_points` and (b) the middle
   (displacement) candle's body is >= `displacement_multiplier` times the
   recent average candle range. Both thresholds are configurable.
+- **"At a key level"** (`src/strategy.py: _fvg_contains_key_level`): the key
+  level's exact price must fall inside the FVG's gap range
+  (`gap_low <= level <= gap_high`) -- being merely nearby doesn't count. Any
+  of the 6 marked levels (previous day high/low, Asia high/low, London
+  high/low) qualifies; the opening range box itself is not a "key level"
+  for this check (it's still used for the breakout and as a stop-loss
+  candidate).
 - **Asia / London session windows** (`config.yaml: session`): set to common
   ICT-style approximations (Asia 19:00-23:59 ET prior evening, London
   02:00-05:00 ET). Adjust to your exact definition.

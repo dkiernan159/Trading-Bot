@@ -13,12 +13,13 @@ from src.session_levels import SessionLevels, SessionLevelSet
 
 
 class State(Enum):
-    MARKING_LEVELS = auto()   # pre-9:30: marking previous day / Asia / London levels
-    BUILDING_BOX = auto()     # 9:30-9:45: accumulating the opening range candle
-    WAIT_BREAKOUT = auto()    # waiting for a close beyond the box high/low
-    WAIT_RETEST = auto()      # waiting for price to come back and test the broken level
-    WAIT_FVG = auto()         # waiting for a strong 1m FVG in the breakout direction
-    IN_TRADE = auto()         # entry signal fired, waiting on the runner/broker to close it
+    MARKING_LEVELS = auto()      # pre-9:30: marking previous day / Asia / London levels
+    BUILDING_BOX = auto()        # 9:30-9:45: accumulating the opening range candle
+    WAIT_BREAKOUT = auto()       # waiting for a close beyond the box high/low
+    WAIT_KEY_LEVEL_FVG = auto()  # waiting for a strong FVG, in the breakout direction, whose
+                                  # gap contains a previous-day/Asia/London key level
+    WAIT_FILL = auto()           # a valid FVG was found; limit order resting at its midpoint
+    IN_TRADE = auto()            # limit order filled, waiting on the runner/broker to close it
     DONE_FOR_DAY = auto()
 
 
@@ -32,8 +33,15 @@ class EntrySignal:
 
 
 class OpeningRangeStrategy:
-    """State machine implementing the NY-open opening-range breakout + retest
-    + 1m FVG strategy described in STRATEGY.md."""
+    """State machine implementing the NY-open opening-range breakout + key-
+    level retest + 1m FVG strategy described in STRATEGY.md.
+
+    Sequence: mark previous-day/Asia/London levels -> form the 9:30-9:45 box
+    -> a close beyond the box sets the breakout direction -> wait for a
+    strong FVG (in that direction) whose gap actually contains one of the
+    marked key levels -> rest a limit order at the FVG's midpoint -> enter
+    only once price actually trades back to that midpoint.
+    """
 
     def __init__(self, cfg: BotConfig):
         self.cfg = cfg
@@ -46,6 +54,8 @@ class OpeningRangeStrategy:
         self._trading_date: date | None = None
         self._breakout_direction: Direction | None = None
         self._levels: SessionLevelSet | None = None
+        self._pending_fvg: FairValueGap | None = None
+        self._pending_limit_price: float | None = None
 
     @property
     def current_session_levels(self) -> SessionLevelSet | None:
@@ -86,40 +96,53 @@ class OpeningRangeStrategy:
         if self.state is State.WAIT_BREAKOUT:
             if self.box.high is not None and bar.close > self.box.high:
                 self._breakout_direction = Direction.LONG
-                self.state = State.WAIT_RETEST
+                self.state = State.WAIT_KEY_LEVEL_FVG
             elif self.box.low is not None and bar.close < self.box.low:
                 self._breakout_direction = Direction.SHORT
-                self.state = State.WAIT_RETEST
+                self.state = State.WAIT_KEY_LEVEL_FVG
             return None
 
-        if self.state is State.WAIT_RETEST:
-            broken_level = self.box.high if self._breakout_direction is Direction.LONG else self.box.low
-            if self._breakout_direction is Direction.LONG and bar.low <= broken_level:
-                self.state = State.WAIT_FVG
-            elif self._breakout_direction is Direction.SHORT and bar.high >= broken_level:
-                self.state = State.WAIT_FVG
+        if self.state is State.WAIT_KEY_LEVEL_FVG:
+            if fvg is not None and fvg.direction is self._breakout_direction and self._fvg_contains_key_level(fvg):
+                self._pending_fvg = fvg
+                self._pending_limit_price = (fvg.gap_low + fvg.gap_high) / 2
+                self.state = State.WAIT_FILL
             return None
 
-        if self.state is State.WAIT_FVG:
-            if fvg is not None and fvg.direction is self._breakout_direction:
-                structural_levels = self._levels.all_levels() if self._levels else []
-                structural_levels = list(structural_levels)
+        if self.state is State.WAIT_FILL:
+            filled = (
+                bar.low <= self._pending_limit_price
+                if self._breakout_direction is Direction.LONG
+                else bar.high >= self._pending_limit_price
+            )
+            if filled:
+                structural_levels = list(self._levels.all_levels()) if self._levels else []
                 if self.box.high is not None:
                     structural_levels.append(self.box.high)
                 if self.box.low is not None:
                     structural_levels.append(self.box.low)
 
-                self.state = State.IN_TRADE
-                return EntrySignal(
+                signal = EntrySignal(
                     direction=self._breakout_direction,
-                    entry_price=bar.close,
-                    fvg=fvg,
+                    entry_price=self._pending_limit_price,
+                    fvg=self._pending_fvg,
                     structural_levels=structural_levels,
                     timestamp=bar.timestamp,
                 )
+                self.state = State.IN_TRADE
+                self._pending_fvg = None
+                self._pending_limit_price = None
+                return signal
             return None
 
         return None
+
+    def _fvg_contains_key_level(self, fvg: FairValueGap) -> bool:
+        """True if any marked previous-day/Asia/London level falls inside
+        the FVG's gap range -- the "at a key level" requirement."""
+        if self._levels is None:
+            return False
+        return any(fvg.gap_low <= level <= fvg.gap_high for level in self._levels.all_levels())
 
     def notify_trade_closed(self, won: bool) -> None:
         """Runner calls this once the broker confirms the open trade hit its
@@ -132,6 +155,8 @@ class OpeningRangeStrategy:
             return
 
         self._breakout_direction = None
+        self._pending_fvg = None
+        self._pending_limit_price = None
         self.state = State.WAIT_BREAKOUT
 
     def _start_new_day(self, trading_date: date) -> None:
@@ -140,3 +165,5 @@ class OpeningRangeStrategy:
         self.state = State.MARKING_LEVELS
         self._breakout_direction = None
         self._levels = None
+        self._pending_fvg = None
+        self._pending_limit_price = None
