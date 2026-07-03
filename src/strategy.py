@@ -47,6 +47,12 @@ class OpeningRangeStrategy:
         self._breakout_direction: Direction | None = None
         self._levels: SessionLevelSet | None = None
 
+    @property
+    def current_session_levels(self) -> SessionLevelSet | None:
+        """Previous-day/Asia/London levels marked for the trading day in
+        progress (None before 9:30 ET marks them for the day)."""
+        return self._levels
+
     def on_bar(self, bar: Bar) -> EntrySignal | None:
         local = bar.timestamp.astimezone(self.tz)
         trading_date = local.date()

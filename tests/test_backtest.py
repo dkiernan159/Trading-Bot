@@ -50,6 +50,14 @@ def test_backtest_records_a_win():
     assert results[0]["date"] == DAY.date()
     assert results[0]["stop_price"] == 101.0
     assert results[0]["target_price"] == pytest.approx(111.8)
+    assert results[0]["box_high"] == 101.0
+    assert results[0]["box_low"] == 99.5
+    assert results[0]["fvg_gap_low"] == pytest.approx(101.8)
+    assert results[0]["fvg_gap_high"] == pytest.approx(104.0)
+    # No prior-day/Asia/London bars were fed in this synthetic scenario.
+    assert results[0]["previous_day_high"] is None
+    assert results[0]["asia_high"] is None
+    assert results[0]["london_high"] is None
 
 
 def test_backtest_records_a_loss():

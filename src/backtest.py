@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
         "--days", type=int, default=7, help="Calendar days of history to report on (default: 7, ~last week)."
     )
     parser.add_argument("--config", default="config.yaml")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print the levels/box/FVG behind each trade, to verify the mechanics rather than just outcomes.",
+    )
     return parser.parse_args()
 
 
@@ -75,11 +80,9 @@ def run_backtest(cfg: BotConfig, bars: list[Bar]) -> list[dict]:
                 won = hit_target and not hit_stop  # both hit same bar -> assume stop first
                 results.append(
                     {
+                        **open_trade,
                         "date": open_trade["entry_time"].astimezone(tz).date(),
                         "direction": direction.value,
-                        "entry_price": open_trade["entry_price"],
-                        "stop_price": open_trade["stop_price"],
-                        "target_price": open_trade["target_price"],
                         "won": won,
                     }
                 )
@@ -95,12 +98,23 @@ def run_backtest(cfg: BotConfig, bars: list[Bar]) -> list[dict]:
                 max_stop_points=cfg.strategy.max_stop_points,
                 reward_risk_ratio=cfg.strategy.reward_risk_ratio,
             )
+            levels = strategy.current_session_levels
             open_trade = {
                 "direction": signal.direction,
                 "entry_time": signal.timestamp,
                 "entry_price": signal.entry_price,
                 "stop_price": bracket.stop_price,
                 "target_price": bracket.target_price,
+                "previous_day_high": levels.previous_day_high if levels else None,
+                "previous_day_low": levels.previous_day_low if levels else None,
+                "asia_high": levels.asia_high if levels else None,
+                "asia_low": levels.asia_low if levels else None,
+                "london_high": levels.london_high if levels else None,
+                "london_low": levels.london_low if levels else None,
+                "box_high": strategy.box.high,
+                "box_low": strategy.box.low,
+                "fvg_gap_low": signal.fvg.gap_low,
+                "fvg_gap_high": signal.fvg.gap_high,
             }
 
     return results
@@ -147,6 +161,32 @@ def print_report(cfg: BotConfig, results: list[dict]) -> None:
     print(f"{'TOTAL':<12}{total_trades:<8}{total_wins:<6}{overall_pct:<8.0f}{total_pnl:<18.2f}")
 
 
+def print_trade_detail(results: list[dict]) -> None:
+    """Prints the levels/box/FVG behind each trade, so the mechanics can be
+    checked (not just outcomes) -- previous day/Asia/London high-low, the
+    9:30-9:45 box, the confirming FVG's gap, and the resulting bracket."""
+    if not results:
+        return
+
+    print("\nTrade detail:")
+    for i, t in enumerate(results, start=1):
+        print(f"\n#{i}  {t['date']}  {t['direction'].upper()}  {'WIN' if t['won'] else 'LOSS'}")
+        print(
+            f"    Previous day: high={_fmt(t['previous_day_high'])}  low={_fmt(t['previous_day_low'])}"
+        )
+        print(f"    Asia session: high={_fmt(t['asia_high'])}  low={_fmt(t['asia_low'])}")
+        print(f"    London session: high={_fmt(t['london_high'])}  low={_fmt(t['london_low'])}")
+        print(f"    9:30-9:45 box: high={_fmt(t['box_high'])}  low={_fmt(t['box_low'])}")
+        print(f"    Confirming 1m FVG: {_fmt(t['fvg_gap_low'])} - {_fmt(t['fvg_gap_high'])}")
+        print(
+            f"    Entry={_fmt(t['entry_price'])}  Stop={_fmt(t['stop_price'])}  Target={_fmt(t['target_price'])}"
+        )
+
+
+def _fmt(value: float | None) -> str:
+    return f"{value:.2f}" if value is not None else "n/a"
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
@@ -165,6 +205,8 @@ def main() -> None:
 
     results = run_backtest(cfg, bars)
     print_report(cfg, results)
+    if args.verbose:
+        print_trade_detail(results)
 
 
 if __name__ == "__main__":
