@@ -1,0 +1,44 @@
+# Bot configuration. Values here are my best-effort defaults based on the strategy
+# as described -- review STRATEGY.md for the reasoning behind anything marked "ASSUMPTION".
+
+instrument:
+  symbol: MNQ
+  tick_size: 0.25
+  point_value: 2.0          # USD per index point per contract (MNQ multiplier)
+
+session:
+  timezone: America/New_York
+  asia_session: ["19:00", "23:59"]    # ASSUMPTION: prior-evening ET window used to mark the Asia high/low
+  london_session: ["02:00", "05:00"]  # ASSUMPTION: ET window used to mark the London high/low
+  ny_open: "09:30"
+  opening_range_end: "09:45"          # first 15m candle closes here -> box is formed
+  no_new_entries_after: "11:30"       # ASSUMPTION: cutoff for taking any new setup
+  flatten_by: "11:45"                 # ASSUMPTION: hard flatten time if still in a trade
+
+strategy:
+  reward_risk_ratio: 2.0
+  target_dollars_at_reference_size: 300   # your usual $300 target
+  reference_contracts: 5                  # ...at your usual 5-contract size
+  # max_stop_points derivation: target_dollars / reference_contracts / point_value / reward_risk_ratio
+  #   = 300 / 5 / 2.0 / 2.0 = 15 points. Reward target at that size is 2 x 15 = 30 points (~$300 @ 5 contracts).
+  max_stop_points: 15.0
+  fvg:
+    min_gap_points: 1.5           # ASSUMPTION: minimum 1m FVG size to count as a valid gap
+    displacement_multiplier: 1.5  # ASSUMPTION: "strong" = displacement candle body >= 1.5x recent avg range
+    lookback_bars: 20             # bars used to compute the recent average range baseline
+  reentry:
+    allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
+    allow_new_setup_after_win: false    # ASSUMPTION: stand down for the day after a winner (change if wrong)
+
+position_sizing:
+  contract_size: 1        # START SMALL per your instructions. Bot never changes this itself.
+  scaling: manual_only     # you bump this to 5 yourself once win rate is proven
+
+risk_limits:
+  max_trades_per_day: 4          # ASSUMPTION: safety cap, independent of setup re-entry logic
+  max_daily_loss_dollars: 600    # ASSUMPTION: hard stop for the day, protects a funded/eval account
+  kill_switch: false              # set true to force the bot to flatten and stop taking new trades
+
+broker:
+  provider: projectx_gateway
+  base_url: https://api.topstepx.com
