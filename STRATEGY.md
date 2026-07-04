@@ -181,6 +181,19 @@ review these and adjust `config.yaml` before running live.
   entry) -- that correctness fix narrowed the window to find a
   qualifying nested gap, so the strength bar needed to come down a
   notch to compensate.
+- **Daily reset of the active-gap pool** (`src/fvg.py:
+  FvgDetector.clear_active_gaps`, called from `strategy.py:
+  _start_new_day`): a gap that simply never gets revisited stays
+  "unmitigated" forever, so without this the pool could accumulate gaps
+  from days or weeks earlier and offer them up as today's anchor/entry --
+  found by comparing a 7-day and a 30-day backtest that disagreed about
+  what happened on the exact same calendar day (the 30-day run had a much
+  larger backlog of old, technically-still-valid gaps available at that
+  point). Every new trading day now clears the active-gap pool on both
+  detectors, so only gaps from *today's* session are ever candidates --
+  matching "the session" in rules 4-5. The candle history used for the
+  average-range baseline is untouched by this, so it's still populated
+  with real pre-market/overnight data from the moment 9:30 arrives.
 - **"Nested"** (`src/strategy.py: WAIT_1M_FVG`): a 1m FVG counts as nested
   inside the 15m anchor when its **midpoint** falls inside the anchor's
   range (`anchor.gap_low <= nested_midpoint <= anchor.gap_high`) **and it

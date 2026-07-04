@@ -261,6 +261,17 @@ class OpeningRangeStrategy:
     def _start_new_day(self, trading_date: date) -> None:
         self._trading_date = trading_date
         self.box.reset_for_day(trading_date)
+        # Drop any still-unmitigated FVGs from previous days -- otherwise
+        # a gap that simply never got revisited could sit in the pool
+        # indefinitely and get picked as an anchor/entry days or weeks
+        # later, making results depend on how far back the bar history
+        # happens to start (a real bug: a 30-day backtest and a 7-day
+        # backtest were producing different results on the exact same
+        # calendar day). The candle history itself (used for the
+        # average-range baseline) is left alone, so it's already
+        # populated with real pre-market/overnight data by 9:30.
+        self.fvg_detector_15m.clear_active_gaps()
+        self.fvg_detector_1m.clear_active_gaps()
         self.state = State.MARKING_LEVELS
         self._breakout_direction = None
         self._levels = None

@@ -69,6 +69,19 @@ class FvgDetector:
         `[-1]` is the most recently formed one still untouched."""
         return [g for g in self._active if g.direction is direction]
 
+    def clear_active_gaps(self) -> None:
+        """Drops every gap from the active pool without touching the
+        candle history used for the average-range baseline. Called at the
+        start of each new trading day so a gap from a previous day (never
+        mitigated because price simply never traded back through it)
+        can't linger indefinitely and get selected as today's anchor or
+        entry -- "the session" in STRATEGY.md means today's session, not
+        an unbounded lookback across every day the detector has ever
+        seen. The candle history is kept so `_recent_average_range` still
+        has real (pre-market/overnight) data to work with right from
+        9:30, instead of needing to rebuild it from scratch each day."""
+        self._active = []
+
     def _prune_mitigated(self, bar: Bar) -> None:
         self._active = [g for g in self._active if not self._is_mitigated(g, bar)]
 

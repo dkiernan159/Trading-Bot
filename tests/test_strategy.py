@@ -386,6 +386,49 @@ def test_reenters_after_stop_out_when_setup_reforms():
     assert strategy.state is State.WAIT_15M_FVG
 
 
+def test_stale_fvg_from_a_previous_day_is_not_available_as_todays_anchor():
+    """A 15m FVG that formed on a previous trading day and was simply
+    never revisited (so it's still technically unmitigated) must not be
+    available as an anchor on a later day. Otherwise results depend on
+    how far back the fed bar history happens to start -- a real bug
+    found by comparing a 7-day and 30-day backtest that disagreed on the
+    exact same calendar day."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+
+    # Day 1 (July 5): forms a large bullish 15m FVG well *below* where
+    # day 2's box/breakout will trade (90-94, vs. day 2's ~99.5-103) --
+    # never touched again, so it stays genuinely unmitigated (not just
+    # coincidentally pruned when day 2's lower prices are fed) all the
+    # way to the check below.
+    stale_start = PREV_DAY_BASE + timedelta(hours=2)
+    feed_quiet_15m(strategy, stale_start, 8, 90.0)
+    pattern_start = stale_start + timedelta(minutes=15 * 8)
+    c0_bars = smooth_walk_1m(pattern_start, 15, 90.0, 90.1)
+    c1_bars = smooth_walk_1m(pattern_start + timedelta(minutes=15), 15, 90.1, 94.3)
+    c2_bars = smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, 94.3, 94.5)
+    for b in c0_bars + c1_bars + c2_bars:
+        strategy.on_bar(b)
+    strategy.on_bar(flat_bar(pattern_start + timedelta(minutes=45), 94.5))  # finalizes/detects the stale FVG
+
+    assert strategy.fvg_detector_15m.unmitigated_in_direction(Direction.LONG) != []
+
+    # Day 2 (July 6, "DAY"): normal box + LONG breakout. The stale July-5
+    # gap must not be picked up as today's anchor.
+    feed_box_and_breakout(strategy)
+
+    # One more bar for the WAIT_15M_FVG candidate check to actually run
+    # (the breakout bar itself only sets the state; it doesn't fall
+    # through to check for an anchor in the same bar).
+    signal = strategy.on_bar(bar_at(DAY + timedelta(minutes=45), 102.5, 102.8, 102.3, 102.6))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_15M_FVG  # not WAIT_1M_FVG -- no anchor yet
+    assert strategy._anchor_fvg is None
+
+
 def test_stands_down_for_day_after_cutoff():
     cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     strategy = OpeningRangeStrategy(cfg)
