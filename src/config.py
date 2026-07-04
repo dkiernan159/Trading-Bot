@@ -56,6 +56,7 @@ class StrategyConfig:
     min_stop_dollars: float
     entry_retracement_pct: float
     fvg: FvgConfig
+    entry_fvg: FvgConfig
     reentry: ReentryConfig
 
 
@@ -127,6 +128,7 @@ def load_config(path: str | Path = "config.yaml") -> BotConfig:
         min_stop_dollars=strat["min_stop_dollars"],
         entry_retracement_pct=strat["entry_retracement_pct"],
         fvg=FvgConfig(**strat["fvg"]),
+        entry_fvg=FvgConfig(**strat["entry_fvg"]),
         reentry=ReentryConfig(**strat["reentry"]),
     )
 

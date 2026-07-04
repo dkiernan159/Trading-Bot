@@ -317,7 +317,7 @@ function renderTrade(trade, index) {
     <span class="legend-item"><span class="swatch" style="background:var(--good)"></span>Up candle</span>
     <span class="legend-item"><span class="swatch" style="background:var(--bad)"></span>Down candle</span>
     <span class="legend-item"><span class="swatch" style="background:var(--ink-muted)"></span>9:30&ndash;9:45 box</span>
-    <span class="legend-item"><span class="swatch" style="border:1px dashed var(--prevday)"></span>5m anchor FVG</span>
+    <span class="legend-item"><span class="swatch" style="border:1px dashed var(--prevday)"></span>Anchor FVG</span>
     <span class="legend-item"><span class="swatch" style="background:var(--accent)"></span>Entry</span>
     <span class="legend-item"><span class="swatch" style="background:var(--bad)"></span>Stop</span>
     <span class="legend-item"><span class="swatch" style="background:var(--good)"></span>Target</span>
@@ -330,7 +330,7 @@ function renderTrade(trade, index) {
   const rows = [
     ["Previous day high", trade.previous_day_high], ["Previous day low", trade.previous_day_low],
     ["Box high", trade.box_high], ["Box low", trade.box_low],
-    ["5m anchor FVG low", trade.anchor_gap_low], ["5m anchor FVG high", trade.anchor_gap_high],
+    [`${trade.anchor_timeframe_minutes}m anchor FVG low`, trade.anchor_gap_low], [`${trade.anchor_timeframe_minutes}m anchor FVG high`, trade.anchor_gap_high],
     ["Entry", trade.entry_price], ["Stop", trade.stop_price], ["Target", trade.target_price],
   ];
   levels.innerHTML = rows.map(([label, value]) => `

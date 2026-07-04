@@ -95,6 +95,13 @@ class OpeningRangeStrategy:
         self.session_levels = SessionLevels(cfg.session)
         self.box = OpeningRangeBox(cfg.session)
         self.fvg_detector_5m = FvgDetector(cfg.strategy.fvg, self.tz)
+        # Alternative, 1-minute-timeframe anchor source -- either detector
+        # can supply the anchor/entry once the breakout direction is set,
+        # whichever qualifies (see _candidate_anchors). Not the old nested
+        # "small FVG inside the big one" design removed in the 5m-only
+        # redesign; this pool is searched independently and pooled
+        # alongside fvg_detector_5m's, not required to sit inside it.
+        self.fvg_detector_1m = FvgDetector(cfg.strategy.entry_fvg, self.tz)
 
         self.state = State.MARKING_LEVELS
         self._trading_date: date | None = None
@@ -118,7 +125,7 @@ class OpeningRangeStrategy:
         self.stats = {
             "breakouts": 0,
             "breakouts_invalidated": 0,
-            "large_5m_fvgs": 0,
+            "large_fvgs": 0,
             "fills": 0,
         }
 
@@ -154,11 +161,16 @@ class OpeningRangeStrategy:
         return gap.gap_low + pct * width
 
     def _candidate_anchors(self, direction: Direction) -> list[FairValueGap]:
-        """Unmitigated FVGs in `direction`, excluding any already rejected
-        for having no real structural stop within budget (see WAIT_FILL) --
-        re-examining one wouldn't change that outcome, since it depends only
-        on entry price vs. the day's fixed marked levels."""
-        candidates = self.fvg_detector_5m.unmitigated_in_direction(direction)
+        """Unmitigated FVGs in `direction` from *either* detector -- the 5m
+        one or the 1m one (see __init__), pooled together so whichever
+        qualifies can anchor the move, not just the 5m one -- excluding any
+        already rejected for having no real structural stop within budget
+        (see WAIT_FILL). Re-examining a rejected one wouldn't change that
+        outcome, since it depends only on entry price vs. the day's fixed
+        marked levels."""
+        candidates = self.fvg_detector_5m.unmitigated_in_direction(
+            direction
+        ) + self.fvg_detector_1m.unmitigated_in_direction(direction)
         return [g for g in candidates if id(g) not in self._rejected_anchor_ids]
 
     def _close_anchor(self, outcome: str, ended_at: datetime) -> None:
@@ -191,6 +203,7 @@ class OpeningRangeStrategy:
         self.session_levels.add_bar(bar)
         self.box.add_bar(bar)
         self.fvg_detector_5m.add_bar(bar)
+        self.fvg_detector_1m.add_bar(bar)
 
         if self.state is State.DONE_FOR_DAY:
             return None
@@ -271,7 +284,7 @@ class OpeningRangeStrategy:
                 self._anchor_fvg = _nearest_then_largest(candidates, bar.close)
                 self._anchor_started_at = bar.timestamp
                 self._pending_limit_price = self._entry_price(self._anchor_fvg)
-                self.stats["large_5m_fvgs"] += 1
+                self.stats["large_fvgs"] += 1
                 self.state = State.WAIT_FILL
             return None
 
@@ -293,7 +306,7 @@ class OpeningRangeStrategy:
                     self._anchor_fvg = best_anchor
                     self._anchor_started_at = bar.timestamp
                     self._pending_limit_price = self._entry_price(best_anchor)
-                    self.stats["large_5m_fvgs"] += 1
+                    self.stats["large_fvgs"] += 1
 
             # No separate mitigation check here: the limit order rests at
             # a point strictly between gap_low and gap_high (see
@@ -422,6 +435,7 @@ class OpeningRangeStrategy:
         # average-range baseline) is left alone, so it's already
         # populated with real pre-market/overnight data by 9:30.
         self.fvg_detector_5m.clear_active_gaps()
+        self.fvg_detector_1m.clear_active_gaps()
         self._rejected_anchor_ids = set()
         self.state = State.MARKING_LEVELS
         self._breakout_direction = None

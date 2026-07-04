@@ -64,8 +64,9 @@ strategy:
                                    # that anchors/enters the move forms on 5-minute candles (in the real
                                    # example, retested over an hour after it formed, well after price had
                                    # already rallied further away -- confirmed there's no time/distance limit
-                                   # on the retest beyond the session cutoff). This is the only gate between a
-                                   # breakout and a trade, so it's also the only lever for trade frequency.
+                                   # on the retest beyond the session cutoff). One of two alternative anchor
+                                   # sources as of 2026-07-04 -- see entry_fvg below -- rather than the only gate
+                                   # between a breakout and a trade.
     timeframe_minutes: 5
     min_gap_points: 1.5           # ASSUMPTION: minimum 5m FVG size to count as a valid gap -- retune from real
                                    # backtests; this now has to do double duty as both "confirms the move" and
@@ -73,6 +74,30 @@ strategy:
                                    # (2.0) and the old (removed) nested-5m-entry threshold (0.4-1.0).
     displacement_multiplier: 1.0  # ASSUMPTION: "strong" = displacement candle body >= 1.0x recent avg range
     lookback_bars: 8              # 5m candles used for the recent average range baseline (~40 minutes)
+  entry_fvg:                      # ASSUMPTION (added 2026-07-04): an alternative, 1-minute-timeframe anchor
+                                   # source -- either this OR the 5m fvg above can anchor/enter a trade once the
+                                   # ORB breakout direction is set, whichever qualifies (both detectors' pools
+                                   # are searched together, nearest-to-price wins, same "kept live" behavior as
+                                   # a single detector -- see strategy.py's _candidate_anchors). Added at your
+                                   # explicit request: a real 7-day backtest was finding only 2 trades against a
+                                   # hard requirement of >=1/trading day (7 in 7), and the funnel showed plenty
+                                   # of 5m anchors forming (23) but few retracing all the way back to fill (3) --
+                                   # a 1-minute-scale FVG inside the same confirmed move gives price many more,
+                                   # much nearer opportunities to retrace into a real (if smaller-scale) gap.
+                                   # NOTE: this reintroduces a 1-minute detector removed in the 5m-only redesign
+                                   # above -- but as an *alternative* anchor source here, not the old nested
+                                   # "small FVG inside the big one" double-confirmation design that was removed
+                                   # for being the tightest bottleneck in the whole funnel. Genuinely untested
+                                   # against real data: 1-minute-scale gaps are noisier than 5-minute ones by
+                                   # nature, and every other loosening tried in this project so far (a wider
+                                   # stop search, a shallower retracement) recovered trades that were pure
+                                   # losers -- retune min_gap_points/displacement_multiplier hard against real
+                                   # backtests, and watch win rate as closely as trade count.
+    timeframe_minutes: 1
+    min_gap_points: 0.5           # ASSUMPTION: much smaller than the 5m gap floor -- 1-minute-scale genuine
+                                   # displacement on MNQ is naturally a fraction of a 5-minute move's size.
+    displacement_multiplier: 1.0  # ASSUMPTION: same ratio-based "strong" definition as the 5m detector.
+    lookback_bars: 8              # 1m candles used for the recent average range baseline (~8 minutes)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
     allow_new_setup_after_win: false    # ASSUMPTION: stand down for the day after a winner (change if wrong)

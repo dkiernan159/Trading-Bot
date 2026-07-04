@@ -22,6 +22,7 @@ class FairValueGap:
     gap_low: float
     gap_high: float
     formed_at: datetime
+    timeframe_minutes: int
 
     @property
     def size(self) -> float:
@@ -145,6 +146,7 @@ class FvgDetector:
                     gap_low=c0.high,
                     gap_high=c2.low,
                     formed_at=c2.timestamp,
+                    timeframe_minutes=self.cfg.timeframe_minutes,
                 )
 
         if c0.low > c2.high and c1.close < c1.open:
@@ -155,6 +157,7 @@ class FvgDetector:
                     gap_low=c2.high,
                     gap_high=c0.low,
                     formed_at=c2.timestamp,
+                    timeframe_minutes=self.cfg.timeframe_minutes,
                 )
 
         return None

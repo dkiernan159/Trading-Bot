@@ -214,6 +214,54 @@ def test_entry_fills_at_a_shallower_retracement_than_the_midpoint():
     assert strategy.state is State.IN_TRADE
 
 
+def test_a_1m_fvg_can_anchor_and_fill_a_trade_on_its_own():
+    """Added at the user's explicit request: a real 7-day backtest was
+    finding only 2 trades against a hard requirement of >=1/trading day,
+    and the funnel showed plenty of 5m anchors forming but few retracing
+    all the way back to fill. A 1-minute-timeframe FVG (fvg_detector_1m,
+    config.yaml: strategy.entry_fvg) is now an alternative anchor source,
+    pooled alongside the 5m one -- not nested inside it, not requiring a
+    5m FVG to also exist -- so a real displacement move that only forms a
+    1-minute-scale gap can still anchor and fill a trade on its own."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)  # LONG breakout at DAY + 30 minutes
+
+    pattern_start = DAY + timedelta(minutes=31)
+    baseline_start = pattern_start
+    for i in range(8):
+        signal = strategy.on_bar(bar_at(baseline_start + timedelta(minutes=i), 103.0, 103.05, 102.95, 103.0))
+        assert signal is None
+
+    c0_time = baseline_start + timedelta(minutes=8)
+    signal = strategy.on_bar(bar_at(c0_time, 103.0, 103.05, 102.95, 103.0))
+    assert signal is None
+    signal = strategy.on_bar(bar_at(c0_time + timedelta(minutes=1), 103.0, 104.3, 103.0, 104.2))  # c1: displacement
+    assert signal is None
+    signal = strategy.on_bar(bar_at(c0_time + timedelta(minutes=2), 104.2, 104.5, 103.7, 104.4))  # c2: confirms gap
+    assert signal is None
+    # One more bar to finalize c2's 1-minute "candle" (each fed bar already
+    # is one, at this timeframe) and trigger detection.
+    signal = strategy.on_bar(bar_at(c0_time + timedelta(minutes=3), 104.4, 104.45, 104.35, 104.4))
+    assert signal is None
+    assert strategy.state is State.WAIT_FILL
+
+    anchor_low, anchor_high = 103.05, 103.7  # c0.high, c2.low
+    midpoint = (anchor_low + anchor_high) / 2
+    assert strategy._anchor_fvg.timeframe_minutes == 1
+    assert strategy._pending_limit_price == pytest.approx(midpoint)
+
+    fill_time = c0_time + timedelta(minutes=4)
+    signal = strategy.on_bar(bar_at(fill_time, anchor_high, anchor_high + 0.1, anchor_low, anchor_low + 0.05))
+
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(midpoint)
+    assert signal.anchor_fvg.timeframe_minutes == 1
+    assert strategy.state is State.IN_TRADE
+
+
 def test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill():
     """If price never retraces to the first anchor's midpoint, but a
     second, later 5m FVG forms further along the same move (nearer to

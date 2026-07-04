@@ -140,7 +140,7 @@ def test_funnel_stats_track_each_gate():
     assert stats == {
         "breakouts": 1,
         "breakouts_invalidated": 0,
-        "large_5m_fvgs": 1,
+        "large_fvgs": 1,
         "fills": 1,
     }
 
@@ -188,7 +188,7 @@ def test_funnel_stats_show_anchor_but_no_fill_afterward():
 
     assert results == []
     assert stats["breakouts"] == 1
-    assert stats["large_5m_fvgs"] == 1
+    assert stats["large_fvgs"] == 1
     assert stats["fills"] == 0
 
 
@@ -287,6 +287,7 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
     assert trade["previous_day_low"] == 95.0
     assert trade["anchor_gap_low"] == pytest.approx(105.3)
     assert trade["anchor_gap_high"] == pytest.approx(109.1)
+    assert trade["anchor_timeframe_minutes"] == 5
     # entry_time should exactly match one of the candle labels, so the
     # chart can find that candle and place a marker there.
     assert any(c["t"] == trade["entry_time"] for c in trade["candles"])

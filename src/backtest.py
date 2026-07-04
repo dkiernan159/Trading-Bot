@@ -151,6 +151,7 @@ def run_backtest(
                 "box_low": strategy.box.low,
                 "anchor_gap_low": signal.anchor_fvg.gap_low,
                 "anchor_gap_high": signal.anchor_fvg.gap_high,
+                "anchor_timeframe_minutes": signal.anchor_fvg.timeframe_minutes,
             }
 
     if stats_out is not None:
@@ -210,7 +211,7 @@ def print_funnel(stats: dict) -> None:
     print("\nFunnel (how many setups made it past each gate):")
     print(f"  Breakouts (box broken, direction set):                {stats.get('breakouts', 0)}")
     print(f"  ...of those, breakout thesis later invalidated:         {stats.get('breakouts_invalidated', 0)}")
-    print(f"  ...of those, a large 5m FVG anchored the move:         {stats.get('large_5m_fvgs', 0)}")
+    print(f"  ...of those, a large 5m or 1m FVG anchored the move:    {stats.get('large_fvgs', 0)}")
     print(f"  ...of those, price retraced to fill the limit:          {stats.get('fills', 0)}")
 
 
@@ -265,7 +266,10 @@ def print_trade_detail(results: list[dict]) -> None:
         print(f"    Asia session: high={_fmt(t['asia_high'])}  low={_fmt(t['asia_low'])}")
         print(f"    London session: high={_fmt(t['london_high'])}  low={_fmt(t['london_low'])}")
         print(f"    9:30-9:45 box: high={_fmt(t['box_high'])}  low={_fmt(t['box_low'])}")
-        print(f"    5m anchor FVG: {_fmt(t['anchor_gap_low'])} - {_fmt(t['anchor_gap_high'])}")
+        print(
+            f"    {t['anchor_timeframe_minutes']}m anchor FVG: "
+            f"{_fmt(t['anchor_gap_low'])} - {_fmt(t['anchor_gap_high'])}"
+        )
         print(
             f"    Entry={_fmt(t['entry_price'])}  Stop={_fmt(t['stop_price'])}  Target={_fmt(t['target_price'])}"
         )
@@ -309,6 +313,7 @@ def _build_chart_payload(cfg: BotConfig, results: list[dict], all_bars: list[Bar
                 "box_low": t["box_low"],
                 "anchor_gap_low": t["anchor_gap_low"],
                 "anchor_gap_high": t["anchor_gap_high"],
+                "anchor_timeframe_minutes": t["anchor_timeframe_minutes"],
                 "previous_day_high": t["previous_day_high"],
                 "previous_day_low": t["previous_day_low"],
                 "previous_day_high_zone": t["previous_day_high_zone"],

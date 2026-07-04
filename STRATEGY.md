@@ -31,26 +31,33 @@ review these and adjust `config.yaml` before running live.
    where the breakout actually happened. Fixed by resetting to
    `WAIT_BREAKOUT` the moment price closes back through the box's opposite
    edge while an anchor/entry is still pending.)
-4. After the breakout, the bot watches for a **large 5-minute FVG** in the
-   breakout direction to **anchor** the move -- this is the confirmation
-   that a real move is underway. It doesn't need to form right after the
-   breakout; any currently-unmitigated 5m FVG in the breakout direction,
-   from anywhere in the session, qualifies. Whichever one is nearest to
-   current price is picked, breaking ties by the larger gap -- and this
-   selection is kept **live**: while waiting for price to retrace to it
-   (rule 5), the bot keeps checking for a nearer/fresher unmitigated 5m
-   FVG and switches to it (moving the resting limit order with it) if one
-   appears, so it's never stuck all session on the very first anchor it
-   happened to find. This is **not** the same as "wait for it to be
-   mitigated" -- the anchor is never invalidated or abandoned just
-   because price trades through it; reaching its far edge and filling the
-   entry are actually the same event (see rule 5), so there's no separate
-   "abandoned because mitigated" outcome to have.
-5. Entry is a **limit order at a retracement point inside that anchor 5m
+4. After the breakout, the bot watches for a **large FVG** in the breakout
+   direction to **anchor** the move -- this is the confirmation that a
+   real move is underway. As of 2026-07-04, this can be **either** a
+   large 5-minute FVG **or** a 1-minute FVG (`config.yaml:
+   strategy.entry_fvg`) -- whichever qualifies, pooled together, not one
+   nested inside the other (see "How ambiguous points were resolved"
+   below for why this was added and how it differs from an earlier,
+   removed nested design). It doesn't need to form right after the
+   breakout; any currently-unmitigated FVG (of either timeframe) in the
+   breakout direction, from anywhere in the session, qualifies. Whichever
+   one is nearest to current price is picked, breaking ties by the larger
+   gap -- and this selection is kept **live**: while waiting for price to
+   retrace to it (rule 5), the bot keeps checking for a nearer/fresher
+   unmitigated FVG (of either timeframe) and switches to it (moving the
+   resting limit order with it) if one appears, so it's never stuck all
+   session on the very first anchor it happened to find. This is **not**
+   the same as "wait for it to be mitigated" -- the anchor is never
+   invalidated or abandoned just because price trades through it;
+   reaching its far edge and filling the entry are actually the same
+   event (see rule 5), so there's no separate "abandoned because
+   mitigated" outcome to have.
+5. Entry is a **limit order at a retracement point inside that anchor
    FVG's own gap** (`entry_retracement_pct` of the way in from the near
-   edge -- `0.5` is the exact midpoint, `(gap_low + gap_high) / 2`;
-   `config.yaml` currently loosens this below 0.5 for more fills, see
-   revision history), not a market order at whatever price the
+   edge -- `0.5` is the exact midpoint, `(gap_low + gap_high) / 2`, and
+   is what `config.yaml` currently uses, see revision history for a
+   loosening attempt that was tried and reverted), not a market order at
+   whatever price the
    confirming candle closed at, and not a further nested structure
    inside the anchor. The trade only starts once price actually trades
    back to that point, **no matter how much later in the session that
@@ -164,7 +171,29 @@ review these and adjust `config.yaml` before running live.
    noise: setups that only qualify once a rule is loosened tend to be
    lower quality by exactly the measure that rule was checking. Kept the
    mechanism (it's a legitimate, structure-scaled lever) but reset the
-   value to the original midpoint until real data supports moving it.)
+   value to the original midpoint until real data supports moving it.
+
+   Added a second, 1-minute-timeframe anchor detector 2026-07-04 (rule 4)
+   at the user's explicit request and specification: they can find at
+   least 1 real trade per trading day manually after the ORB breakout,
+   but a real 7-day backtest was only finding 2, and the funnel showed
+   plenty of 5m anchors forming (23) versus few retracing all the way
+   back to fill (3) -- i.e. anchors weren't the scarce resource, fills
+   were. The user's diagnosis: the bot is "missing formations of 5 minute
+   FVGs" and should also accept a 1-minute FVG once the ORB breakout
+   confluence is satisfied. This is a different design from the nested
+   "small FVG inside the big one" stage removed earlier in rule 5's own
+   history (which required *both* a large 5m FVG *and* a smaller one
+   nested inside it, in sequence, and was removed for being the tightest
+   bottleneck at every timeframe tried) -- here, the 1m and 5m detectors
+   are independent, pooled alternatives; either one qualifying is
+   sufficient on its own, matching the user's "either... or" framing
+   exactly. Untested against real data as of this writing: every
+   loosening tried so far in this project (wider stop search, shallower
+   retracement) recovered trades that were pure losers, and 1-minute-scale
+   gaps are noisier than 5-minute ones by nature, so this may follow the
+   same pattern -- watch win rate at least as closely as trade count once
+   real backtests are run.)
 6. Reward:risk is 2:1.
 7. Stop-loss is placed intelligently at a real structural level -- the
    nearest marked previous-day/Asia/London high-low or opening-range box
@@ -339,34 +368,41 @@ review these and adjust `config.yaml` before running live.
   and keeps a running pool of every gap detected, dropping ones the
   moment they're mitigated (checked against every incoming 1-minute bar,
   not just at each candle close, so mitigation is caught as soon as it
-  actually happens). The strategy runs a single instance of this
-  detector, `fvg_detector_5m` (`config.yaml: strategy.fvg`,
-  `timeframe_minutes: 5`), which finds the large anchor FVG that both
-  confirms the move and supplies the entry price (a retracement point
-  inside its own gap -- see rule 5). Its thresholds were loosened
-  2026-07-04 (`min_gap_points`
+  actually happens). The strategy runs **two** instances of this
+  detector as of 2026-07-04: `fvg_detector_5m` (`config.yaml:
+  strategy.fvg`, `timeframe_minutes: 5`) and `fvg_detector_1m`
+  (`config.yaml: strategy.entry_fvg`, `timeframe_minutes: 1`) -- either
+  one finding a large anchor FVG both confirms the move and supplies the
+  entry price (a retracement point inside its own gap -- see rule 5),
+  pooled together as alternatives (see rule 4's revision history for
+  why). `fvg`'s thresholds were loosened 2026-07-04 (`min_gap_points`
   3.0->2.5->2.0, `displacement_multiplier` 1.5->1.3->1.1) while it still
   ran on 15-minute candles and a real week of history kept producing too
   few anchors, then again after the nested-entry stage was removed (see
-  below) still only produced ~3 trades in a real 7-day backtest -- with
-  the nested stage gone, this is the *only* remaining gate between a
-  breakout and a trade, so it's the only lever left for chasing the goal
-  of ~1 trade/day. Switched from 15-minute to 5-minute candles
-  2026-07-04 (see rule 5's revision history for why) with
+  below) still only produced ~3 trades in a real 7-day backtest -- before
+  `entry_fvg` was reintroduced, this had been the *only* remaining gate
+  between a breakout and a trade. Switched from 15-minute to 5-minute
+  candles 2026-07-04 (see rule 5's revision history for why) with
   `min_gap_points` retuned to 1.5 for the new timeframe; check `git log`
   / this file's revision history for the current values if config.yaml
   has moved past what's written here.
 
-  (Revision history: a second detector instance, `fvg_detector_5m`
-  (`config.yaml: strategy.entry_fvg`, previously `fvg_detector_1m` --
-  note this reused the same variable name that the sole remaining
-  detector was later renamed to, after the two were merged into one),
-  used to run alongside the 15m anchor detector to find a smaller FVG
-  nested inside it as the actual entry trigger -- see rule 5's revision
-  history for why that stage was removed entirely 2026-07-04. Its
-  config section, `min_gap_points`/`displacement_multiplier` tuning
-  history, and the `entry_fvg` field on `StrategyConfig` were removed at
-  the same time.)
+  (Revision history: a second detector instance -- also called
+  `fvg_detector_1m` at the time, and using the same `entry_fvg` config
+  key reused today -- used to run alongside the 15m anchor detector to
+  find a smaller FVG *nested inside it* as the actual entry trigger,
+  requiring both to exist in sequence; removed entirely 2026-07-04 (see
+  rule 5's revision history) for being the tightest bottleneck at every
+  timeframe tried. Reintroduced 2026-07-04, same config key and detector
+  name, but as a genuinely different design: an independent, alternative
+  anchor source pooled alongside `fvg_detector_5m`'s candidates rather
+  than nested inside them -- either one qualifying is enough on its own.
+  Added at the user's explicit request after a real 7-day backtest found
+  only 2 trades against their >=1/trading-day requirement, with the
+  funnel showing anchors weren't the scarce resource (23 5m ones formed)
+  but fills were (3). `min_gap_points: 0.5` / `displacement_multiplier:
+  1.0` / `lookback_bars: 8` are fresh ASSUMPTIONS for the 1-minute
+  timeframe, untested against real data as of this writing.)
 - **Daily reset of the active-gap pool** (`src/fvg.py:
   FvgDetector.clear_active_gaps`, called from `strategy.py:
   _start_new_day`): a gap that simply never gets revisited stays
