@@ -178,8 +178,15 @@ review these and adjust `config.yaml` before running live.
   `timeframe_minutes: 15`), which finds the large anchor FVG that both
   confirms the move and supplies the entry price (its own midpoint --
   see rule 5). Its thresholds were loosened 2026-07-04 (`min_gap_points`
-  3.0->2.5, `displacement_multiplier` 1.5->1.3) after a real week of
-  history kept producing too few anchors.
+  3.0->2.5->2.0, `displacement_multiplier` 1.5->1.3->1.1) after a real
+  week of history kept producing too few anchors, then again after the
+  nested-entry stage was removed (see below) still only produced ~3
+  trades in a real 7-day backtest -- with the nested stage gone, this is
+  the *only* remaining gate between a breakout and a trade, so it's the
+  only lever left for chasing the goal of ~1 trade/day. Loosened one
+  step further each time a real backtest confirmed the previous step
+  wasn't enough yet; check `git log` / this file's revision history for
+  the current values if config.yaml has moved past what's written here.
 
   (Revision history: a second detector instance, `fvg_detector_5m`
   (`config.yaml: strategy.entry_fvg`, previously `fvg_detector_1m`),

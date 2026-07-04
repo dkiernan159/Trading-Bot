@@ -27,19 +27,24 @@ strategy:
                            # Converted to points at signal time (max_stop_dollars / point_value / contract_size),
                            # so it stays a $200 cap even as contract_size is manually scaled up. The actual stop
                            # is placed at whichever marked structural level (previous day/Asia/London high-low,
-                           # box edge, or the 15m anchor FVG's far boundary) is nearest beyond entry -- this cap
-                           # only kicks in if that nearest level is farther away than $200 allows.
+                           # or box edge) is nearest beyond entry -- this cap only kicks in if that nearest level
+                           # is farther away than $200 allows, or if no such level exists beyond entry at all.
   fvg:                            # the 15m FVG: confirms direction/anchors the move -- its own midpoint is
                                    # also the entry price (see rule 5 in STRATEGY.md; removed 2026-07-04 the
                                    # separate nested-entry-timeframe stage that used to sit inside this gap --
                                    # a real 30-day backtest showed it was by far the tightest bottleneck in the
                                    # funnel regardless of whether it looked at 1m or 5m gaps for that stage,
-                                   # so the anchor's own midpoint is now traded directly instead)
+                                   # so the anchor's own midpoint is now traded directly instead). This is the
+                                   # only remaining gate between a breakout and a trade, so it's also the only
+                                   # remaining lever for trade frequency -- see the revision history below for
+                                   # the ongoing push toward ~1 trade/day.
     timeframe_minutes: 15
-    min_gap_points: 2.5           # ASSUMPTION: minimum 15m FVG size to count as a valid gap (loosened 2026-07-04
-                                   # from 3.0 -- too few anchors were forming; see STRATEGY.md)
-    displacement_multiplier: 1.3  # ASSUMPTION: "strong" = displacement candle body >= 1.3x recent avg range
-                                   # (loosened 2026-07-04 from 1.5)
+    min_gap_points: 2.0           # ASSUMPTION: minimum 15m FVG size to count as a valid gap (loosened 2026-07-04
+                                   # from 2.5, then this step from 2.5 to 2.0 -- targeting ~1 trade/day per a
+                                   # real 7-day backtest that found only 3; see STRATEGY.md)
+    displacement_multiplier: 1.1  # ASSUMPTION: "strong" = displacement candle body >= 1.1x recent avg range
+                                   # (loosened 2026-07-04 from 1.5, then 1.3, then this step to 1.1, same
+                                   # ~1-trade/day goal)
     lookback_bars: 8              # 15m candles used for the recent average range baseline (~2 hours)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
