@@ -57,11 +57,10 @@ def test_zone_spans_multiple_bars_within_the_same_15m_bucket():
     assert result.previous_day_high_zone == (99.5, 104.0)
 
 
-def test_all_zones_omits_missing_sessions():
+def test_levels_and_zones_are_none_when_no_bars_fed():
     levels = SessionLevels(make_cfg())
     result = levels.levels_for(datetime(2026, 7, 6).date())  # no bars fed at all
 
     assert result.previous_day_high is None
     assert result.previous_day_high_zone is None
-    assert result.all_zones() == []
     assert result.all_levels() == []

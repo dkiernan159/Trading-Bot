@@ -22,13 +22,13 @@ def load_test_config():
     return load_config(Path(__file__).resolve().parents[1] / "config.yaml")
 
 
-def breakout_key_level_fvg_bars() -> list[Bar]:
-    """Same setup used in test_strategy.py: previous-day high of 105 (set by
-    a 15m candle spanning 100-105) and low of 95 (spanning 95-101), box
-    9:30-9:45 (high=101/low=99.5), breakout above the box, a strong bullish
-    FVG (gap 101.5-104.0) that overlaps the previous-day-high zone without
-    containing the exact tick (105), and a retrace bar that fills the
-    resulting limit order at the FVG midpoint (102.75)."""
+def breakout_retest_fvg_bars() -> list[Bar]:
+    """Same setup used in test_strategy.py: previous-day high of 105 and low
+    of 95, box 9:30-9:45 (high=101/low=99.5), breakout above the box, a
+    retest of the previous-day high (105) at bar 17, then a strong bullish
+    FVG (gap 105.4-107.0) that forms well away from that level -- it no
+    longer needs to overlap it, just follow the retest -- and a retrace
+    bar that fills the resulting limit order at the FVG midpoint (106.2)."""
     bars = [
         Bar(timestamp=PREV_DAY_BASE, open=100.0, high=101.0, low=99.0, close=100.0),
         Bar(timestamp=PREV_DAY_BASE + timedelta(minutes=15), open=100.0, high=105.0, low=100.0, close=104.0),
@@ -38,36 +38,37 @@ def breakout_key_level_fvg_bars() -> list[Bar]:
         bars.append(bar(i, 100.0, 101.0, 99.5, 100.5))
     bars.append(bar(15, 100.5, 101.2, 100.0, 100.8))
     bars.append(bar(16, 100.8, 103.0, 100.7, 102.5))
-    for i in range(17, 37):
-        bars.append(bar(i, 103.0, 103.5, 102.5, 103.0))
-    bars.append(bar(37, 101.2, 101.5, 101.0, 101.4))
-    bars.append(bar(38, 101.4, 105.2, 101.3, 105.0))
-    bars.append(bar(39, 105.0, 105.3, 104.0, 105.1))
-    bars.append(bar(40, 105.1, 105.5, 102.5, 103.0))  # fills the 102.75 limit
+    bars.append(bar(17, 102.5, 105.5, 102.3, 105.0))  # retest of previous-day high (105)
+    for i in range(18, 38):
+        bars.append(bar(i, 105.0, 105.5, 104.5, 105.0))
+    bars.append(bar(38, 105.0, 105.4, 104.7, 105.1))  # c0
+    bars.append(bar(39, 105.1, 108.2, 105.0, 108.0))  # c1: displacement
+    bars.append(bar(40, 108.0, 108.5, 107.0, 108.3))  # c2: confirms gap 105.4-107.0
+    bars.append(bar(41, 108.3, 108.5, 105.8, 106.5))  # fills the 106.2 limit
     return bars
 
 
 def test_backtest_records_a_win():
     cfg = load_test_config()
-    bars = breakout_key_level_fvg_bars()
-    # Runs up to the target (106.25) without dipping to the stop (101.0) first.
-    bars.append(bar(41, 103.0, 107.0, 102.8, 106.5))
+    bars = breakout_retest_fvg_bars()
+    # Runs up to the target (108.6) without dipping to the stop (105.0) first.
+    bars.append(bar(42, 106.5, 109.0, 106.3, 108.8))
 
     results = run_backtest(cfg, bars)
 
     assert len(results) == 1
     assert results[0]["won"] is True
     assert results[0]["date"] == DAY.date()
-    assert results[0]["entry_price"] == 102.75
-    assert results[0]["stop_price"] == 101.0
-    assert results[0]["target_price"] == pytest.approx(106.25)
+    assert results[0]["entry_price"] == 106.2
+    assert results[0]["stop_price"] == 105.0
+    assert results[0]["target_price"] == pytest.approx(108.6)
 
 
 def test_backtest_records_a_loss():
     cfg = load_test_config()
-    bars = breakout_key_level_fvg_bars()
-    # Drops to the stop (101.0) without reaching the target (106.25) first.
-    bars.append(bar(41, 103.0, 103.2, 100.5, 101.0))
+    bars = breakout_retest_fvg_bars()
+    # Drops to the stop (105.0) without reaching the target (108.6) first.
+    bars.append(bar(42, 106.5, 106.7, 104.5, 105.0))
 
     results = run_backtest(cfg, bars)
 
@@ -86,24 +87,24 @@ def test_backtest_reports_no_trades_when_nothing_triggers():
 
 def test_funnel_stats_track_each_gate():
     cfg = load_test_config()
-    bars = breakout_key_level_fvg_bars()
-    bars.append(bar(41, 103.0, 107.0, 102.8, 106.5))
+    bars = breakout_retest_fvg_bars()
+    bars.append(bar(42, 106.5, 109.0, 106.3, 108.8))
 
     stats: dict = {}
     run_backtest(cfg, bars, stats_out=stats)
 
     assert stats == {
         "breakouts": 1,
-        "strong_fvgs_in_direction": 1,
-        "fvgs_at_key_level": 1,
+        "key_level_retests": 1,
+        "strong_fvgs_after_retest": 1,
         "fills": 1,
     }
 
 
-def test_funnel_stats_show_fvg_found_but_no_key_level_match():
-    """A breakout with a strong, correctly-directed FVG that never overlaps
-    a key level should show up as a near-miss: breakout + FVG counted, but
-    zero at fvgs_at_key_level and zero fills."""
+def test_funnel_stats_show_retest_but_no_fvg_afterward():
+    """A breakout that retests a key level but never gets a qualifying FVG
+    afterward should show up as a near-miss: breakout + retest counted,
+    zero strong_fvgs_after_retest, zero fills."""
     cfg = load_test_config()
     bars = [
         Bar(timestamp=PREV_DAY_BASE, open=100.0, high=101.0, low=99.0, close=100.0),
@@ -114,19 +115,17 @@ def test_funnel_stats_show_fvg_found_but_no_key_level_match():
         bars.append(bar(i, 100.0, 101.0, 99.5, 100.5))
     bars.append(bar(15, 100.5, 101.2, 100.0, 100.8))
     bars.append(bar(16, 100.8, 103.0, 100.7, 102.5))
-    for i in range(17, 37):
-        bars.append(bar(i, 103.0, 103.5, 102.5, 103.0))
-    bars.append(bar(37, 109.5, 110.0, 109.3, 109.8))
-    bars.append(bar(38, 109.8, 114.2, 109.7, 114.0))
-    bars.append(bar(39, 114.0, 114.5, 113.0, 114.2))
+    bars.append(bar(17, 102.5, 105.5, 102.3, 105.0))  # retest
+    for i in range(18, 41):
+        bars.append(bar(i, 105.0, 105.5, 104.5, 105.0))  # flat, no FVG ever forms
 
     stats: dict = {}
     results = run_backtest(cfg, bars, stats_out=stats)
 
     assert results == []
     assert stats["breakouts"] == 1
-    assert stats["strong_fvgs_in_direction"] == 1
-    assert stats["fvgs_at_key_level"] == 0
+    assert stats["key_level_retests"] == 1
+    assert stats["strong_fvgs_after_retest"] == 0
     assert stats["fills"] == 0
 
 
@@ -152,8 +151,8 @@ def test_pnl_points_is_positive_for_a_short_win():
 
 def test_export_chart_json_writes_candles_and_levels(tmp_path):
     cfg = load_test_config()
-    bars = breakout_key_level_fvg_bars()
-    bars.append(bar(41, 103.0, 107.0, 102.8, 106.5))
+    bars = breakout_retest_fvg_bars()
+    bars.append(bar(42, 106.5, 109.0, 106.3, 108.8))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.json"
@@ -177,8 +176,8 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
 
 def test_export_chart_html_embeds_trade_data(tmp_path):
     cfg = load_test_config()
-    bars = breakout_key_level_fvg_bars()
-    bars.append(bar(41, 103.0, 107.0, 102.8, 106.5))
+    bars = breakout_retest_fvg_bars()
+    bars.append(bar(42, 106.5, 109.0, 106.3, 108.8))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.html"

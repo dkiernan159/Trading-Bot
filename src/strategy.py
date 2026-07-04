@@ -13,13 +13,13 @@ from src.session_levels import SessionLevels, SessionLevelSet
 
 
 class State(Enum):
-    MARKING_LEVELS = auto()      # pre-9:30: marking previous day / Asia / London levels
-    BUILDING_BOX = auto()        # 9:30-9:45: accumulating the opening range candle
-    WAIT_BREAKOUT = auto()       # waiting for a close beyond the box high/low
-    WAIT_KEY_LEVEL_FVG = auto()  # waiting for a strong FVG, in the breakout direction, whose
-                                  # gap contains a previous-day/Asia/London key level
-    WAIT_FILL = auto()           # a valid FVG was found; limit order resting at its midpoint
-    IN_TRADE = auto()            # limit order filled, waiting on the runner/broker to close it
+    MARKING_LEVELS = auto()         # pre-9:30: marking previous day / Asia / London levels
+    BUILDING_BOX = auto()           # 9:30-9:45: accumulating the opening range candle
+    WAIT_BREAKOUT = auto()          # waiting for a close beyond the box high/low
+    WAIT_KEY_LEVEL_RETEST = auto()  # waiting for price to touch any marked previous-day/Asia/London level
+    WAIT_FVG = auto()               # key level retested; waiting for a strong FVG in the breakout direction
+    WAIT_FILL = auto()              # a valid FVG was found; limit order resting at its midpoint
+    IN_TRADE = auto()               # limit order filled, waiting on the runner/broker to close it
     DONE_FOR_DAY = auto()
 
 
@@ -37,10 +37,11 @@ class OpeningRangeStrategy:
     level retest + 1m FVG strategy described in STRATEGY.md.
 
     Sequence: mark previous-day/Asia/London levels -> form the 9:30-9:45 box
-    -> a close beyond the box sets the breakout direction -> wait for a
-    strong FVG (in that direction) whose gap actually contains one of the
-    marked key levels -> rest a limit order at the FVG's midpoint -> enter
-    only once price actually trades back to that midpoint.
+    -> a close beyond the box sets the breakout direction -> wait for price
+    to touch (retest) any marked key level -> once that's happened, the next
+    strong FVG in the breakout direction (regardless of where it forms)
+    rests a limit order at its midpoint -> enter only once price actually
+    trades back to that midpoint.
     """
 
     def __init__(self, cfg: BotConfig):
@@ -62,8 +63,8 @@ class OpeningRangeStrategy:
         # happened" when a backtest window produces zero trades.
         self.stats = {
             "breakouts": 0,
-            "strong_fvgs_in_direction": 0,
-            "fvgs_at_key_level": 0,
+            "key_level_retests": 0,
+            "strong_fvgs_after_retest": 0,
             "fills": 0,
         }
 
@@ -106,22 +107,26 @@ class OpeningRangeStrategy:
         if self.state is State.WAIT_BREAKOUT:
             if self.box.high is not None and bar.close > self.box.high:
                 self._breakout_direction = Direction.LONG
-                self.state = State.WAIT_KEY_LEVEL_FVG
+                self.state = State.WAIT_KEY_LEVEL_RETEST
                 self.stats["breakouts"] += 1
             elif self.box.low is not None and bar.close < self.box.low:
                 self._breakout_direction = Direction.SHORT
-                self.state = State.WAIT_KEY_LEVEL_FVG
+                self.state = State.WAIT_KEY_LEVEL_RETEST
                 self.stats["breakouts"] += 1
             return None
 
-        if self.state is State.WAIT_KEY_LEVEL_FVG:
+        if self.state is State.WAIT_KEY_LEVEL_RETEST:
+            if self._touches_any_key_level(bar):
+                self.stats["key_level_retests"] += 1
+                self.state = State.WAIT_FVG
+            return None
+
+        if self.state is State.WAIT_FVG:
             if fvg is not None and fvg.direction is self._breakout_direction:
-                self.stats["strong_fvgs_in_direction"] += 1
-                if self._fvg_contains_key_level(fvg):
-                    self.stats["fvgs_at_key_level"] += 1
-                    self._pending_fvg = fvg
-                    self._pending_limit_price = (fvg.gap_low + fvg.gap_high) / 2
-                    self.state = State.WAIT_FILL
+                self.stats["strong_fvgs_after_retest"] += 1
+                self._pending_fvg = fvg
+                self._pending_limit_price = (fvg.gap_low + fvg.gap_high) / 2
+                self.state = State.WAIT_FILL
             return None
 
         if self.state is State.WAIT_FILL:
@@ -153,18 +158,14 @@ class OpeningRangeStrategy:
 
         return None
 
-    def _fvg_contains_key_level(self, fvg: FairValueGap) -> bool:
-        """True if the FVG's gap overlaps the zone around any marked
-        previous-day/Asia/London level -- the "at a key level" requirement.
-        A key level's zone is the low/high range of the 15-minute candle
-        that set that extreme, not a single exact tick, so the FVG only
-        needs to be in that resistance/support area, not pinpoint it."""
+    def _touches_any_key_level(self, bar: Bar) -> bool:
+        """True if this bar's range traded through any marked previous-day/
+        Asia/London level -- the "retest" requirement, checked against the
+        exact level price (same as the original box-retest logic), not a
+        zone -- the zone concept only applied to the old FVG-overlap rule."""
         if self._levels is None:
             return False
-        return any(
-            fvg.gap_low <= zone_high and zone_low <= fvg.gap_high
-            for zone_low, zone_high in self._levels.all_zones()
-        )
+        return any(bar.low <= level <= bar.high for level in self._levels.all_levels())
 
     def notify_trade_closed(self, won: bool) -> None:
         """Runner calls this once the broker confirms the open trade hit its

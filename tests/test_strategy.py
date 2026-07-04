@@ -21,10 +21,7 @@ def load_test_config():
 
 
 def feed_previous_day_levels(strategy: OpeningRangeStrategy):
-    """Marks a previous-day high of 105 (set by a 15m candle spanning
-    100-105) and a previous-day low of 95 (set by a 15m candle spanning
-    95-101) -- each in its own 15-minute bucket, so the "zone" around each
-    extreme is narrow rather than spanning the whole day."""
+    """Marks a previous-day high of 105 and low of 95."""
     strategy.on_bar(Bar(timestamp=PREV_DAY_BASE, open=100.0, high=101.0, low=99.0, close=100.0))
     strategy.on_bar(
         Bar(timestamp=PREV_DAY_BASE + timedelta(minutes=15), open=100.0, high=105.0, low=100.0, close=104.0)
@@ -43,59 +40,70 @@ def feed_box_and_breakout(strategy: OpeningRangeStrategy):
     assert strategy.state is State.WAIT_BREAKOUT
     signal = strategy.on_bar(bar(16, 100.8, 103.0, 100.7, 102.5))
     assert signal is None
-    assert strategy.state is State.WAIT_KEY_LEVEL_FVG
+    assert strategy.state is State.WAIT_KEY_LEVEL_RETEST
 
 
-def feed_quiet_baseline(strategy: OpeningRangeStrategy):
-    for i in range(17, 37):
-        signal = strategy.on_bar(bar(i, 103.0, 103.5, 102.5, 103.0))
+def feed_quiet_baseline(strategy: OpeningRangeStrategy, start: int, end: int, o: float, h: float, l: float, c: float):
+    for i in range(start, end):
+        signal = strategy.on_bar(bar(i, o, h, l, c))
         assert signal is None
 
 
-def test_full_breakout_key_level_fvg_fill_sequence():
-    """The FVG (101.5-104.0) overlaps the previous-day-high zone (100-105)
-    without containing the exact tick (105) -- confirming the "around that
-    resistance area" rule, not exact containment."""
+def test_full_breakout_retest_then_fvg_fill_sequence():
+    """Price retests the previous-day high (105) after breakout, THEN a
+    strong FVG forms well away from that level (105.4-107.0, nowhere near
+    95 or 105) -- and still triggers, because the FVG no longer needs to
+    overlap the level, only follow a retest of one."""
     cfg = load_test_config()
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
-    feed_quiet_baseline(strategy)
 
-    signal = strategy.on_bar(bar(37, 101.2, 101.5, 101.0, 101.4))  # c0
+    # bar 17: retest -- range 102.3-105.5 touches the previous-day high (105)
+    signal = strategy.on_bar(bar(17, 102.5, 105.5, 102.3, 105.0))
     assert signal is None
-    signal = strategy.on_bar(bar(38, 101.4, 105.2, 101.3, 105.0))  # c1: displacement
+    assert strategy.state is State.WAIT_FVG
+
+    feed_quiet_baseline(strategy, 18, 38, 105.0, 105.5, 104.5, 105.0)
+
+    signal = strategy.on_bar(bar(38, 105.0, 105.4, 104.7, 105.1))  # c0
     assert signal is None
-    signal = strategy.on_bar(bar(39, 105.0, 105.3, 104.0, 105.1))  # c2: confirms gap 101.5-104.0
+    signal = strategy.on_bar(bar(39, 105.1, 108.2, 105.0, 108.0))  # c1: displacement
+    assert signal is None
+    signal = strategy.on_bar(bar(40, 108.0, 108.5, 107.0, 108.3))  # c2: confirms gap 105.4-107.0
     assert signal is None
     assert strategy.state is State.WAIT_FILL
 
-    signal = strategy.on_bar(bar(40, 105.1, 105.5, 102.5, 103.0))  # retrace fills the 102.75 midpoint
+    signal = strategy.on_bar(bar(41, 108.3, 108.5, 105.8, 106.5))  # retrace fills the 106.2 midpoint
 
     assert signal is not None
     assert signal.direction is Direction.LONG
-    assert signal.entry_price == 102.75  # midpoint of 101.5-104.0
+    assert signal.entry_price == 106.2  # midpoint of 105.4-107.0
     assert strategy.state is State.IN_TRADE
 
 
-def test_does_not_enter_on_fvg_without_a_key_level():
-    """A strong, correctly-directed FVG whose gap (110-113) doesn't overlap
-    either marked zone (100-105 or 95-101) must not trigger an entry."""
+def test_does_not_enter_on_fvg_before_any_retest():
+    """A strong, correctly-directed FVG that forms before price ever
+    touches a marked key level must not trigger -- the retest has to
+    happen first. Uses a price range (62-67.5) that never crosses either
+    marked level (95 or 105), so the displacement candle's own wide range
+    can't accidentally satisfy the retest."""
     cfg = load_test_config()
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
-    feed_quiet_baseline(strategy)
 
-    strategy.on_bar(bar(37, 109.5, 110.0, 109.3, 109.8))  # c0
-    signal = strategy.on_bar(bar(38, 109.8, 114.2, 109.7, 114.0))  # c1: displacement
+    feed_quiet_baseline(strategy, 17, 37, 63.0, 63.5, 62.5, 63.0)
+
+    strategy.on_bar(bar(37, 63.0, 63.6, 62.7, 63.3))  # c0
+    signal = strategy.on_bar(bar(38, 63.3, 67.2, 63.2, 67.0))  # c1: displacement
     assert signal is None
-    signal = strategy.on_bar(bar(39, 114.0, 114.5, 113.0, 114.2))  # c2: confirms gap 110-113
+    signal = strategy.on_bar(bar(39, 67.0, 67.5, 66.0, 67.3))  # c2: confirms gap 63.6-66.0
 
     assert signal is None
-    assert strategy.state is State.WAIT_KEY_LEVEL_FVG  # never advanced to WAIT_FILL
+    assert strategy.state is State.WAIT_KEY_LEVEL_RETEST  # never advanced to WAIT_FVG
 
 
 def test_reenters_after_stop_out_when_setup_reforms():
@@ -104,20 +112,21 @@ def test_reenters_after_stop_out_when_setup_reforms():
 
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
-    feed_quiet_baseline(strategy)
-    strategy.on_bar(bar(37, 101.2, 101.5, 101.0, 101.4))
-    strategy.on_bar(bar(38, 101.4, 105.2, 101.3, 105.0))
-    strategy.on_bar(bar(39, 105.0, 105.3, 104.0, 105.1))
-    signal = strategy.on_bar(bar(40, 105.1, 105.5, 102.5, 103.0))
+    strategy.on_bar(bar(17, 102.5, 105.5, 102.3, 105.0))
+    feed_quiet_baseline(strategy, 18, 38, 105.0, 105.5, 104.5, 105.0)
+    strategy.on_bar(bar(38, 105.0, 105.4, 104.7, 105.1))
+    strategy.on_bar(bar(39, 105.1, 108.2, 105.0, 108.0))
+    strategy.on_bar(bar(40, 108.0, 108.5, 107.0, 108.3))
+    signal = strategy.on_bar(bar(41, 108.3, 108.5, 105.8, 106.5))
     assert signal is not None
 
     strategy.notify_trade_closed(won=False)
     assert strategy.state is State.WAIT_BREAKOUT
 
     # A new breakout forms below the box low (99.5) -- setup reforms as SHORT.
-    signal = strategy.on_bar(bar(41, 103.0, 103.0, 99.0, 99.0))
+    signal = strategy.on_bar(bar(42, 106.5, 106.5, 99.0, 99.0))
     assert signal is None
-    assert strategy.state is State.WAIT_KEY_LEVEL_FVG
+    assert strategy.state is State.WAIT_KEY_LEVEL_RETEST
 
 
 def test_stands_down_for_day_after_cutoff():

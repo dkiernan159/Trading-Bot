@@ -12,32 +12,38 @@ review these and adjust `config.yaml` before running live.
    closes at 9:45 ET. Mark its high/low as "the box".
 3. Wait for price to break the box high (bullish) or box low (bearish) --
    this sets the trade direction/bias, it is not itself the entry.
-4. After the breakout, the **only** valid entry is: price retests one of the
-   marked key levels (previous day high/low, Asia high/low, or London
-   high/low -- any of them, not just the previous day) **and** a strong
-   1-minute FVG forms whose gap range actually contains that key level, in
-   the breakout direction. A strong FVG elsewhere, or at no key level, does
-   not qualify.
-5. Entry is a **limit order at the midpoint of that FVG's gap**
+4. After the breakout, price must **retest** one of the marked key levels
+   (previous day high/low, Asia high/low, or London high/low -- any of
+   them) -- i.e. trade through that exact price at some point.
+5. Only *after* that retest has happened does the bot start watching for
+   the entry trigger: the next strong 1-minute FVG in the breakout
+   direction. This FVG does **not** need to form at or near the key level
+   that was retested -- the retest and the FVG are two separate,
+   sequential steps, not one combined condition.
+6. Entry is a **limit order at the midpoint of that FVG's gap**
    (`(gap_low + gap_high) / 2`), not a market order at whatever price the
    confirming candle closed at. The trade only starts once price actually
    trades back to that midpoint -- if it never comes back, there's no
    entry that setup.
 
-   (First version of this bot entered at the confirming candle's close
-   instead, which put entries well outside the FVG zone entirely -- caught
-   by inspecting the backtest charts and corrected 2026-07-06.)
-6. Reward:risk is 2:1.
-7. Stop-loss: **either** the 2:1 ratio itself, **or** placed at a large
+   (Revision history: v1 entered at the confirming candle's close, which
+   put entries well outside the FVG zone entirely -- caught by inspecting
+   the backtest charts. v2 required the FVG's gap to overlap the key
+   level's zone, as a single combined condition -- too strict in practice
+   (most setups were being filtered at that step, per the funnel
+   diagnostics), and not actually what was meant. Corrected 2026-07-04 to
+   the current two-step retest-then-FVG design.)
+7. Reward:risk is 2:1.
+8. Stop-loss: **either** the 2:1 ratio itself, **or** placed at a large
    support/resistance level whose break would imply a large move -- but never
    larger than the distance implied by the 2:1 ratio against the reference
    target.
-8. Reference size is 5 MNQ contracts, targeting ~$300/trade. The bot starts
+9. Reference size is 5 MNQ contracts, targeting ~$300/trade. The bot starts
    at a smaller size (`config.yaml: position_sizing.contract_size`) until a
    consistent win rate is shown; scaling back up to 5 is **manual only** --
    the bot never changes its own size.
-9. If stopped out, the bot re-arms and can take another trade if the setup
-   reforms later in the session (new breakout/retest/FVG sequence).
+10. If stopped out, the bot re-arms and can take another trade if the setup
+    reforms later in the session (new breakout/retest/FVG sequence).
 
 ## How ambiguous points were resolved (ASSUMPTIONS)
 
@@ -57,20 +63,16 @@ review these and adjust `config.yaml` before running live.
   chart where (a) the gap size is >= `min_gap_points` and (b) the middle
   (displacement) candle's body is >= `displacement_multiplier` times the
   recent average candle range. Both thresholds are configurable.
-- **"At a key level"** (`src/session_levels.py`, `src/strategy.py:
-  _fvg_contains_key_level`): each key level is a **zone**, not a single
-  exact tick -- the zone is the low/high range of the 15-minute candle that
-  actually set that extreme (previous day/Asia/London high or low). An FVG
-  qualifies if its gap range **overlaps** that zone at all
-  (`gap_low <= zone_high and zone_low <= gap_high`) -- it does not need to
-  contain the precise price. (First version required exact containment of
-  a single tick, which was too strict; corrected 2026-07-06 per
-  clarification that the FVG just needs to be "around that resistance
-  area," and highs/lows should be marked at the 15-minute level.) Any of
-  the 6 marked levels (previous day high/low, Asia high/low, London
-  high/low) qualifies; the opening range box itself is not a "key level"
-  for this check (it's still used for the breakout and as a stop-loss
-  candidate, using the exact price there, not a zone).
+- **"Retest"** (`src/strategy.py: _touches_any_key_level`): a bar's range
+  (low-to-high) trading through the *exact* price of any of the 6 marked
+  levels (previous day high/low, Asia high/low, London high/low) counts as
+  a retest -- same check the box-retest logic always used, just against
+  these levels instead of the box. This is an OR across all 6: any single
+  one being touched is enough, they are not required together. Once any
+  one has been touched, the bot moves on to watching for the FVG -- the
+  FVG does not need to relate to whichever level was actually retested.
+  The opening range box itself is not part of this check (it's used for
+  the breakout and as a stop-loss candidate).
 - **Asia / London session windows** (`config.yaml: session`): set to common
   ICT-style approximations (Asia 19:00-23:59 ET prior evening, London
   02:00-05:00 ET). Adjust to your exact definition.
@@ -136,7 +138,13 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   - Whether `linkedOrderId` makes the gateway auto-cancel the sibling
     bracket leg. Not relied upon either way -- `poll_order_status()`
     explicitly cancels the sibling leg itself once one fills.
-- `src/strategy.py` -- the state machine implementing steps 1-9 above.
+- `src/strategy.py` -- the state machine implementing steps 1-10 above.
+- Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
+  around each level (`previous_day_high_zone`, etc.) -- this is a leftover
+  from the v2 overlap design above and is no longer used by any entry
+  logic. It's kept only because the charts (backtest.py --chart-html and
+  the dashboard) still shade it as a band for visual context, showing
+  which candle actually set the previous day's high/low.
 - `src/risk.py` -- stop/target/size calculation described above.
 - `src/session_levels.py`, `src/opening_range.py`, `src/fvg.py` -- level
   marking, box tracking, and FVG detection respectively.

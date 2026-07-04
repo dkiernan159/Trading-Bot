@@ -49,21 +49,6 @@ class SessionLevelSet:
             if v is not None
         ]
 
-    def all_zones(self) -> list[Zone]:
-        """The 15-minute-candle zones -- used for the FVG-at-key-level check."""
-        return [
-            z
-            for z in (
-                self.previous_day_high_zone,
-                self.previous_day_low_zone,
-                self.asia_high_zone,
-                self.asia_low_zone,
-                self.london_high_zone,
-                self.london_low_zone,
-            )
-            if z is not None
-        ]
-
 
 def _aggregate_to_15m(bars: list[Bar], tz: ZoneInfo) -> list[Bar]:
     """Aggregates 1-minute bars into 15-minute candles on wall-clock
