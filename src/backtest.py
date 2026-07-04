@@ -253,6 +253,7 @@ def _build_chart_payload(cfg: BotConfig, results: list[dict], all_bars: list[Bar
                 "date": str(t["date"]),
                 "direction": t["direction"],
                 "won": t["won"],
+                "entry_time": t["entry_time"].astimezone(tz).strftime("%H:%M"),
                 "entry_price": t["entry_price"],
                 "stop_price": t["stop_price"],
                 "target_price": t["target_price"],

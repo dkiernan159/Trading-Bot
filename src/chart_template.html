@@ -459,6 +459,21 @@ function buildChart(trade, index) {
     svg.appendChild(text);
   });
 
+  // entry marker -- a small dot at exactly which candle/price the limit
+  // order actually filled, since the Entry line alone only shows the
+  // price, not where along it the fill happened.
+  const entryIndex = candles.findIndex(c => c.t === trade.entry_time);
+  if (entryIndex !== -1) {
+    const marker = document.createElementNS(svgNS, "circle");
+    marker.setAttribute("cx", xFor(entryIndex));
+    marker.setAttribute("cy", yFor(trade.entry_price));
+    marker.setAttribute("r", 5);
+    marker.setAttribute("fill", "var(--accent)");
+    marker.setAttribute("stroke", "var(--surface-raised)");
+    marker.setAttribute("stroke-width", "2");
+    svg.appendChild(marker);
+  }
+
   return svg;
 }
 

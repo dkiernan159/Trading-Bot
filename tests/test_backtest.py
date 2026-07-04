@@ -169,6 +169,10 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
     assert trade["box_low"] == 99.5
     assert trade["previous_day_high"] == 105.0
     assert trade["previous_day_low"] == 95.0
+    # entry_time should exactly match one of the candle labels, so the
+    # chart can find that candle and place a marker there.
+    assert trade["entry_time"] == "10:11"
+    assert any(c["t"] == trade["entry_time"] for c in trade["candles"])
     # Candles should span from 9:30 through the exit bar.
     assert trade["candles"][0]["t"] == "09:30"
     assert len(trade["candles"]) > 0
