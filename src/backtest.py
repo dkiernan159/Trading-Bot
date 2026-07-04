@@ -134,6 +134,8 @@ def run_backtest(cfg: BotConfig, bars: list[Bar], stats_out: dict | None = None)
                 "box_low": strategy.box.low,
                 "fvg_gap_low": signal.fvg.gap_low,
                 "fvg_gap_high": signal.fvg.gap_high,
+                "anchor_gap_low": signal.anchor_fvg.gap_low,
+                "anchor_gap_high": signal.anchor_fvg.gap_high,
             }
 
     if stats_out is not None:
@@ -185,15 +187,16 @@ def print_report(cfg: BotConfig, results: list[dict]) -> None:
 def print_funnel(stats: dict) -> None:
     """Shows how many setups made it past each gate, so a zero-trade (or
     low-trade) window can be diagnosed instead of just reported -- e.g.
-    "12 breakouts, 5 key-level approaches, but only 1 strong FVG ever
-    qualified in the way afterward, and it never retraced to fill" tells
-    you exactly which requirement is doing the filtering."""
+    "12 breakouts, 5 large 15m FVGs anchored, but only 1 nested 1m FVG
+    ever formed inside one, and it never retraced to fill" tells you
+    exactly which requirement is doing the filtering."""
     print("\nFunnel (how many setups made it past each gate):")
-    print(f"  Breakouts (box broken, direction set):              {stats.get('breakouts', 0)}")
-    print(f"  ...of those, price approached a marked key level:    {stats.get('key_level_approaches', 0)}")
-    print(f"  ...of those, a strong FVG qualified in the way:      {stats.get('strong_fvgs_after_approach', 0)}")
-    print(f"  ...of those, price retraced to fill the limit:       {stats.get('fills', 0)}")
-    print(f"  (FVGs mitigated/broken before they could fill:        {stats.get('fvgs_mitigated_before_fill', 0)})")
+    print(f"  Breakouts (box broken, direction set):                {stats.get('breakouts', 0)}")
+    print(f"  ...of those, a large 15m FVG anchored the move:        {stats.get('large_15m_fvgs', 0)}")
+    print(f"  ...of those, a 1m FVG formed nested inside it:          {stats.get('nested_1m_fvgs', 0)}")
+    print(f"  ...of those, price retraced to fill the limit:          {stats.get('fills', 0)}")
+    print(f"  (15m anchors mitigated before a nested entry formed:     {stats.get('anchor_15m_fvgs_mitigated_before_entry', 0)})")
+    print(f"  (1m entry FVGs mitigated before they could fill:         {stats.get('entry_1m_fvgs_mitigated_before_fill', 0)})")
 
 
 def print_trade_detail(results: list[dict]) -> None:
@@ -218,7 +221,8 @@ def print_trade_detail(results: list[dict]) -> None:
         print(f"    Asia session: high={_fmt(t['asia_high'])}  low={_fmt(t['asia_low'])}")
         print(f"    London session: high={_fmt(t['london_high'])}  low={_fmt(t['london_low'])}")
         print(f"    9:30-9:45 box: high={_fmt(t['box_high'])}  low={_fmt(t['box_low'])}")
-        print(f"    Confirming 15m FVG: {_fmt(t['fvg_gap_low'])} - {_fmt(t['fvg_gap_high'])}")
+        print(f"    15m anchor FVG: {_fmt(t['anchor_gap_low'])} - {_fmt(t['anchor_gap_high'])}")
+        print(f"    Entry 1m FVG (nested inside anchor): {_fmt(t['fvg_gap_low'])} - {_fmt(t['fvg_gap_high'])}")
         print(
             f"    Entry={_fmt(t['entry_price'])}  Stop={_fmt(t['stop_price'])}  Target={_fmt(t['target_price'])}"
         )
@@ -262,6 +266,8 @@ def _build_chart_payload(cfg: BotConfig, results: list[dict], all_bars: list[Bar
                 "box_low": t["box_low"],
                 "fvg_gap_low": t["fvg_gap_low"],
                 "fvg_gap_high": t["fvg_gap_high"],
+                "anchor_gap_low": t["anchor_gap_low"],
+                "anchor_gap_high": t["anchor_gap_high"],
                 "previous_day_high": t["previous_day_high"],
                 "previous_day_low": t["previous_day_low"],
                 "previous_day_high_zone": t["previous_day_high_zone"],

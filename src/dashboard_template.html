@@ -128,6 +128,7 @@
   .ref-line { stroke-width: 1.4; fill: none; }
   .ref-label { font-family: var(--font-data); font-size: 10.5px; font-weight: 600; }
   .fvg-zone { fill: var(--fvg-fill); stroke: var(--fvg); stroke-width: 1; stroke-dasharray: 2 2; }
+  .anchor-zone { fill: none; stroke: var(--prevday); stroke-width: 1; stroke-dasharray: 5 3; }
 
   .legend { display: flex; flex-wrap: wrap; gap: 14px 20px; padding-top: 2px; }
   .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-secondary); }
@@ -317,7 +318,8 @@ function renderTrade(trade, index) {
     <span class="legend-item"><span class="swatch" style="background:var(--good)"></span>Up candle</span>
     <span class="legend-item"><span class="swatch" style="background:var(--bad)"></span>Down candle</span>
     <span class="legend-item"><span class="swatch" style="background:var(--ink-muted)"></span>9:30&ndash;9:45 box</span>
-    <span class="legend-item"><span class="swatch" style="background:var(--fvg)"></span>Confirming FVG</span>
+    <span class="legend-item"><span class="swatch" style="border:1px dashed var(--prevday)"></span>15m anchor FVG</span>
+    <span class="legend-item"><span class="swatch" style="background:var(--fvg)"></span>Entry 1m FVG</span>
     <span class="legend-item"><span class="swatch" style="background:var(--accent)"></span>Entry</span>
     <span class="legend-item"><span class="swatch" style="background:var(--bad)"></span>Stop</span>
     <span class="legend-item"><span class="swatch" style="background:var(--good)"></span>Target</span>
@@ -330,7 +332,8 @@ function renderTrade(trade, index) {
   const rows = [
     ["Previous day high", trade.previous_day_high], ["Previous day low", trade.previous_day_low],
     ["Box high", trade.box_high], ["Box low", trade.box_low],
-    ["FVG low", trade.fvg_gap_low], ["FVG high", trade.fvg_gap_high],
+    ["15m anchor FVG low", trade.anchor_gap_low], ["15m anchor FVG high", trade.anchor_gap_high],
+    ["Entry 1m FVG low", trade.fvg_gap_low], ["Entry 1m FVG high", trade.fvg_gap_high],
     ["Entry", trade.entry_price], ["Stop", trade.stop_price], ["Target", trade.target_price],
   ];
   levels.innerHTML = rows.map(([label, value]) => `
@@ -349,6 +352,7 @@ function buildChart(trade) {
 
   const candles = trade.candles;
   const refValues = [trade.box_high, trade.box_low, trade.fvg_gap_low, trade.fvg_gap_high,
+                      trade.anchor_gap_low, trade.anchor_gap_high,
                       trade.entry_price, trade.stop_price, trade.target_price,
                       trade.previous_day_high, trade.previous_day_low,
                       ...(trade.previous_day_high_zone || []), ...(trade.previous_day_low_zone || [])]
@@ -398,6 +402,16 @@ function buildChart(trade) {
       svg.appendChild(label);
     }
   });
+
+  const anchorTop = yFor(Math.max(trade.anchor_gap_low, trade.anchor_gap_high));
+  const anchorBottom = yFor(Math.min(trade.anchor_gap_low, trade.anchor_gap_high));
+  const anchorRect = document.createElementNS(svgNS, "rect");
+  anchorRect.setAttribute("class", "anchor-zone");
+  anchorRect.setAttribute("x", marginL);
+  anchorRect.setAttribute("y", anchorTop);
+  anchorRect.setAttribute("width", plotW);
+  anchorRect.setAttribute("height", Math.max(1, anchorBottom - anchorTop));
+  svg.appendChild(anchorRect);
 
   const fvgTop = yFor(Math.max(trade.fvg_gap_low, trade.fvg_gap_high));
   const fvgBottom = yFor(Math.min(trade.fvg_gap_low, trade.fvg_gap_high));

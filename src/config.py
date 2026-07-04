@@ -53,8 +53,8 @@ class StrategyConfig:
     target_dollars_at_reference_size: float
     reference_contracts: int
     max_stop_points: float
-    key_level_approach_points: float
     fvg: FvgConfig
+    entry_fvg: FvgConfig
     reentry: ReentryConfig
 
 
@@ -123,8 +123,8 @@ def load_config(path: str | Path = "config.yaml") -> BotConfig:
         target_dollars_at_reference_size=strat["target_dollars_at_reference_size"],
         reference_contracts=strat["reference_contracts"],
         max_stop_points=strat["max_stop_points"],
-        key_level_approach_points=strat["key_level_approach_points"],
         fvg=FvgConfig(**strat["fvg"]),
+        entry_fvg=FvgConfig(**strat["entry_fvg"]),
         reentry=ReentryConfig(**strat["reentry"]),
     )
 

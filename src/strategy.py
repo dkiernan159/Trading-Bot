@@ -13,13 +13,13 @@ from src.session_levels import SessionLevels, SessionLevelSet
 
 
 class State(Enum):
-    MARKING_LEVELS = auto()          # pre-9:30: marking previous day / Asia / London levels
-    BUILDING_BOX = auto()            # 9:30-9:45: accumulating the opening range candle
-    WAIT_BREAKOUT = auto()           # waiting for a close beyond the box high/low
-    WAIT_KEY_LEVEL_APPROACH = auto()  # waiting for price to come within key_level_approach_points of a level
-    WAIT_FVG = auto()                # level approached; waiting for a strong, unmitigated FVG in the way
-    WAIT_FILL = auto()               # a valid FVG was found; limit order resting at its midpoint
-    IN_TRADE = auto()                # limit order filled, waiting on the runner/broker to close it
+    MARKING_LEVELS = auto()   # pre-9:30: marking previous day / Asia / London levels (used for stop placement)
+    BUILDING_BOX = auto()     # 9:30-9:45: accumulating the opening range candle
+    WAIT_BREAKOUT = auto()    # waiting for a close beyond the box high/low
+    WAIT_15M_FVG = auto()     # breakout direction set; waiting for a large, unmitigated 15m FVG in that direction
+    WAIT_1M_FVG = auto()      # 15m FVG anchored; waiting for a 1m FVG nested inside it
+    WAIT_FILL = auto()        # a valid nested 1m FVG was found; limit order resting at its midpoint
+    IN_TRADE = auto()         # limit order filled, waiting on the runner/broker to close it
     DONE_FOR_DAY = auto()
 
 
@@ -28,24 +28,37 @@ class EntrySignal:
     direction: Direction
     entry_price: float
     fvg: FairValueGap
+    anchor_fvg: FairValueGap
     structural_levels: list[float]
     timestamp: datetime
 
 
-class OpeningRangeStrategy:
-    """State machine implementing the NY-open opening-range breakout + key-
-    level approach + 15m FVG strategy described in STRATEGY.md.
+def _nearest_then_largest(fvgs: list[FairValueGap], current_price: float) -> FairValueGap:
+    """Picks whichever gap's midpoint is nearest to current price, breaking
+    ties by the larger gap."""
+    return max(fvgs, key=lambda f: (-abs((f.gap_low + f.gap_high) / 2 - current_price), f.size))
 
-    Sequence: mark previous-day/Asia/London levels -> form the 9:30-9:45 box
-    -> a close beyond the box sets the breakout direction -> wait for price
-    to come within `key_level_approach_points` of any marked key level (an
-    exact touch still counts, it's just no longer required) -> once that's
-    happened, look among every still-unmitigated 15m FVG in the breakout
-    direction (whenever it formed) for ones sitting between current price
-    and the approached level -- the strongest (biggest gap), nearest one to
-    current price rests a limit order at its midpoint -> enter only once
-    price actually trades back to that midpoint, without first breaking
-    clean through the gap's far side.
+
+def _is_mitigated(fvg: FairValueGap, bar: Bar) -> bool:
+    if fvg.direction is Direction.LONG:
+        return bar.low < fvg.gap_low
+    return bar.high > fvg.gap_high
+
+
+class OpeningRangeStrategy:
+    """State machine implementing the NY-open opening-range breakout + large
+    15m FVG + nested 1m FVG entry strategy described in STRATEGY.md.
+
+    Sequence: mark previous-day/Asia/London levels (kept for stop-loss
+    placement, see risk.py) -> form the 9:30-9:45 box -> a close beyond the
+    box sets the breakout direction -> wait for a large, unmitigated 15m FVG
+    in that direction to anchor the move (whenever it formed) -> once
+    anchored, wait for a 1-minute FVG whose gap is fully nested inside that
+    15m FVG's range -> that nested 1m FVG's midpoint is the entry, kept
+    tight/precise (1m-scale) rather than sized off 15m-candle noise, so the
+    resulting stop isn't blown out by ordinary 15m volatility. Either level
+    getting mitigated before the next step completes abandons it and goes
+    back to looking for a fresh one.
     """
 
     def __init__(self, cfg: BotConfig):
@@ -53,13 +66,14 @@ class OpeningRangeStrategy:
         self.tz = ZoneInfo(cfg.session.timezone)
         self.session_levels = SessionLevels(cfg.session)
         self.box = OpeningRangeBox(cfg.session)
-        self.fvg_detector = FvgDetector(cfg.strategy.fvg, self.tz)
+        self.fvg_detector_15m = FvgDetector(cfg.strategy.fvg, self.tz)
+        self.fvg_detector_1m = FvgDetector(cfg.strategy.entry_fvg, self.tz)
 
         self.state = State.MARKING_LEVELS
         self._trading_date: date | None = None
         self._breakout_direction: Direction | None = None
         self._levels: SessionLevelSet | None = None
-        self._approached_level: float | None = None
+        self._anchor_fvg: FairValueGap | None = None
         self._pending_fvg: FairValueGap | None = None
         self._pending_limit_price: float | None = None
 
@@ -68,10 +82,11 @@ class OpeningRangeStrategy:
         # happened" when a backtest window produces zero trades.
         self.stats = {
             "breakouts": 0,
-            "key_level_approaches": 0,
-            "strong_fvgs_after_approach": 0,
+            "large_15m_fvgs": 0,
+            "nested_1m_fvgs": 0,
             "fills": 0,
-            "fvgs_mitigated_before_fill": 0,
+            "anchor_15m_fvgs_mitigated_before_entry": 0,
+            "entry_1m_fvgs_mitigated_before_fill": 0,
         }
 
     @property
@@ -90,7 +105,8 @@ class OpeningRangeStrategy:
 
         self.session_levels.add_bar(bar)
         self.box.add_bar(bar)
-        self.fvg_detector.add_bar(bar)
+        self.fvg_detector_15m.add_bar(bar)
+        self.fvg_detector_1m.add_bar(bar)
 
         if self.state is State.DONE_FOR_DAY:
             return None
@@ -113,55 +129,60 @@ class OpeningRangeStrategy:
         if self.state is State.WAIT_BREAKOUT:
             if self.box.high is not None and bar.close > self.box.high:
                 self._breakout_direction = Direction.LONG
-                self.state = State.WAIT_KEY_LEVEL_APPROACH
+                self.state = State.WAIT_15M_FVG
                 self.stats["breakouts"] += 1
             elif self.box.low is not None and bar.close < self.box.low:
                 self._breakout_direction = Direction.SHORT
-                self.state = State.WAIT_KEY_LEVEL_APPROACH
+                self.state = State.WAIT_15M_FVG
                 self.stats["breakouts"] += 1
             return None
 
-        if self.state is State.WAIT_KEY_LEVEL_APPROACH:
-            level = self._nearest_key_level_within_approach(bar)
-            if level is not None:
-                self.stats["key_level_approaches"] += 1
-                self._approached_level = level
-                self.state = State.WAIT_FVG
+        if self.state is State.WAIT_15M_FVG:
+            # Any large, unmitigated 15m FVG in the breakout direction
+            # anchors the move -- it doesn't need to have just formed on
+            # this bar, it may already have been sitting there, untouched,
+            # since earlier in the session.
+            candidates = self.fvg_detector_15m.unmitigated_in_direction(self._breakout_direction)
+            if candidates:
+                self._anchor_fvg = _nearest_then_largest(candidates, bar.close)
+                self.stats["large_15m_fvgs"] += 1
+                self.state = State.WAIT_1M_FVG
             return None
 
-        if self.state is State.WAIT_FVG:
-            # Any 15m FVG in the breakout direction that hasn't been
-            # mitigated qualifies -- it doesn't need to have just formed on
-            # this bar, it may already have been sitting there, untouched,
-            # since earlier in the session. Of those, only ones actually in
-            # the way of the move toward the approached level count; among
-            # those, prefer the strongest (biggest gap), nearest to price.
-            candidates = self.fvg_detector.unmitigated_in_direction(self._breakout_direction)
-            in_the_way = [fvg for fvg in candidates if self._is_in_the_way(fvg, bar.close)]
-            if in_the_way:
-                fvg = max(in_the_way, key=lambda f: (-abs((f.gap_low + f.gap_high) / 2 - bar.close), f.size))
-                self.stats["strong_fvgs_after_approach"] += 1
+        if self.state is State.WAIT_1M_FVG:
+            if _is_mitigated(self._anchor_fvg, bar):
+                # The anchor 15m FVG got broken before a nested entry ever
+                # formed inside it -- it no longer means anything as a zone,
+                # so abandon it and look for a fresh 15m anchor instead.
+                self.stats["anchor_15m_fvgs_mitigated_before_entry"] += 1
+                self._anchor_fvg = None
+                self.state = State.WAIT_15M_FVG
+                return None
+
+            nested = [
+                fvg
+                for fvg in self.fvg_detector_1m.unmitigated_in_direction(self._breakout_direction)
+                if fvg.gap_low >= self._anchor_fvg.gap_low and fvg.gap_high <= self._anchor_fvg.gap_high
+            ]
+            if nested:
+                fvg = _nearest_then_largest(nested, bar.close)
+                self.stats["nested_1m_fvgs"] += 1
                 self._pending_fvg = fvg
                 self._pending_limit_price = (fvg.gap_low + fvg.gap_high) / 2
                 self.state = State.WAIT_FILL
             return None
 
         if self.state is State.WAIT_FILL:
-            mitigated = (
-                bar.low < self._pending_fvg.gap_low
-                if self._breakout_direction is Direction.LONG
-                else bar.high > self._pending_fvg.gap_high
-            )
-            if mitigated:
-                # Price traded clean through the FVG's far edge instead of
+            if _is_mitigated(self._pending_fvg, bar):
+                # Price traded clean through the 1m FVG's far edge instead of
                 # retracing to the midpoint -- the gap is used up/broken, not
                 # a valid entry. Abandon it and go back to looking for a
-                # fresh, unmitigated FVG rather than filling into a level
-                # that no longer means anything.
-                self.stats["fvgs_mitigated_before_fill"] += 1
+                # fresh nested 1m FVG inside the same 15m anchor (unless that
+                # anchor itself gets mitigated first, handled above).
+                self.stats["entry_1m_fvgs_mitigated_before_fill"] += 1
                 self._pending_fvg = None
                 self._pending_limit_price = None
-                self.state = State.WAIT_FVG
+                self.state = State.WAIT_1M_FVG
                 return None
 
             filled = (
@@ -180,10 +201,12 @@ class OpeningRangeStrategy:
                     direction=self._breakout_direction,
                     entry_price=self._pending_limit_price,
                     fvg=self._pending_fvg,
+                    anchor_fvg=self._anchor_fvg,
                     structural_levels=structural_levels,
                     timestamp=bar.timestamp,
                 )
                 self.state = State.IN_TRADE
+                self._anchor_fvg = None
                 self._pending_fvg = None
                 self._pending_limit_price = None
                 self.stats["fills"] += 1
@@ -191,38 +214,6 @@ class OpeningRangeStrategy:
             return None
 
         return None
-
-    def _nearest_key_level_within_approach(self, bar: Bar) -> float | None:
-        """The marked previous-day/Asia/London level nearest to this bar's
-        range, if it's within `key_level_approach_points` of being touched
-        (an exact touch is 0 points away, so it still counts) -- checked
-        against the exact level price, not a zone (the zone concept only
-        applied to the old FVG-overlap rule). Returns None if no level is
-        that close yet."""
-        if self._levels is None:
-            return None
-        nearest_level = None
-        nearest_distance = None
-        for level in self._levels.all_levels():
-            if bar.low <= level <= bar.high:
-                distance = 0.0
-            else:
-                distance = min(abs(level - bar.low), abs(level - bar.high))
-            if distance <= self.cfg.strategy.key_level_approach_points:
-                if nearest_distance is None or distance < nearest_distance:
-                    nearest_distance = distance
-                    nearest_level = level
-        return nearest_level
-
-    def _is_in_the_way(self, fvg: FairValueGap, current_price: float) -> bool:
-        """True if this FVG's midpoint sits between the current price and
-        the key level that was just approached -- i.e. price still has to
-        pass through it to reach that level, rather than it being behind
-        price or past the level already."""
-        if self._approached_level is None:
-            return False
-        midpoint = (fvg.gap_low + fvg.gap_high) / 2
-        return min(current_price, self._approached_level) <= midpoint <= max(current_price, self._approached_level)
 
     def notify_trade_closed(self, won: bool) -> None:
         """Runner calls this once the broker confirms the open trade hit its
@@ -235,7 +226,7 @@ class OpeningRangeStrategy:
             return
 
         self._breakout_direction = None
-        self._approached_level = None
+        self._anchor_fvg = None
         self._pending_fvg = None
         self._pending_limit_price = None
         self.state = State.WAIT_BREAKOUT
@@ -246,6 +237,6 @@ class OpeningRangeStrategy:
         self.state = State.MARKING_LEVELS
         self._breakout_direction = None
         self._levels = None
-        self._approached_level = None
+        self._anchor_fvg = None
         self._pending_fvg = None
         self._pending_limit_price = None

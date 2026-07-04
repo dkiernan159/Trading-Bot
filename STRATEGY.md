@@ -1,4 +1,4 @@
-# Strategy: NQ/MNQ NY-Open Opening Range Breakout + Key-Level Approach + 15m FVG
+# Strategy: NQ/MNQ NY-Open Opening Range Breakout + 15m FVG Anchor + Nested 1m FVG Entry
 
 This document is the source of truth for what the bot implements. Anything
 marked **ASSUMPTION** was not fully specified and was filled in with a
@@ -12,29 +12,27 @@ review these and adjust `config.yaml` before running live.
    closes at 9:45 ET. Mark its high/low as "the box".
 3. Wait for price to break the box high (bullish) or box low (bearish) --
    this sets the trade direction/bias, it is not itself the entry.
-4. After the breakout, price must **approach** one of the marked key
-   levels (previous day high/low, Asia high/low, or London high/low --
-   any of them) -- i.e. come within `key_level_approach_points`
-   (`config.yaml`, default 5 points) of that price. An exact touch still
-   counts (it's 0 points away), it's just no longer required.
-5. Only *after* that approach has happened does the bot start watching for
-   the entry trigger: a strong 15-minute FVG in the breakout direction that
-   has **not been mitigated** (price has not yet traded clean through its
-   far side) **and** sits **in the way of the move** -- between current
-   price and the level that was approached, not behind price or past the
-   level already. This FVG does **not** need to form at or near the level
-   itself (the approach and the FVG are two separate, sequential
-   conditions, not one combined condition), and it does **not** need to
-   have formed *after* the approach either -- any still-unmitigated 15m
-   FVG already sitting in the way, from earlier in the session, qualifies
-   the moment the approach completes. The bot keeps a running pool of
-   every 15m FVG detected in the session, continuously drops any that get
-   mitigated, and once the approach happens, picks whichever in-the-way
-   candidate is **nearest to current price**, breaking ties by the
-   **larger gap** (nearest-first, size-as-tiebreak was a judgment call on
-   an ambiguous request -- flip the sort key in `strategy.py: WAIT_FVG` if
-   you actually meant strongest-first, nearest-as-tiebreak instead).
-6. Entry is a **limit order at the midpoint of that FVG's gap**
+4. After the breakout, the bot watches for a **large 15-minute FVG** in the
+   breakout direction to **anchor** the move -- this is the higher-
+   timeframe confirmation that a real move is underway, not the entry
+   itself. It doesn't need to form right after the breakout; any
+   still-unmitigated 15m FVG in the breakout direction, from anywhere in
+   the session, qualifies (the bot keeps a running pool of every 15m FVG
+   detected and continuously drops any that get mitigated). When more than
+   one candidate qualifies, the nearest one to current price is picked,
+   breaking ties by the larger gap.
+5. Once a 15m FVG has anchored the move, the bot watches **inside that
+   anchor's gap** for a **1-minute FVG fully nested within it**
+   (`nested.gap_low >= anchor.gap_low and nested.gap_high <= anchor.gap_high`)
+   -- this is the actual entry trigger. Using the 1-minute FVG instead of
+   the 15-minute one for entry/stop sizing keeps the entry precise and the
+   resulting stop tight, instead of being sized off 15-minute-candle noise
+   (see rule 8 -- the stop is placed off structural levels near the entry
+   price, and a 15-minute-scale entry price was producing stops too wide
+   for how tightly this trades). If the 15m anchor itself gets mitigated
+   before any nested 1m FVG ever forms, it's abandoned and the bot goes
+   back to watching for a fresh anchor.
+6. Entry is a **limit order at the midpoint of that nested 1m FVG's gap**
    (`(gap_low + gap_high) / 2`), not a market order at whatever price the
    confirming candle closed at. The trade only starts once price actually
    trades back to that midpoint -- if it never comes back, there's no
@@ -42,11 +40,9 @@ review these and adjust `config.yaml` before running live.
    **far** edge (below `gap_low` for a bullish/LONG gap, above `gap_high`
    for a bearish/SHORT gap) before ever retracing to the midpoint, the FVG
    is **mitigated** -- it's been fully traded through, not just tapped --
-   and is abandoned rather than filled. The bot drops the mitigated gap
-   from its pool and, on the next bar, immediately picks another
-   still-active unmitigated FVG in the same direction if one exists (this
-   is the same pool described in rule 5, not a separate concept) rather
-   than entering off a level that no longer means anything.
+   and is abandoned rather than filled. The bot then goes back to watching
+   for another nested 1m FVG inside the *same* 15m anchor (unless that
+   anchor itself has since been mitigated too, in which case rule 4 restarts).
 
    (Revision history: v1 entered at the confirming candle's close, which
    put entries well outside the FVG zone entirely -- caught by inspecting
@@ -54,24 +50,22 @@ review these and adjust `config.yaml` before running live.
    level's zone, as a single combined condition -- too strict in practice
    (most setups were being filtered at that step, per the funnel
    diagnostics), and not actually what was meant. Corrected 2026-07-04 to
-   the two-step retest-then-FVG design. Also corrected 2026-07-04 to add
-   mitigation: a chart inspection showed the bot entering short off a FVG
-   that price had already broken clean through on the way down -- the old
-   fill check only asked "did price reach the midpoint," which is also
-   trivially true when price breaks clean through the entire gap.
-   Corrected again 2026-07-04 to move FVG detection from 1-minute to
-   15-minute candles, and from "only the single most-recently-detected
-   FVG" to a running pool of every unmitigated 15m FVG in the session --
-   requiring the FVG to form fresh *after* the retest was discarding
-   perfectly valid, still-untouched gaps that had simply formed earlier,
-   and cutting down on the number of setups found. Corrected again
-   2026-07-04, a third time the same day: a full week of real history only
-   produced a single setup, and it lost -- loosened the retest to an
-   "approach" (within `key_level_approach_points`, not an exact touch),
-   and replaced "most-recently-formed unmitigated FVG" with "nearest
-   unmitigated FVG actually in the way of the move toward the approached
-   level" so a FVG sitting behind price, already passed, can't be
-   selected just because it's the newest one in the pool.)
+   a two-step retest-then-FVG design, then to a running pool of every
+   unmitigated 15m FVG in the session (rather than only the single most-
+   recently-formed one), then to loosening the retest requirement to a
+   5-point "approach" and picking whichever unmitigated FVG was nearest to
+   price and in the way of the move -- each correction chasing more setups
+   out of a real week of history that kept producing too few trades.
+   Corrected again 2026-07-04, a final time the same day: the entry was
+   still priced off the 15-minute FVG's midpoint, which spans several
+   points on a fast-moving instrument like MNQ -- the resulting stop
+   (sized off structural levels near that entry) was too wide for how
+   this actually trades and got hit by ordinary noise. Replaced the
+   key-level-approach step entirely with the current design: the 15m FVG
+   still confirms the move (this is the "large FVG" the anchor), but the
+   entry itself comes from a 1-minute FVG nested inside that 15m gap, so
+   the entry price -- and therefore the stop -- reflects 1-minute-scale
+   structure instead of 15-minute-scale noise.)
 7. Reward:risk is 2:1.
 8. Stop-loss: **either** the 2:1 ratio itself, **or** placed at a large
    support/resistance level whose break would imply a large move -- but never
@@ -82,7 +76,7 @@ review these and adjust `config.yaml` before running live.
    consistent win rate is shown; scaling back up to 5 is **manual only** --
    the bot never changes its own size.
 10. If stopped out, the bot re-arms and can take another trade if the setup
-    reforms later in the session (new breakout/approach/FVG sequence).
+    reforms later in the session (new breakout/anchor/nested-FVG sequence).
 
 ## How ambiguous points were resolved (ASSUMPTIONS)
 
@@ -98,35 +92,37 @@ review these and adjust `config.yaml` before running live.
     / point_value / reward_risk_ratio = 300 / 5 / 2.0 / 2.0 = 15 points.`
   - Take-profit is always `2 x actual_stop_distance` (so smaller structural
     stops give a smaller, still-2:1, target).
-- **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on the
-  `timeframe_minutes` chart (15-minute by default) where (a) the gap size is
-  >= `min_gap_points` and (b) the middle (displacement) candle's body is >=
+- **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on
+  `FvgConfig.timeframe_minutes` where (a) the gap size is >=
+  `min_gap_points` and (b) the middle (displacement) candle's body is >=
   `displacement_multiplier` times the recent average candle range (over
   `lookback_bars` candles on that same timeframe). All three are
-  configurable. `FvgDetector` builds these candles internally from whatever
-  bars it's fed (1-minute bars from the broker/backtest) and keeps a
-  running pool of every gap detected in the session, dropping ones the
+  configurable. `FvgDetector` builds these candles internally from
+  whatever bars it's fed (always 1-minute bars from the broker/backtest)
+  and keeps a running pool of every gap detected, dropping ones the
   moment they're mitigated (checked against every incoming 1-minute bar,
-  not just at each 15m close, so mitigation is caught as soon as it
-  actually happens).
-- **"Approach"** (`src/strategy.py: _nearest_key_level_within_approach`): a
-  bar's range (low-to-high) coming within `key_level_approach_points`
-  (`config.yaml`, default 5 points -- ASSUMPTION, originally an exact
-  touch was required, loosened 2026-07-04 because requiring an exact
-  touch was producing too few setups) of any of the 6 marked levels
-  (previous day high/low, Asia high/low, London high/low) counts as an
-  approach. This is an OR across all 6: any single one being close enough
-  is sufficient, they are not required together. When more than one level
-  is within range on the same bar, the nearest one is recorded as "the"
-  approached level, which then anchors the in-the-way check for FVG
-  selection (rule 5). The opening range box itself is not part of this
-  check (it's used for the breakout and as a stop-loss candidate).
-- **"In the way of the move"** (`src/strategy.py: _is_in_the_way`): a FVG
-  qualifies only if its midpoint sits between current price and the
-  approached level (inclusive either direction) -- i.e. price still has
-  to travel through it to reach that level. A FVG behind current price
-  (already passed) or beyond the level (overshooting it) doesn't count,
-  even if it's a perfectly valid, unmitigated gap in the right direction.
+  not just at each candle close, so mitigation is caught as soon as it
+  actually happens). The strategy runs **two independent instances** of
+  this detector: `fvg_detector_15m` (`config.yaml: strategy.fvg`,
+  `timeframe_minutes: 15`) finds the large anchor FVG that confirms the
+  move; `fvg_detector_1m` (`config.yaml: strategy.entry_fvg`,
+  `timeframe_minutes: 1`, deliberately smaller `min_gap_points` since it
+  has to nest inside the 15m gap) finds the precise entry trigger.
+- **"Nested"** (`src/strategy.py: WAIT_1M_FVG`): a 1m FVG counts as nested
+  inside the 15m anchor when its whole range falls inside the anchor's
+  (`nested.gap_low >= anchor.gap_low and nested.gap_high <= anchor.gap_high`).
+  When more than one nested candidate is active at once, the nearest one
+  to current price is picked, breaking ties by the larger gap (same
+  nearest-first, size-as-tiebreak rule used for picking the 15m anchor
+  itself -- a judgment call on an ambiguous request; flip the sort key in
+  `strategy.py` if you actually wanted strongest-first instead).
+- **Previous day / Asia / London levels**: no longer part of the entry
+  sequence at all (an earlier revision briefly used them for a "retest"/
+  "approach" step -- removed 2026-07-04 in favor of the 15m-anchor +
+  nested-1m design above). They're still marked every day and still feed
+  `src/risk.py`'s stop-loss placement (nearest structural level beyond
+  entry, capped at `max_stop_points`) and the chart's shaded reference
+  bands -- just not the entry trigger anymore.
 - **Asia / London session windows** (`config.yaml: session`): set to common
   ICT-style approximations (Asia 19:00-23:59 ET prior evening, London
   02:00-05:00 ET). Adjust to your exact definition.
