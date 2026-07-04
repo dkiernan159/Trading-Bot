@@ -203,13 +203,13 @@ def print_report(cfg: BotConfig, results: list[dict]) -> None:
 def print_funnel(stats: dict) -> None:
     """Shows how many setups made it past each gate, so a zero-trade (or
     low-trade) window can be diagnosed instead of just reported -- e.g.
-    "12 breakouts, 5 large 15m FVGs anchored, but price never retraced to
+    "12 breakouts, 5 large 5m FVGs anchored, but price never retraced to
     the anchor's own midpoint to fill" tells you exactly which
     requirement is doing the filtering."""
     print("\nFunnel (how many setups made it past each gate):")
     print(f"  Breakouts (box broken, direction set):                {stats.get('breakouts', 0)}")
     print(f"  ...of those, breakout thesis later invalidated:         {stats.get('breakouts_invalidated', 0)}")
-    print(f"  ...of those, a large 15m FVG anchored the move:        {stats.get('large_15m_fvgs', 0)}")
+    print(f"  ...of those, a large 5m FVG anchored the move:         {stats.get('large_5m_fvgs', 0)}")
     print(f"  ...of those, price retraced to fill the limit:          {stats.get('fills', 0)}")
 
 
@@ -264,7 +264,7 @@ def print_trade_detail(results: list[dict]) -> None:
         print(f"    Asia session: high={_fmt(t['asia_high'])}  low={_fmt(t['asia_low'])}")
         print(f"    London session: high={_fmt(t['london_high'])}  low={_fmt(t['london_low'])}")
         print(f"    9:30-9:45 box: high={_fmt(t['box_high'])}  low={_fmt(t['box_low'])}")
-        print(f"    15m anchor FVG: {_fmt(t['anchor_gap_low'])} - {_fmt(t['anchor_gap_high'])}")
+        print(f"    5m anchor FVG: {_fmt(t['anchor_gap_low'])} - {_fmt(t['anchor_gap_high'])}")
         print(
             f"    Entry={_fmt(t['entry_price'])}  Stop={_fmt(t['stop_price'])}  Target={_fmt(t['target_price'])}"
         )

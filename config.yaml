@@ -33,23 +33,23 @@ strategy:
                            # is placed at whichever marked structural level (previous day/Asia/London high-low,
                            # or box edge) is nearest beyond entry -- this cap only kicks in if that nearest level
                            # is farther away than $200 allows, or if no such level exists beyond entry at all.
-  fvg:                            # the 15m FVG: confirms direction/anchors the move -- its own midpoint is
-                                   # also the entry price (see rule 5 in STRATEGY.md; removed 2026-07-04 the
-                                   # separate nested-entry-timeframe stage that used to sit inside this gap --
-                                   # a real 30-day backtest showed it was by far the tightest bottleneck in the
-                                   # funnel regardless of whether it looked at 1m or 5m gaps for that stage,
-                                   # so the anchor's own midpoint is now traded directly instead). This is the
-                                   # only remaining gate between a breakout and a trade, so it's also the only
-                                   # remaining lever for trade frequency -- see the revision history below for
-                                   # the ongoing push toward ~1 trade/day.
-    timeframe_minutes: 15
-    min_gap_points: 2.0           # ASSUMPTION: minimum 15m FVG size to count as a valid gap (loosened 2026-07-04
-                                   # from 2.5, then this step from 2.5 to 2.0 -- targeting ~1 trade/day per a
-                                   # real 7-day backtest that found only 3; see STRATEGY.md)
-    displacement_multiplier: 1.1  # ASSUMPTION: "strong" = displacement candle body >= 1.1x recent avg range
-                                   # (loosened 2026-07-04 from 1.5, then 1.3, then this step to 1.1, same
-                                   # ~1-trade/day goal)
-    lookback_bars: 8              # 15m candles used for the recent average range baseline (~2 hours)
+  fvg:                            # the 5m FVG: confirms direction/anchors the move -- its own midpoint is
+                                   # also the entry price (see rule 4/5 in STRATEGY.md). Changed from 15m to
+                                   # 5m timeframe 2026-07-04 based on a real annotated trade example: the
+                                   # actual methodology has no separate 15-minute FVG at all -- "15 minute" in
+                                   # "15 Minute Opening Range Breakout" refers only to the box, and the FVG
+                                   # that anchors/enters the move forms on 5-minute candles (in the real
+                                   # example, retested over an hour after it formed, well after price had
+                                   # already rallied further away -- confirmed there's no time/distance limit
+                                   # on the retest beyond the session cutoff). This is the only gate between a
+                                   # breakout and a trade, so it's also the only lever for trade frequency.
+    timeframe_minutes: 5
+    min_gap_points: 1.5           # ASSUMPTION: minimum 5m FVG size to count as a valid gap -- retune from real
+                                   # backtests; this now has to do double duty as both "confirms the move" and
+                                   # "the entry structure," so it's set between the old 15m anchor threshold
+                                   # (2.0) and the old (removed) nested-5m-entry threshold (0.4-1.0).
+    displacement_multiplier: 1.0  # ASSUMPTION: "strong" = displacement candle body >= 1.0x recent avg range
+    lookback_bars: 8              # 5m candles used for the recent average range baseline (~40 minutes)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
     allow_new_setup_after_win: false    # ASSUMPTION: stand down for the day after a winner (change if wrong)

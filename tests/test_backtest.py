@@ -21,9 +21,9 @@ def bar_at(dt: datetime, o: float, h: float, l: float, c: float) -> Bar:
 
 
 def flat_bar(dt: datetime, price: float, spread: float = 0.5) -> Bar:
-    """A single bar standing in for a whole quiet, unchanging 15-minute
-    candle -- safe to use sparsely since a repeated, unchanging value
-    can't form a gap, so it doesn't also register as a false FVG."""
+    """A single bar standing in for a whole quiet, unchanging candle --
+    safe to use sparsely since a repeated, unchanging value can't form a
+    gap, so it doesn't also register as a false FVG."""
     return bar_at(dt, price, price + spread / 2, price - spread / 2, price)
 
 
@@ -31,7 +31,7 @@ def smooth_walk_1m(start: datetime, minutes: int, start_price: float, end_price:
     """`minutes` consecutive real 1-minute bars walking smoothly from
     start_price to end_price -- gentle enough relative to WICK that no 3
     consecutive bars form their own 1-minute gap, so this same price
-    action can build a genuine 15m candle without also registering as a
+    action can build a genuine 5m candle without also registering as a
     contaminating 1-minute-scale FVG."""
     bars = []
     for i in range(minutes):
@@ -45,16 +45,16 @@ def smooth_walk_1m(start: datetime, minutes: int, start_price: float, end_price:
 def load_test_config():
     cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     # See tests/test_strategy.py: these fixtures span well past the real
-    # 12:30 ET cutoff -- push it out so the cutoff isn't what's under
+    # 13:30 ET cutoff -- push it out so the cutoff isn't what's under
     # test here.
     cfg.session.no_new_entries_after = dtime(23, 59)
     return cfg
 
 
-def breakout_15m_anchor_bars() -> list[Bar]:
+def breakout_5m_anchor_bars() -> list[Bar]:
     """Previous-day high of 105 and low of 95, box 9:30-9:45 (high=101/
-    low=99.5), breakout above the box, 8 quiet 15m baseline candles, then
-    a real displacement move from 105.1 to 109.3 that forms a large 15m
+    low=99.5), breakout above the box, 8 quiet 5m baseline candles, then
+    a real displacement move from 105.1 to 109.3 that forms a large 5m
     FVG anchor (gap 105.3-109.1) -- its own midpoint (107.2) is the entry
     trigger, filled by the final bar's retrace back down to it."""
     bars = [
@@ -68,20 +68,20 @@ def breakout_15m_anchor_bars() -> list[Bar]:
 
     baseline_start = DAY + timedelta(minutes=45)
     for i in range(8):
-        bars.append(flat_bar(baseline_start + timedelta(minutes=15 * i), 105.0))  # 15m baseline
+        bars.append(flat_bar(baseline_start + timedelta(minutes=5 * i), 105.0))  # 5m baseline
 
-    pattern_start = baseline_start + timedelta(minutes=15 * 8)
-    bars += smooth_walk_1m(pattern_start, 15, 105.0, 105.1)  # c0
-    bars += smooth_walk_1m(pattern_start + timedelta(minutes=15), 15, 105.1, 109.3)  # c1: displacement
-    bars += smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, 109.3, 109.5)  # c2: confirms gap
-    bars.append(flat_bar(pattern_start + timedelta(minutes=45), 109.5))  # flush -- detects the 15m anchor
-    bars.append(bar_at(pattern_start + timedelta(minutes=46), 109.5, 109.6, 105.3, 107.2))  # fills the 107.2 midpoint
+    pattern_start = baseline_start + timedelta(minutes=5 * 8)
+    bars += smooth_walk_1m(pattern_start, 5, 105.0, 105.1)  # c0
+    bars += smooth_walk_1m(pattern_start + timedelta(minutes=5), 5, 105.1, 109.3)  # c1: displacement
+    bars += smooth_walk_1m(pattern_start + timedelta(minutes=10), 5, 109.3, 109.5)  # c2: confirms gap
+    bars.append(flat_bar(pattern_start + timedelta(minutes=15), 109.5))  # flush -- detects the 5m anchor
+    bars.append(bar_at(pattern_start + timedelta(minutes=16), 109.5, 109.6, 105.3, 107.2))  # fills the 107.2 midpoint
     return bars
 
 
 def test_backtest_records_a_win():
     cfg = load_test_config()
-    bars = breakout_15m_anchor_bars()
+    bars = breakout_5m_anchor_bars()
     # Stop candidates are only the marked previous-day/box levels now (the
     # anchor's own edges are deliberately excluded -- see strategy.py: at
     # entry=midpoint, they're always exactly half the anchor's own width
@@ -102,7 +102,7 @@ def test_backtest_records_a_win():
 
 def test_backtest_records_a_loss():
     cfg = load_test_config()
-    bars = breakout_15m_anchor_bars()
+    bars = breakout_5m_anchor_bars()
     # Drops to the stop (105.0, the previous-day high) without reaching
     # the target (111.6) first.
     bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.0, 107.2, 104.5, 105.0))
@@ -124,7 +124,7 @@ def test_backtest_reports_no_trades_when_nothing_triggers():
 
 def test_funnel_stats_track_each_gate():
     cfg = load_test_config()
-    bars = breakout_15m_anchor_bars()
+    bars = breakout_5m_anchor_bars()
     bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
 
     stats: dict = {}
@@ -133,13 +133,13 @@ def test_funnel_stats_track_each_gate():
     assert stats == {
         "breakouts": 1,
         "breakouts_invalidated": 0,
-        "large_15m_fvgs": 1,
+        "large_5m_fvgs": 1,
         "fills": 1,
     }
 
 
-def breakout_15m_anchor_no_fill_bars() -> list[Bar]:
-    """Same breakout + 15m anchor as breakout_15m_anchor_bars(), but price
+def breakout_5m_anchor_no_fill_bars() -> list[Bar]:
+    """Same breakout + 5m anchor as breakout_5m_anchor_bars(), but price
     stays well above the anchor's midpoint (107.2) for the rest of the
     session instead of ever retracing down to it -- the anchor forms and
     then just sits there, unfilled, until whatever cutoff the caller's
@@ -155,39 +155,39 @@ def breakout_15m_anchor_no_fill_bars() -> list[Bar]:
 
     baseline_start = DAY + timedelta(minutes=45)
     for i in range(8):
-        bars.append(flat_bar(baseline_start + timedelta(minutes=15 * i), 105.0))
+        bars.append(flat_bar(baseline_start + timedelta(minutes=5 * i), 105.0))
 
-    pattern_start = baseline_start + timedelta(minutes=15 * 8)
-    bars += smooth_walk_1m(pattern_start, 15, 105.0, 105.1)
-    bars += smooth_walk_1m(pattern_start + timedelta(minutes=15), 15, 105.1, 109.3)
-    bars += smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, 109.3, 109.5)
-    bars.append(flat_bar(pattern_start + timedelta(minutes=45), 109.5))  # flush -- detects the 15m anchor
+    pattern_start = baseline_start + timedelta(minutes=5 * 8)
+    bars += smooth_walk_1m(pattern_start, 5, 105.0, 105.1)
+    bars += smooth_walk_1m(pattern_start + timedelta(minutes=5), 5, 105.1, 109.3)
+    bars += smooth_walk_1m(pattern_start + timedelta(minutes=10), 5, 109.3, 109.5)
+    bars.append(flat_bar(pattern_start + timedelta(minutes=15), 109.5))  # flush -- detects the 5m anchor
 
-    flat_after = pattern_start + timedelta(minutes=46)
+    flat_after = pattern_start + timedelta(minutes=16)
     for i in range(20):
         bars.append(flat_bar(flat_after + timedelta(minutes=i), 109.5, spread=0.3))
     return bars
 
 
 def test_funnel_stats_show_anchor_but_no_fill_afterward():
-    """A breakout that anchors on a large 15m FVG but where price never
+    """A breakout that anchors on a large 5m FVG but where price never
     retraces back to the anchor's own midpoint should show up as a
     near-miss: breakout + anchor counted, zero fills."""
     cfg = load_test_config()
-    bars = breakout_15m_anchor_no_fill_bars()
+    bars = breakout_5m_anchor_no_fill_bars()
 
     stats: dict = {}
     results = run_backtest(cfg, bars, stats_out=stats)
 
     assert results == []
     assert stats["breakouts"] == 1
-    assert stats["large_15m_fvgs"] == 1
+    assert stats["large_5m_fvgs"] == 1
     assert stats["fills"] == 0
 
 
 def test_anchor_history_records_a_fill():
     cfg = load_test_config()
-    bars = breakout_15m_anchor_bars()
+    bars = breakout_5m_anchor_bars()
 
     history: list = []
     run_backtest(cfg, bars, anchor_history_out=history)
@@ -200,8 +200,8 @@ def test_anchor_history_records_a_fill():
 
 def test_anchor_history_records_session_ended_when_cutoff_hits_before_a_fill():
     cfg = load_test_config()
-    cfg.session.no_new_entries_after = dtime(13, 10)  # inside the no-fill fixture's flat tail
-    bars = breakout_15m_anchor_no_fill_bars()
+    cfg.session.no_new_entries_after = dtime(11, 20)  # inside the no-fill fixture's flat tail
+    bars = breakout_5m_anchor_no_fill_bars()
 
     history: list = []
     results = run_backtest(cfg, bars, anchor_history_out=history)
@@ -213,8 +213,8 @@ def test_anchor_history_records_session_ended_when_cutoff_hits_before_a_fill():
 
 def test_print_near_miss_anchors_reports_unfilled_anchors(capsys):
     cfg = load_test_config()
-    cfg.session.no_new_entries_after = dtime(13, 10)
-    bars = breakout_15m_anchor_no_fill_bars()
+    cfg.session.no_new_entries_after = dtime(11, 20)
+    bars = breakout_5m_anchor_no_fill_bars()
 
     history: list = []
     run_backtest(cfg, bars, anchor_history_out=history)
@@ -228,7 +228,7 @@ def test_print_near_miss_anchors_reports_unfilled_anchors(capsys):
 
 def test_print_near_miss_anchors_reports_nothing_when_every_anchor_filled(capsys):
     cfg = load_test_config()
-    bars = breakout_15m_anchor_bars()
+    bars = breakout_5m_anchor_bars()
 
     history: list = []
     run_backtest(cfg, bars, anchor_history_out=history)
@@ -260,7 +260,7 @@ def test_pnl_points_is_positive_for_a_short_win():
 
 def test_export_chart_json_writes_candles_and_levels(tmp_path):
     cfg = load_test_config()
-    bars = breakout_15m_anchor_bars()
+    bars = breakout_5m_anchor_bars()
     bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
 
     results = run_backtest(cfg, bars)
@@ -290,7 +290,7 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
 
 def test_export_chart_html_embeds_trade_data(tmp_path):
     cfg = load_test_config()
-    bars = breakout_15m_anchor_bars()
+    bars = breakout_5m_anchor_bars()
     bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
 
     results = run_backtest(cfg, bars)

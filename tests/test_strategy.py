@@ -20,8 +20,8 @@ def bar_at(dt: datetime, o: float, h: float, l: float, c: float) -> Bar:
 
 
 def flat_bar(dt: datetime, price: float, spread: float = 0.5) -> Bar:
-    """A single bar standing in for a whole quiet, unchanging 15-minute
-    candle -- safe to use sparsely (one bar per 15-minute mark) because a
+    """A single bar standing in for a whole quiet, unchanging 5-minute
+    candle -- safe to use sparsely (one bar per 5-minute mark) because a
     repeated, unchanging value can never itself form a gap, so it doesn't
     also register as a false FVG."""
     return bar_at(dt, price, price + spread / 2, price - spread / 2, price)
@@ -31,8 +31,8 @@ def smooth_walk_1m(start: datetime, minutes: int, start_price: float, end_price:
     """`minutes` consecutive real 1-minute bars walking smoothly from
     start_price to end_price. The slope is gentle relative to WICK so no
     3 consecutive bars ever form their own 1-minute gap -- this lets the
-    same price action build a genuine, non-contaminating 15m candle (the
-    15m detector aggregates these into one candle)."""
+    same price action build a genuine, non-contaminating 5m candle (the
+    5m detector aggregates these into one candle)."""
     bars = []
     for i in range(minutes):
         o = start_price + (end_price - start_price) * i / minutes
@@ -45,7 +45,7 @@ def smooth_walk_1m(start: datetime, minutes: int, start_price: float, end_price:
 def load_test_config():
     cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     # These tests exercise the box/breakout/FVG mechanics well past the
-    # real 12:30 ET cutoff -- push it out so the timing under test isn't
+    # real 13:30 ET cutoff -- push it out so the timing under test isn't
     # the no-new-entries cutoff (covered separately, see
     # test_stands_down_for_day_after_cutoff).
     cfg.session.no_new_entries_after = dtime(23, 59)
@@ -70,32 +70,35 @@ def feed_box_and_breakout(strategy: OpeningRangeStrategy):
     assert strategy.state is State.WAIT_BREAKOUT
     signal = strategy.on_bar(bar_at(DAY + timedelta(minutes=30), 100.8, 103.0, 100.7, 102.5))
     assert signal is None
-    assert strategy.state is State.WAIT_15M_FVG
+    assert strategy.state is State.WAIT_5M_FVG
 
 
-def feed_quiet_15m(strategy: OpeningRangeStrategy, start: datetime, count: int, price: float):
+def feed_quiet_5m(strategy: OpeningRangeStrategy, start: datetime, count: int, price: float):
     for i in range(count):
-        signal = strategy.on_bar(flat_bar(start + timedelta(minutes=15 * i), price))
+        signal = strategy.on_bar(flat_bar(start + timedelta(minutes=5 * i), price))
         assert signal is None
 
 
-def feed_large_15m_fvg(
+def feed_large_5m_fvg(
     strategy: OpeningRangeStrategy, start: datetime, quiet_price: float = 105.0, c1_end: float = 109.3
 ) -> tuple[float, float]:
-    """Feeds 8 quiet 15m baseline candles at quiet_price, then a real
+    """Feeds 8 quiet 5m baseline candles at quiet_price, then a real
     (dense, 1-minute resolution) displacement move from quiet_price+0.1 up
-    to c1_end that forms a large bullish 15m FVG, then a flush bar to
+    to c1_end that forms a large bullish 5m FVG, then a flush bar to
     finalize detection. Returns the resulting (gap_low, gap_high) -- its
     own midpoint is now the entry trigger, so the strategy lands in
     WAIT_FILL once this returns. Default values (105.0, 109.3) produce
     the same 105.3-109.1 gap used throughout these tests; pass different
-    values to build a second, distinct anchor elsewhere on the chart."""
-    feed_quiet_15m(strategy, start, 8, quiet_price)
-    pattern_start = start + timedelta(minutes=15 * 8)
+    values to build a second, distinct anchor elsewhere on the chart.
+    `start` must land on a 5-minute wall-clock boundary, like every other
+    bucket boundary in these tests, or the dense c0/c1/c2 bars split
+    across the wrong buckets."""
+    feed_quiet_5m(strategy, start, 8, quiet_price)
+    pattern_start = start + timedelta(minutes=5 * 8)
 
-    c0_bars = smooth_walk_1m(pattern_start, 15, quiet_price, quiet_price + 0.1)
-    c1_bars = smooth_walk_1m(pattern_start + timedelta(minutes=15), 15, quiet_price + 0.1, c1_end)
-    c2_bars = smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, c1_end, c1_end + 0.2)
+    c0_bars = smooth_walk_1m(pattern_start, 5, quiet_price, quiet_price + 0.1)
+    c1_bars = smooth_walk_1m(pattern_start + timedelta(minutes=5), 5, quiet_price + 0.1, c1_end)
+    c2_bars = smooth_walk_1m(pattern_start + timedelta(minutes=10), 5, c1_end, c1_end + 0.2)
     for b in c0_bars + c1_bars + c2_bars:
         signal = strategy.on_bar(b)
         assert signal is None
@@ -103,8 +106,8 @@ def feed_large_15m_fvg(
     gap_low = max(b.high for b in c0_bars)
     gap_high = min(b.low for b in c2_bars)
 
-    flush_time = pattern_start + timedelta(minutes=45)
-    signal = strategy.on_bar(flat_bar(flush_time, c1_end + 0.2))  # finalizes c2's 15m candle, detects the FVG
+    flush_time = pattern_start + timedelta(minutes=15)
+    signal = strategy.on_bar(flat_bar(flush_time, c1_end + 0.2))  # finalizes c2's 5m candle, detects the FVG
     assert signal is None
     assert strategy.state is State.WAIT_FILL
     assert strategy._pending_limit_price == pytest.approx((gap_low + gap_high) / 2)
@@ -113,7 +116,7 @@ def feed_large_15m_fvg(
 
 
 def test_full_breakout_then_fill_at_the_anchors_own_midpoint():
-    """Breakout sets direction, a large 15m FVG anchors the move, and its
+    """Breakout sets direction, a large 5m FVG anchors the move, and its
     own midpoint (not a further nested structure) is the entry trigger --
     a limit order rests there and fills the instant price retraces back
     to it."""
@@ -123,10 +126,10 @@ def test_full_breakout_then_fill_at_the_anchors_own_midpoint():
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
 
-    anchor_low, anchor_high = feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
     midpoint = (anchor_low + anchor_high) / 2
 
-    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=46)
+    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=16)
     signal = strategy.on_bar(bar_at(fill_time, anchor_high, anchor_high + 0.1, anchor_low, anchor_low + 0.1))
 
     assert signal is not None
@@ -144,7 +147,7 @@ def test_full_breakout_then_fill_at_the_anchors_own_midpoint():
 
 def test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill():
     """If price never retraces to the first anchor's midpoint, but a
-    second, later 15m FVG forms further along the same move (nearer to
+    second, later 5m FVG forms further along the same move (nearer to
     current price), the bot switches to it -- moving the resting limit
     order to the new anchor's own midpoint -- without the first anchor
     ever being mitigated. This is what keeps the bot from getting stuck
@@ -156,17 +159,17 @@ def test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill():
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
 
-    first_low, first_high = feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))
+    first_low, first_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
     assert strategy._anchor_fvg.gap_low == pytest.approx(first_low)
     assert strategy._pending_limit_price == pytest.approx((first_low + first_high) / 2)
 
-    # A second 15m FVG forms further along the same LONG move, well above
+    # A second 5m FVG forms further along the same LONG move, well above
     # (and never dipping back into) the first anchor -- it was never
     # mitigated, it's just superseded by something more current. Must
-    # land on a 15-minute-aligned start, like every other bucket boundary
+    # land on a 5-minute-aligned start, like every other bucket boundary
     # in these tests, or the dense c0/c1/c2 bars split across buckets.
-    second_start = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=60)
-    second_low, second_high = feed_large_15m_fvg(strategy, second_start, quiet_price=109.6, c1_end=113.3)
+    second_start = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=20)
+    second_low, second_high = feed_large_5m_fvg(strategy, second_start, quiet_price=109.6, c1_end=113.3)
 
     assert second_low > first_high  # a distinct, higher zone -- first anchor untouched
     assert strategy._anchor_fvg.gap_low == pytest.approx(second_low)
@@ -193,12 +196,12 @@ def test_fills_the_instant_price_reaches_the_midpoint_even_if_the_bar_also_break
 
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
-    anchor_low, anchor_high = feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
     midpoint = (anchor_low + anchor_high) / 2
 
     # This bar's low breaks straight through the anchor's far (low) edge
     # -- well past the midpoint it necessarily crossed on the way down.
-    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=46)
+    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=16)
     signal = strategy.on_bar(bar_at(fill_time, anchor_high, anchor_high + 0.1, anchor_low - 0.5, anchor_low - 0.3))
 
     assert signal is not None
@@ -213,10 +216,10 @@ def test_reenters_after_stop_out_when_setup_reforms():
 
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
-    anchor_low, anchor_high = feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
     midpoint = (anchor_low + anchor_high) / 2
 
-    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=46)
+    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=16)
     signal = strategy.on_bar(bar_at(fill_time, anchor_high, anchor_high + 0.1, anchor_low, anchor_low + 0.1))
     assert signal is not None
     assert signal.entry_price == pytest.approx(midpoint)
@@ -227,7 +230,7 @@ def test_reenters_after_stop_out_when_setup_reforms():
     # A new breakout forms below the box low (99.5) -- setup reforms as SHORT.
     signal = strategy.on_bar(bar_at(fill_time + timedelta(minutes=1), 106.8, 106.8, 99.0, 99.0))
     assert signal is None
-    assert strategy.state is State.WAIT_15M_FVG
+    assert strategy.state is State.WAIT_5M_FVG
 
 
 def test_breakout_invalidated_when_price_closes_back_through_opposite_box_edge():
@@ -243,10 +246,10 @@ def test_breakout_invalidated_when_price_closes_back_through_opposite_box_edge()
 
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)  # LONG breakout; box.low=99.5, box.high=101.0
-    feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))  # anchors -> WAIT_FILL
+    feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))  # anchors -> WAIT_FILL
     assert strategy._anchor_fvg is not None
 
-    reversal_time = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=46)
+    reversal_time = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=16)
     # Price fully reverses, closing back below the box's low (99.5) --
     # the opposite edge from the LONG breakout -- without ever retracing
     # up to the anchor's own midpoint first.
@@ -262,7 +265,7 @@ def test_breakout_invalidated_when_price_closes_back_through_opposite_box_edge()
     # still detected normally afterward.
     signal = strategy.on_bar(bar_at(reversal_time + timedelta(minutes=1), 99.0, 99.0, 95.0, 95.0))
     assert signal is None
-    assert strategy.state is State.WAIT_15M_FVG
+    assert strategy.state is State.WAIT_5M_FVG
     assert strategy._breakout_direction is Direction.SHORT
 
     assert len(strategy.anchor_history) == 1
@@ -281,7 +284,7 @@ def test_anchor_recorded_as_session_ended_when_cutoff_hits_before_it_fills():
 
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
-    anchor_low, anchor_high = feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
     assert strategy.state is State.WAIT_FILL
 
     # Price never comes back down to the midpoint; the cutoff arrives first.
@@ -296,7 +299,7 @@ def test_anchor_recorded_as_session_ended_when_cutoff_hits_before_it_fills():
 
 
 def test_stale_fvg_from_a_previous_day_is_not_available_as_todays_anchor():
-    """A 15m FVG that formed on a previous trading day and was simply
+    """A 5m FVG that formed on a previous trading day and was simply
     never revisited (so it's still technically unmitigated) must not be
     available as an anchor on a later day. Otherwise results depend on
     how far back the fed bar history happens to start -- a real bug
@@ -307,34 +310,34 @@ def test_stale_fvg_from_a_previous_day_is_not_available_as_todays_anchor():
 
     feed_previous_day_levels(strategy)
 
-    # Day 1 (July 5): forms a large bullish 15m FVG well *below* where
+    # Day 1 (July 5): forms a large bullish 5m FVG well *below* where
     # day 2's box/breakout will trade (90-94, vs. day 2's ~99.5-103) --
     # never touched again, so it stays genuinely unmitigated (not just
     # coincidentally pruned when day 2's lower prices are fed) all the
     # way to the check below.
     stale_start = PREV_DAY_BASE + timedelta(hours=2)
-    feed_quiet_15m(strategy, stale_start, 8, 90.0)
-    pattern_start = stale_start + timedelta(minutes=15 * 8)
-    c0_bars = smooth_walk_1m(pattern_start, 15, 90.0, 90.1)
-    c1_bars = smooth_walk_1m(pattern_start + timedelta(minutes=15), 15, 90.1, 94.3)
-    c2_bars = smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, 94.3, 94.5)
+    feed_quiet_5m(strategy, stale_start, 8, 90.0)
+    pattern_start = stale_start + timedelta(minutes=5 * 8)
+    c0_bars = smooth_walk_1m(pattern_start, 5, 90.0, 90.1)
+    c1_bars = smooth_walk_1m(pattern_start + timedelta(minutes=5), 5, 90.1, 94.3)
+    c2_bars = smooth_walk_1m(pattern_start + timedelta(minutes=10), 5, 94.3, 94.5)
     for b in c0_bars + c1_bars + c2_bars:
         strategy.on_bar(b)
-    strategy.on_bar(flat_bar(pattern_start + timedelta(minutes=45), 94.5))  # finalizes/detects the stale FVG
+    strategy.on_bar(flat_bar(pattern_start + timedelta(minutes=15), 94.5))  # finalizes/detects the stale FVG
 
-    assert strategy.fvg_detector_15m.unmitigated_in_direction(Direction.LONG) != []
+    assert strategy.fvg_detector_5m.unmitigated_in_direction(Direction.LONG) != []
 
     # Day 2 (July 6, "DAY"): normal box + LONG breakout. The stale July-5
     # gap must not be picked up as today's anchor.
     feed_box_and_breakout(strategy)
 
-    # One more bar for the WAIT_15M_FVG candidate check to actually run
+    # One more bar for the WAIT_5M_FVG candidate check to actually run
     # (the breakout bar itself only sets the state; it doesn't fall
     # through to check for an anchor in the same bar).
     signal = strategy.on_bar(bar_at(DAY + timedelta(minutes=45), 102.5, 102.8, 102.3, 102.6))
 
     assert signal is None
-    assert strategy.state is State.WAIT_15M_FVG  # not WAIT_FILL -- no anchor yet
+    assert strategy.state is State.WAIT_5M_FVG  # not WAIT_FILL -- no anchor yet
     assert strategy._anchor_fvg is None
 
 
