@@ -22,6 +22,8 @@ strategy:
   # max_stop_points derivation: target_dollars / reference_contracts / point_value / reward_risk_ratio
   #   = 300 / 5 / 2.0 / 2.0 = 15 points. Reward target at that size is 2 x 15 = 30 points (~$300 @ 5 contracts).
   max_stop_points: 15.0
+  key_level_approach_points: 5.0  # price no longer needs to touch a key level exactly -- coming within
+                                   # this many points counts as the confluence step (see STRATEGY.md)
   fvg:
     timeframe_minutes: 15         # candles the FVG pattern is detected on (changed from 1m -- see STRATEGY.md)
     min_gap_points: 3.0           # ASSUMPTION: minimum 15m FVG size to count as a valid gap

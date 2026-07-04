@@ -17,9 +17,16 @@ def bar15(k: int, o: float, h: float, l: float, c: float) -> Bar:
     return Bar(timestamp=DAY + timedelta(minutes=15 * k), open=o, high=h, low=l, close=c)
 
 
+def premarket_bar(minutes_before_open: int, o: float, h: float, l: float, c: float) -> Bar:
+    """A bar earlier the same morning, before 9:30 -- used to build a FVG
+    well before the box/breakout even exist, to prove such a gap is still
+    tracked (and can later be excluded by the in-the-way check)."""
+    return Bar(timestamp=DAY - timedelta(minutes=minutes_before_open), open=o, high=h, low=l, close=c)
+
+
 def load_test_config():
     cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
-    # These tests exercise the box/breakout/retest/FVG mechanics across
+    # These tests exercise the box/breakout/approach/FVG mechanics across
     # several 15-minute candles, which comfortably exceeds the real
     # 11:30 ET cutoff -- push it out so the timing under test isn't the
     # no-new-entries cutoff (that's covered separately, see
@@ -49,7 +56,7 @@ def feed_box_and_breakout(strategy: OpeningRangeStrategy):
     assert strategy.state is State.WAIT_BREAKOUT
     signal = strategy.on_bar(bar15(2, 100.8, 103.0, 100.7, 102.5))
     assert signal is None
-    assert strategy.state is State.WAIT_KEY_LEVEL_RETEST
+    assert strategy.state is State.WAIT_KEY_LEVEL_APPROACH
 
 
 def feed_quiet_15m(strategy: OpeningRangeStrategy, start_k: int, count: int, o: float, h: float, l: float, c: float):
@@ -59,17 +66,18 @@ def feed_quiet_15m(strategy: OpeningRangeStrategy, start_k: int, count: int, o: 
 
 
 def test_full_breakout_retest_then_fvg_fill_sequence():
-    """Price retests the previous-day high (105) after breakout, then 8
-    quiet 15m candles establish the average-range baseline, then a strong
-    15m FVG forms (105.4-109.0) and the resulting midpoint limit (107.2)
-    fills on a retrace."""
+    """Price touches the previous-day high (105) exactly after breakout
+    (an exact touch is 0 points away, so it still counts as an approach),
+    then 8 quiet 15m candles establish the average-range baseline, then a
+    strong 15m FVG forms (105.4-109.0) and the resulting midpoint limit
+    (107.2) fills on a retrace."""
     cfg = load_test_config()
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
 
-    # bar 3 (10:15): retest -- range 102.3-105.5 touches the previous-day high (105)
+    # bar 3 (10:15): range 102.3-105.5 touches the previous-day high (105) exactly
     signal = strategy.on_bar(bar15(3, 102.5, 105.5, 102.3, 105.0))
     assert signal is None
     assert strategy.state is State.WAIT_FVG
@@ -94,46 +102,73 @@ def test_full_breakout_retest_then_fvg_fill_sequence():
     assert strategy.state is State.IN_TRADE
 
 
-def test_uses_a_pre_existing_unmitigated_fvg_once_retest_completes():
-    """A strong, correctly-directed FVG that forms in a completely
-    unrelated price area (62-68, nowhere near the marked levels or the
-    box) *before* the retest happens must sit unused until the retest
-    occurs -- but once it does, that already-formed, still-unmitigated
-    FVG is used immediately (no need to wait for a fresh one to form
-    after the retest)."""
+def test_enters_on_approach_within_points_without_exact_touch():
+    """Price no longer needs to trade through the exact previous-day high
+    (105) -- coming within key_level_approach_points (5, per config.yaml)
+    is enough to unlock the FVG-watching step."""
     cfg = load_test_config()
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
     feed_box_and_breakout(strategy)
 
-    feed_quiet_15m(strategy, 3, 8, 63.0, 63.5, 62.5, 63.0)  # bars 3-10: baseline, still WAIT_KEY_LEVEL_RETEST
-    assert strategy.state is State.WAIT_KEY_LEVEL_RETEST
-
-    strategy.on_bar(bar15(11, 63.0, 63.6, 62.7, 63.3))  # c0
-    strategy.on_bar(bar15(12, 63.3, 68.5, 63.2, 68.3))  # c1: displacement
-    strategy.on_bar(bar15(13, 68.3, 68.8, 67.6, 68.5))  # c2: confirms gap 63.6-67.6
-    signal = strategy.on_bar(bar15(14, 68.5, 68.6, 68.4, 68.5))  # flush -- detects the FVG
+    # bar 3: range 102.3-103.0 comes within 2.0 points of 105 without ever touching it.
+    signal = strategy.on_bar(bar15(3, 102.5, 103.0, 102.3, 102.8))
 
     assert signal is None
-    assert strategy.state is State.WAIT_KEY_LEVEL_RETEST  # still hasn't been retested
+    assert strategy.state is State.WAIT_FVG
+    assert strategy._approached_level == 105.0
+    assert strategy.stats["key_level_approaches"] == 1
 
-    # bar 15: retest -- range 102.3-105.5 touches the previous-day high (105)
-    signal = strategy.on_bar(bar15(15, 102.5, 105.5, 102.3, 105.0))
+
+def test_ignores_fvg_behind_price_and_uses_the_one_in_the_way():
+    """An unmitigated FVG that's already behind current price (price has
+    passed it, moving toward the approached level) must not be used, even
+    though nothing broke it -- only a FVG actually sitting between current
+    price and the approached level counts. Once one forms there, it's
+    used instead, even though the "behind" one formed first and is still
+    technically unmitigated."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+
+    # A FVG forms well before the box/breakout even exist, far below where
+    # price will be trading once the breakout happens (gap 96.4-100.0).
+    for j in range(8):
+        strategy.on_bar(premarket_bar(195 - 15 * j, 96.0, 96.5, 95.5, 96.0))  # baseline, 8:15 back to 6:30
+    strategy.on_bar(premarket_bar(60, 96.0, 96.4, 95.7, 96.1))  # c0 (8:30)
+    strategy.on_bar(premarket_bar(45, 96.1, 100.5, 96.0, 100.3))  # c1: displacement (8:45)
+    strategy.on_bar(premarket_bar(30, 100.3, 100.8, 100.0, 100.5))  # c2: confirms gap 96.4-100.0 (9:00)
+    strategy.on_bar(premarket_bar(15, 100.5, 100.6, 100.4, 100.5))  # flush -- detects it (9:15)
+
+    feed_box_and_breakout(strategy)  # breakout LONG, current price now ~102.5
+
+    # bar 3: touches the previous-day high (105) -- approach complete.
+    signal = strategy.on_bar(bar15(3, 102.5, 105.5, 102.3, 105.0))
     assert signal is None
     assert strategy.state is State.WAIT_FVG
 
-    # bar 16: the state machine picks up the already-formed, still-unmitigated
-    # FVG from before the retest -- straight to WAIT_FILL, no new FVG needed.
-    signal = strategy.on_bar(bar15(16, 68.5, 68.6, 68.4, 68.5))
+    # bar 4: nothing in the way yet -- the only unmitigated FVG (96.4-100.0)
+    # is behind current price (~105), not between it and the level (105).
+    signal = strategy.on_bar(bar15(4, 105.0, 105.5, 104.5, 105.0))
     assert signal is None
-    assert strategy.state is State.WAIT_FILL
+    assert strategy.state is State.WAIT_FVG
 
-    signal = strategy.on_bar(bar15(17, 68.5, 68.6, 64.0, 65.0))  # retrace fills the 65.6 midpoint
+    feed_quiet_15m(strategy, 5, 7, 105.0, 105.5, 104.5, 105.0)  # bars 5-11: rest of the baseline
+
+    strategy.on_bar(bar15(12, 105.0, 105.4, 104.7, 105.1))  # c0
+    strategy.on_bar(bar15(13, 105.1, 109.5, 105.0, 109.3))  # c1: displacement
+    strategy.on_bar(bar15(14, 109.3, 109.8, 109.0, 109.5))  # c2: confirms gap 105.4-109.0
+    signal = strategy.on_bar(bar15(15, 109.5, 109.6, 109.4, 109.5))  # flush -- detects the in-the-way FVG
+
+    assert signal is None
+    assert strategy.state is State.WAIT_FILL  # picked the 105.4-109.0 gap, not the 96.4-100.0 one
+
+    signal = strategy.on_bar(bar15(16, 109.5, 109.8, 106.0, 107.5))  # retrace fills the 107.2 midpoint
 
     assert signal is not None
-    assert signal.direction is Direction.LONG
-    assert signal.entry_price == 65.6  # midpoint of 63.6-67.6
+    assert signal.entry_price == 107.2  # midpoint of 105.4-109.0, confirms the behind FVG was never used
 
 
 def test_abandons_fvg_that_gets_mitigated_before_fill():
@@ -186,7 +221,7 @@ def test_reenters_after_stop_out_when_setup_reforms():
     # A new breakout forms below the box low (99.5) -- setup reforms as SHORT.
     signal = strategy.on_bar(bar15(17, 107.5, 107.5, 99.0, 99.0))
     assert signal is None
-    assert strategy.state is State.WAIT_KEY_LEVEL_RETEST
+    assert strategy.state is State.WAIT_KEY_LEVEL_APPROACH
 
 
 def test_stands_down_for_day_after_cutoff():

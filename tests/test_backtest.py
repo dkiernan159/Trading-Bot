@@ -101,17 +101,17 @@ def test_funnel_stats_track_each_gate():
 
     assert stats == {
         "breakouts": 1,
-        "key_level_retests": 1,
-        "strong_fvgs_after_retest": 1,
+        "key_level_approaches": 1,
+        "strong_fvgs_after_approach": 1,
         "fills": 1,
         "fvgs_mitigated_before_fill": 0,
     }
 
 
-def test_funnel_stats_show_retest_but_no_fvg_afterward():
-    """A breakout that retests a key level but never gets a qualifying FVG
-    afterward should show up as a near-miss: breakout + retest counted,
-    zero strong_fvgs_after_retest, zero fills."""
+def test_funnel_stats_show_approach_but_no_fvg_afterward():
+    """A breakout that approaches a key level but never gets a qualifying
+    FVG in the way afterward should show up as a near-miss: breakout +
+    approach counted, zero strong_fvgs_after_approach, zero fills."""
     cfg = load_test_config()
     bars = [
         Bar(timestamp=PREV_DAY_BASE, open=100.0, high=101.0, low=99.0, close=100.0),
@@ -121,7 +121,7 @@ def test_funnel_stats_show_retest_but_no_fvg_afterward():
     bars.append(bar15(0, 100.0, 101.0, 99.5, 100.5))
     bars.append(bar15(1, 100.5, 101.2, 100.0, 100.8))
     bars.append(bar15(2, 100.8, 103.0, 100.7, 102.5))
-    bars.append(bar15(3, 102.5, 105.5, 102.3, 105.0))  # retest
+    bars.append(bar15(3, 102.5, 105.5, 102.3, 105.0))  # approach (touches 105)
     for k in range(4, 20):
         bars.append(bar15(k, 105.0, 105.5, 104.5, 105.0))  # flat, no FVG ever forms
 
@@ -130,8 +130,8 @@ def test_funnel_stats_show_retest_but_no_fvg_afterward():
 
     assert results == []
     assert stats["breakouts"] == 1
-    assert stats["key_level_retests"] == 1
-    assert stats["strong_fvgs_after_retest"] == 0
+    assert stats["key_level_approaches"] == 1
+    assert stats["strong_fvgs_after_approach"] == 0
     assert stats["fills"] == 0
 
 
