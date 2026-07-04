@@ -43,6 +43,17 @@ strategy:
                            # only 1 of 7 times, versus 3 of 6 among trades with a wider, more genuine stop. A
                            # stop that tight is inside ordinary MNQ chop, not a real structural level. Retune
                            # against real data like every other threshold here; see STRATEGY.md.
+  entry_retracement_pct: 0.35   # ASSUMPTION: how far price must retrace into the anchor 5m FVG before counting
+                                 # as filled, as a fraction of the gap's own width -- 0.5 is the exact midpoint
+                                 # (the original design); this loosens it to a shallower retracement, scaling
+                                 # automatically with each anchor's own size rather than a fixed point distance.
+                                 # Added 2026-07-04: a real 30-day --near-miss backtest showed "superseded" was by
+                                 # far the largest bucket (29 of 51 near-misses) -- several anchors sat live for
+                                 # 1-2+ hours before being replaced, suggesting price was often approaching but
+                                 # not making it all the way to the exact midpoint before a fresher anchor took
+                                 # over. Still provably safe from "mitigated before it could fill" for any value
+                                 # strictly between 0 and 1 -- see strategy.py's _entry_price. Retune against real
+                                 # data like every other threshold here.
   fvg:                            # the 5m FVG: confirms direction/anchors the move -- its own midpoint is
                                    # also the entry price (see rule 4/5 in STRATEGY.md). Changed from 15m to
                                    # 5m timeframe 2026-07-04 based on a real annotated trade example: the

@@ -46,20 +46,26 @@ review these and adjust `config.yaml` before running live.
    because price trades through it; reaching its far edge and filling the
    entry are actually the same event (see rule 5), so there's no separate
    "abandoned because mitigated" outcome to have.
-5. Entry is a **limit order at the midpoint of that anchor 5m FVG's own
-   gap** (`(gap_low + gap_high) / 2`), not a market order at whatever
-   price the confirming candle closed at, and not a further nested
-   structure inside the anchor. The trade only starts once price actually
-   trades back to that midpoint, **no matter how much later in the
-   session that happens or how far price has moved away from the gap in
-   the meantime** -- there's no separate time or distance limit on the
-   retest beyond the session cutoff itself (rule on end-of-session below).
-   If it never comes back before the cutoff, there's no entry that setup.
-   Since the midpoint sits strictly between the gap's two edges, a bar can
-   never break the gap's **far** edge without having *already* reached the
-   midpoint first -- so the resting limit order always fills; there's no
-   such thing as this pending entry getting "mitigated before it could
-   fill." (Mitigation still matters earlier, when *choosing* a 5m FVG as
+5. Entry is a **limit order at a retracement point inside that anchor 5m
+   FVG's own gap** (`entry_retracement_pct` of the way in from the near
+   edge -- `0.5` is the exact midpoint, `(gap_low + gap_high) / 2`;
+   `config.yaml` currently loosens this below 0.5 for more fills, see
+   revision history), not a market order at whatever price the
+   confirming candle closed at, and not a further nested structure
+   inside the anchor. The trade only starts once price actually trades
+   back to that point, **no matter how much later in the session that
+   happens or how far price has moved away from the gap in the
+   meantime** -- there's no separate time or distance limit on the
+   retest beyond the session cutoff itself (rule on end-of-session
+   below). If it never comes back before the cutoff, there's no entry
+   that setup. Since the entry point sits strictly between the gap's two
+   edges (true for any retracement fraction strictly between 0 and 1,
+   not just the midpoint), a bar can never break the gap's **far** edge
+   without having *already* reached the entry point first -- so the
+   resting limit order always fills; there's no such thing as this
+   pending entry getting "mitigated before it could fill," regardless of
+   which retracement fraction is configured. (Mitigation still matters
+   earlier, when *choosing* a 5m FVG as
    the anchor in the first place -- an already-broken gap is never
    selected as the anchor to begin with.)
 
@@ -124,7 +130,30 @@ review these and adjust `config.yaml` before running live.
    `fvg_detector_5m` and `config.yaml: strategy.fvg.timeframe_minutes`
    changed from 15 to 5; nothing else about rules 4-5's mechanics
    changed, since the entry-at-own-midpoint / kept-live / no-time-limit
-   design was already correct -- only the timeframe it ran on was wrong.)
+   design was already correct -- only the timeframe it ran on was wrong.
+
+   Loosened again 2026-07-04: a real 30-day `--near-miss` backtest showed
+   "superseded" (a fresher/nearer anchor replacing one before it ever
+   filled) was by far the largest outcome, 29 of 51 near-misses -- several
+   anchors sat live for 1-2+ hours before being replaced, suggesting price
+   was often approaching but not making it all the way to the exact
+   midpoint before a fresher anchor took over. Entry is no longer
+   hardcoded to the exact midpoint; `entry_retracement_pct`
+   (`config.yaml`) sets how far into the gap price must retrace, as a
+   fraction of that anchor's own width -- `0.5` reproduces the exact
+   midpoint, and `config.yaml` currently loosens it to `0.35` as a
+   starting ASSUMPTION to retest against real data, same as every other
+   threshold here. Confirmed with the user beforehand (not guessed) that
+   this should be a configurable retracement fraction scaling with each
+   anchor's own size -- not a fixed point-distance tolerance, and not an
+   entry aligned to wherever a marked structural level happens to sit
+   inside the gap. The "always fills before it could be mitigated"
+   guarantee (rule 5 above) needed no changes to hold for this: it was
+   never actually specific to the midpoint -- any point strictly between
+   the gap's two edges has the same property, since a single bar's
+   low/high can't reach the far edge without having already reached
+   anything closer to where price is coming from. No separate mitigation
+   check was added as a result, since it would never fire.)
 6. Reward:risk is 2:1.
 7. Stop-loss is placed intelligently at a real structural level -- the
    nearest marked previous-day/Asia/London high-low or opening-range box
@@ -302,8 +331,9 @@ review these and adjust `config.yaml` before running live.
   actually happens). The strategy runs a single instance of this
   detector, `fvg_detector_5m` (`config.yaml: strategy.fvg`,
   `timeframe_minutes: 5`), which finds the large anchor FVG that both
-  confirms the move and supplies the entry price (its own midpoint --
-  see rule 5). Its thresholds were loosened 2026-07-04 (`min_gap_points`
+  confirms the move and supplies the entry price (a retracement point
+  inside its own gap -- see rule 5). Its thresholds were loosened
+  2026-07-04 (`min_gap_points`
   3.0->2.5->2.0, `displacement_multiplier` 1.5->1.3->1.1) while it still
   ran on 15-minute candles and a real week of history kept producing too
   few anchors, then again after the nested-entry stage was removed (see

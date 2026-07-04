@@ -52,6 +52,9 @@ def load_test_config():
     # routinely land inside the real config's 20-point minimum stop
     # distance -- zero it out since that gate isn't what's under test here.
     cfg.strategy.min_stop_dollars = 0.0
+    # See tests/test_strategy.py: this file's fixtures assume the exact
+    # midpoint too, since the real config's default is now loosened.
+    cfg.strategy.entry_retracement_pct = 0.5
     return cfg
 
 

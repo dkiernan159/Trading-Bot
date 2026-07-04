@@ -56,6 +56,13 @@ def load_test_config():
     # and test_anchor_rejected_when_the_only_real_level_is_too_close) aren't
     # incidentally exercising it too.
     cfg.strategy.min_stop_dollars = 0.0
+    # All the existing gap-math assertions in this file were written
+    # against the exact midpoint (entry_retracement_pct 0.5) -- keep that
+    # here so this real config's default (loosened for more fills, see
+    # config.yaml) doesn't change unrelated tests. The retracement
+    # fraction itself is covered separately, see
+    # test_entry_fills_at_a_shallower_retracement_than_the_midpoint.
+    cfg.strategy.entry_retracement_pct = 0.5
     return cfg
 
 
@@ -150,6 +157,61 @@ def test_full_breakout_then_fill_at_the_anchors_own_midpoint():
     assert strategy.anchor_history[0].outcome == "filled"
     assert strategy.anchor_history[0].gap_low == pytest.approx(anchor_low)
     assert strategy.anchor_history[0].ended_at == fill_time
+
+
+def test_entry_fills_at_a_shallower_retracement_than_the_midpoint():
+    """With entry_retracement_pct loosened below 0.5, the resting limit
+    price sits closer to the gap's near edge than the exact midpoint --
+    scaling with that anchor's own width -- so a shallower retracement
+    fills the trade, one that wouldn't have reached the old exact
+    midpoint at all. Added after a real 30-day --near-miss backtest
+    showed "superseded" (anchors replaced before ever filling) was by far
+    the largest bucket -- several anchors sat live for 1-2+ hours before
+    being replaced, suggesting price often approached but didn't quite
+    reach the exact midpoint."""
+    cfg = load_test_config()
+    cfg.strategy.entry_retracement_pct = 0.35
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)
+
+    # Built by hand rather than via feed_large_5m_fvg, since that helper
+    # asserts the pending price lands at the exact midpoint -- not true
+    # once entry_retracement_pct is loosened.
+    start = DAY + timedelta(minutes=45)
+    quiet_price, c1_end = 105.0, 109.3
+    feed_quiet_5m(strategy, start, 8, quiet_price)
+    pattern_start = start + timedelta(minutes=5 * 8)
+    c0_bars = smooth_walk_1m(pattern_start, 5, quiet_price, quiet_price + 0.1)
+    c1_bars = smooth_walk_1m(pattern_start + timedelta(minutes=5), 5, quiet_price + 0.1, c1_end)
+    c2_bars = smooth_walk_1m(pattern_start + timedelta(minutes=10), 5, c1_end, c1_end + 0.2)
+    for b in c0_bars + c1_bars + c2_bars:
+        assert strategy.on_bar(b) is None
+    anchor_low = max(b.high for b in c0_bars)
+    anchor_high = min(b.low for b in c2_bars)
+    flush_time = pattern_start + timedelta(minutes=15)
+    assert strategy.on_bar(flat_bar(flush_time, c1_end + 0.2)) is None
+    assert strategy.state is State.WAIT_FILL
+
+    midpoint = (anchor_low + anchor_high) / 2
+    width = anchor_high - anchor_low
+    shallow_entry = anchor_high - 0.35 * width
+
+    assert shallow_entry > midpoint  # closer to the near/top edge than the exact midpoint
+    assert strategy._pending_limit_price == pytest.approx(shallow_entry)
+
+    # This bar retraces down to the shallow entry point but stops well
+    # short of the exact midpoint -- would never have filled under the
+    # original (0.5) design.
+    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    signal = strategy.on_bar(
+        bar_at(fill_time, anchor_high, anchor_high + 0.1, shallow_entry - 0.01, shallow_entry)
+    )
+
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(shallow_entry)
+    assert strategy.state is State.IN_TRADE
 
 
 def test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill():
