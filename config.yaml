@@ -27,14 +27,19 @@ strategy:
                            # only kicks in if that nearest level is farther away than $200 allows.
   fvg:                            # the "large" 15m FVG: confirms direction, anchors where to look for an entry
     timeframe_minutes: 15
-    min_gap_points: 3.0           # ASSUMPTION: minimum 15m FVG size to count as a valid gap
-    displacement_multiplier: 1.5  # ASSUMPTION: "strong" = displacement candle body >= 1.5x recent avg range
+    min_gap_points: 2.5           # ASSUMPTION: minimum 15m FVG size to count as a valid gap (loosened 2026-07-04
+                                   # from 3.0 -- too few anchors were forming; see STRATEGY.md)
+    displacement_multiplier: 1.3  # ASSUMPTION: "strong" = displacement candle body >= 1.3x recent avg range
+                                   # (loosened 2026-07-04 from 1.5)
     lookback_bars: 8              # 15m candles used for the recent average range baseline (~2 hours)
-  entry_fvg:                      # NEW: the 1m FVG nested inside the 15m FVG -- the actual entry trigger,
-                                   # kept small/tight so the stop isn't sized off 15m-candle noise
+  entry_fvg:                      # the 1m FVG nested inside the 15m FVG -- the actual entry trigger, kept
+                                   # small/tight so the stop isn't sized off 15m-candle noise
     timeframe_minutes: 1
-    min_gap_points: 0.75          # ASSUMPTION: minimum 1m FVG size, must be small enough to nest inside the 15m gap
-    displacement_multiplier: 1.5  # ASSUMPTION: same "strong" definition, just on the 1m timeframe
+    min_gap_points: 0.5           # ASSUMPTION: minimum 1m FVG size (loosened 2026-07-04 from 0.75 -- since the
+                                   # nested FVG now also has to form *after* the anchor locks in, requiring it
+                                   # to also be large was leaving too narrow a window to find one; see STRATEGY.md)
+    displacement_multiplier: 1.2  # ASSUMPTION: "strong" = displacement candle body >= 1.2x recent avg range
+                                   # (loosened 2026-07-04 from 1.5, same reasoning)
     lookback_bars: 20             # 1m candles used for the recent average range baseline (~20 minutes)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms

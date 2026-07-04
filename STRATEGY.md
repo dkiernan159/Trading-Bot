@@ -139,7 +139,15 @@ review these and adjust `config.yaml` before running live.
   `timeframe_minutes: 15`) finds the large anchor FVG that confirms the
   move; `fvg_detector_1m` (`config.yaml: strategy.entry_fvg`,
   `timeframe_minutes: 1`, deliberately smaller `min_gap_points` since it
-  has to nest inside the 15m gap) finds the precise entry trigger.
+  has to nest inside the 15m gap) finds the precise entry trigger. Both
+  sets of thresholds were loosened 2026-07-04 (15m: `min_gap_points`
+  3.0->2.5, `displacement_multiplier` 1.5->1.3; 1m: `min_gap_points`
+  0.75->0.5, `displacement_multiplier` 1.5->1.2) after a real week of
+  history produced zero trades once the nested-1m-FVG check also started
+  requiring the gap to form *after* the anchor locked in (previous
+  entry) -- that correctness fix narrowed the window to find a
+  qualifying nested gap, so the strength bar needed to come down a
+  notch to compensate.
 - **"Nested"** (`src/strategy.py: WAIT_1M_FVG`): a 1m FVG counts as nested
   inside the 15m anchor when its whole range falls inside the anchor's
   (`nested.gap_low >= anchor.gap_low and nested.gap_high <= anchor.gap_high`)
