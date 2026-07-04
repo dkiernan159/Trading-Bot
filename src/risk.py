@@ -19,14 +19,21 @@ def compute_stop_target(
     direction: Direction,
     entry_price: float,
     structural_levels: list[float],
-    max_stop_points: float,
+    max_stop_dollars: float,
+    point_value: float,
+    contracts: int,
     reward_risk_ratio: float,
 ) -> BracketLevels:
     """Stop is the nearest marked structural level beyond entry (previous
-    day/Asia/London high-low, opening range box edge), capped at
-    max_stop_points so it never exceeds what the reward:risk ratio implies.
-    Target is always reward_risk_ratio x the actual stop distance used.
+    day/Asia/London high-low, opening range box edge, or the 15m anchor
+    FVG's far boundary -- see strategy.py's structural_levels), capped at
+    whatever max_stop_dollars is worth in points at the current contract
+    size, so the dollar risk never exceeds that cap regardless of which
+    structural level ends up nearest. Target is always reward_risk_ratio x
+    the actual stop distance used.
     """
+    max_stop_points = max_stop_dollars / (point_value * contracts)
+
     if direction is Direction.LONG:
         candidates = [lvl for lvl in structural_levels if lvl < entry_price]
         nearest = max(candidates) if candidates else None

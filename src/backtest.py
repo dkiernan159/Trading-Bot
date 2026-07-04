@@ -112,7 +112,9 @@ def run_backtest(cfg: BotConfig, bars: list[Bar], stats_out: dict | None = None)
                 direction=signal.direction,
                 entry_price=signal.entry_price,
                 structural_levels=signal.structural_levels,
-                max_stop_points=cfg.strategy.max_stop_points,
+                max_stop_dollars=cfg.strategy.max_stop_dollars,
+                point_value=cfg.instrument.point_value,
+                contracts=cfg.position_sizing.contract_size,
                 reward_risk_ratio=cfg.strategy.reward_risk_ratio,
             )
             levels = strategy.current_session_levels

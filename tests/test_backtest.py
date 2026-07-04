@@ -92,7 +92,10 @@ def breakout_15m_anchor_nested_1m_bars() -> list[Bar]:
 def test_backtest_records_a_win():
     cfg = load_test_config()
     bars = breakout_15m_anchor_nested_1m_bars()
-    # Runs up to the target (109.8) without dipping to the stop (105.0) first.
+    # Stop is now the 15m anchor's own bottom (105.3), the nearest structural
+    # level below entry (106.6) -- nearer than the previous-day high (105.0)
+    # -- so target is 106.6 + 2*(106.6-105.3) = 109.2.
+    # Runs up to the target (109.2) without dipping to the stop (105.3) first.
     bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 106.8, 110.0, 106.7, 109.9))
 
     results = run_backtest(cfg, bars)
@@ -101,14 +104,15 @@ def test_backtest_records_a_win():
     assert results[0]["won"] is True
     assert results[0]["date"] == DAY.date()
     assert results[0]["entry_price"] == 106.6
-    assert results[0]["stop_price"] == 105.0
-    assert results[0]["target_price"] == pytest.approx(109.8)
+    assert results[0]["stop_price"] == pytest.approx(105.3)
+    assert results[0]["target_price"] == pytest.approx(109.2)
 
 
 def test_backtest_records_a_loss():
     cfg = load_test_config()
     bars = breakout_15m_anchor_nested_1m_bars()
-    # Drops to the stop (105.0) without reaching the target (109.8) first.
+    # Drops to the stop (105.3, the 15m anchor's bottom) without reaching
+    # the target (109.2) first.
     bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 106.8, 107.0, 104.5, 105.0))
 
     results = run_backtest(cfg, bars)

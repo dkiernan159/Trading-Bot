@@ -53,7 +53,9 @@ class Runner:
             direction=signal.direction,
             entry_price=signal.entry_price,
             structural_levels=signal.structural_levels,
-            max_stop_points=self.cfg.strategy.max_stop_points,
+            max_stop_dollars=self.cfg.strategy.max_stop_dollars,
+            point_value=self.cfg.instrument.point_value,
+            contracts=self.cfg.position_sizing.contract_size,
             reward_risk_ratio=self.cfg.strategy.reward_risk_ratio,
         )
         contracts = self.cfg.position_sizing.contract_size

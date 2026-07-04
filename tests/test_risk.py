@@ -7,7 +7,9 @@ def test_long_uses_nearby_structural_level_within_cap():
         direction=Direction.LONG,
         entry_price=100.0,
         structural_levels=[95.0, 90.0, 105.0],
-        max_stop_points=15.0,
+        max_stop_dollars=200.0,
+        point_value=2.0,
+        contracts=1,
         reward_risk_ratio=2.0,
     )
     assert result.stop_points == 5.0
@@ -17,17 +19,20 @@ def test_long_uses_nearby_structural_level_within_cap():
 
 
 def test_long_caps_stop_when_structural_level_too_far():
+    # $200 / (2.0 point_value * 1 contract) = 100 point cap.
     result = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
-        structural_levels=[80.0],
-        max_stop_points=15.0,
+        structural_levels=[-50.0],
+        max_stop_dollars=200.0,
+        point_value=2.0,
+        contracts=1,
         reward_risk_ratio=2.0,
     )
-    assert result.stop_points == 15.0
-    assert result.stop_price == 85.0
-    assert result.target_points == 30.0
-    assert result.target_price == 130.0
+    assert result.stop_points == 100.0
+    assert result.stop_price == 0.0
+    assert result.target_points == 200.0
+    assert result.target_price == 300.0
 
 
 def test_long_falls_back_to_cap_with_no_levels_below_entry():
@@ -35,11 +40,13 @@ def test_long_falls_back_to_cap_with_no_levels_below_entry():
         direction=Direction.LONG,
         entry_price=100.0,
         structural_levels=[105.0, 110.0],
-        max_stop_points=15.0,
+        max_stop_dollars=200.0,
+        point_value=2.0,
+        contracts=1,
         reward_risk_ratio=2.0,
     )
-    assert result.stop_points == 15.0
-    assert result.stop_price == 85.0
+    assert result.stop_points == 100.0
+    assert result.stop_price == 0.0
 
 
 def test_short_uses_nearby_structural_level_within_cap():
@@ -47,10 +54,29 @@ def test_short_uses_nearby_structural_level_within_cap():
         direction=Direction.SHORT,
         entry_price=100.0,
         structural_levels=[110.0, 120.0, 95.0],
-        max_stop_points=15.0,
+        max_stop_dollars=200.0,
+        point_value=2.0,
+        contracts=1,
         reward_risk_ratio=2.0,
     )
     assert result.stop_points == 10.0
     assert result.stop_price == 110.0
     assert result.target_points == 20.0
     assert result.target_price == 80.0
+
+
+def test_dollar_cap_shrinks_in_points_as_contract_size_scales_up():
+    """The $200 cap stays fixed in dollars, so at more contracts it maps
+    to fewer points -- $200 / (2.0 point_value * 4 contracts) = 25 points,
+    versus 100 points at 1 contract."""
+    result = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        structural_levels=[50.0],  # 50 points away -- beyond the 25pt cap at 4 contracts
+        max_stop_dollars=200.0,
+        point_value=2.0,
+        contracts=4,
+        reward_risk_ratio=2.0,
+    )
+    assert result.stop_points == 25.0
+    assert result.stop_price == 75.0

@@ -67,10 +67,14 @@ review these and adjust `config.yaml` before running live.
    the entry price -- and therefore the stop -- reflects 1-minute-scale
    structure instead of 15-minute-scale noise.)
 7. Reward:risk is 2:1.
-8. Stop-loss: **either** the 2:1 ratio itself, **or** placed at a large
-   support/resistance level whose break would imply a large move -- but never
-   larger than the distance implied by the 2:1 ratio against the reference
-   target.
+8. Stop-loss is placed intelligently at a real structural level -- below
+   the bottom of the 15m anchor FVG, or below the next break of structure
+   beyond it, whichever makes sense on the chart (mirrored for shorts:
+   above the top of the anchor / above the next break of structure) --
+   **capped at $200 of risk per trade** (`config.yaml:
+   strategy.max_stop_dollars`) at the current `position_sizing.contract_size`,
+   so the stop is never wider than that regardless of how far away the
+   nearest structural level is.
 9. Reference size is 5 MNQ contracts, targeting ~$300/trade. The bot starts
    at a smaller size (`config.yaml: position_sizing.contract_size`) until a
    consistent win rate is shown; scaling back up to 5 is **manual only** --
@@ -83,15 +87,31 @@ review these and adjust `config.yaml` before running live.
 - **Stop-loss placement** (`src/risk.py`): the "large formed area of
   resistance/support" is interpreted as the nearest already-marked level
   beyond entry in the stop direction -- previous day high/low, Asia
-  high/low, London high/low, or the opening range box edge. The bot finds
-  the nearest such level beyond entry and uses it as the stop, **but caps**
-  the distance at `max_stop_points` (derived below). If the nearest
-  structural level is farther than the cap, the cap is used instead so the
-  stop never exceeds what the 2:1 ratio implies.
-  - `max_stop_points = target_dollars_at_reference_size / reference_contracts
-    / point_value / reward_risk_ratio = 300 / 5 / 2.0 / 2.0 = 15 points.`
+  high/low, London high/low, the opening range box edge, **or either
+  boundary of the 15m anchor FVG** (`strategy.py`'s `structural_levels`,
+  built when the trade signal fires). The 15m anchor's far edge is a
+  structural level in its own right -- a break of it invalidates the
+  whole setup -- so it's included alongside the marked levels; whichever
+  of all of these ends up nearest beyond entry becomes the stop
+  ("whatever makes sense based on the chart": the anchor's own bottom/top
+  if that's nearest, otherwise the next further-out break of structure).
+  The distance to that nearest level is **capped** at `max_stop_dollars`
+  (`config.yaml`, $200) converted to points at signal time
+  (`max_stop_dollars / (instrument.point_value * position_sizing.contract_size)`)
+  -- so the dollar risk per trade never exceeds $200 regardless of
+  contract size, even if the nearest structural level is farther out.
   - Take-profit is always `2 x actual_stop_distance` (so smaller structural
-    stops give a smaller, still-2:1, target).
+    stops give a smaller, still-2:1, target -- this is why the target
+    varies per trade rather than always chasing the reference $300).
+  - (Revision history: originally a fixed `max_stop_points: 15` derived
+    from the reference $300 target at 5 contracts -- once entries moved
+    to a 1m FVG nested inside the 15m anchor (see rule 5), the nearest
+    structural level was often extremely close to entry, producing very
+    shallow, easily-noise-triggered stops. Corrected 2026-07-04 to a
+    dollar-denominated cap and added the 15m anchor's own boundary as a
+    stop candidate, so the bot can use a wider, more sensible structural
+    stop -- the anchor's bottom/top, or the next break of structure
+    beyond it -- as long as it stays within $200.)
 - **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on
   `FvgConfig.timeframe_minutes` where (a) the gap size is >=
   `min_gap_points` and (b) the middle (displacement) candle's body is >=
@@ -121,7 +141,7 @@ review these and adjust `config.yaml` before running live.
   "approach" step -- removed 2026-07-04 in favor of the 15m-anchor +
   nested-1m design above). They're still marked every day and still feed
   `src/risk.py`'s stop-loss placement (nearest structural level beyond
-  entry, capped at `max_stop_points`) and the chart's shaded reference
+  entry, capped at `max_stop_dollars`) and the chart's shaded reference
   bands -- just not the entry trigger anymore.
 - **Asia / London session windows** (`config.yaml: session`): set to common
   ICT-style approximations (Asia 19:00-23:59 ET prior evening, London

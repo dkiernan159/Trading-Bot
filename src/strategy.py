@@ -196,6 +196,15 @@ class OpeningRangeStrategy:
                     structural_levels.append(self.box.high)
                 if self.box.low is not None:
                     structural_levels.append(self.box.low)
+                # The 15m anchor FVG's far boundary is itself a structural
+                # level -- a break of it invalidates the whole setup, so
+                # it's a sensible stop candidate alongside the marked
+                # previous-day/Asia/London/box levels ("the next break of
+                # structure" beyond it). Both edges are added; risk.py's
+                # nearest-beyond-entry filter picks whichever side (if
+                # either) actually applies for this trade's direction.
+                structural_levels.append(self._anchor_fvg.gap_low)
+                structural_levels.append(self._anchor_fvg.gap_high)
 
                 signal = EntrySignal(
                     direction=self._breakout_direction,

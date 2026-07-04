@@ -19,9 +19,12 @@ strategy:
   reward_risk_ratio: 2.0
   target_dollars_at_reference_size: 300   # your usual $300 target
   reference_contracts: 5                  # ...at your usual 5-contract size
-  # max_stop_points derivation: target_dollars / reference_contracts / point_value / reward_risk_ratio
-  #   = 300 / 5 / 2.0 / 2.0 = 15 points. Reward target at that size is 2 x 15 = 30 points (~$300 @ 5 contracts).
-  max_stop_points: 15.0
+  max_stop_dollars: 200   # hard dollar cap on stop-loss risk per trade, at position_sizing.contract_size.
+                           # Converted to points at signal time (max_stop_dollars / point_value / contract_size),
+                           # so it stays a $200 cap even as contract_size is manually scaled up. The actual stop
+                           # is placed at whichever marked structural level (previous day/Asia/London high-low,
+                           # box edge, or the 15m anchor FVG's far boundary) is nearest beyond entry -- this cap
+                           # only kicks in if that nearest level is farther away than $200 allows.
   fvg:                            # the "large" 15m FVG: confirms direction, anchors where to look for an entry
     timeframe_minutes: 15
     min_gap_points: 3.0           # ASSUMPTION: minimum 15m FVG size to count as a valid gap
