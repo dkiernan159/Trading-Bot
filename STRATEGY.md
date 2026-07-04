@@ -24,7 +24,13 @@ review these and adjust `config.yaml` before running live.
 5. Once a 15m FVG has anchored the move, the bot watches **inside that
    anchor's gap** for a **1-minute FVG fully nested within it**
    (`nested.gap_low >= anchor.gap_low and nested.gap_high <= anchor.gap_high`)
-   -- this is the actual entry trigger. Using the 1-minute FVG instead of
+   **that formed after the anchor locked in** -- this is the actual entry
+   trigger, and it must be a genuinely new structure, not one that already
+   existed (or that formed as part of the very same displacement that
+   built the anchor itself). This is what makes it a real *retest*: price
+   has to actually come back and do something new inside the zone, not
+   just have some incidental smaller gap sitting there from the move that
+   built the zone in the first place. Using the 1-minute FVG instead of
    the 15-minute one for entry/stop sizing keeps the entry precise and the
    resulting stop tight, instead of being sized off 15-minute-candle noise
    (see rule 8 -- the stop is placed off structural levels near the entry
@@ -56,16 +62,22 @@ review these and adjust `config.yaml` before running live.
    5-point "approach" and picking whichever unmitigated FVG was nearest to
    price and in the way of the move -- each correction chasing more setups
    out of a real week of history that kept producing too few trades.
-   Corrected again 2026-07-04, a final time the same day: the entry was
-   still priced off the 15-minute FVG's midpoint, which spans several
-   points on a fast-moving instrument like MNQ -- the resulting stop
-   (sized off structural levels near that entry) was too wide for how
-   this actually trades and got hit by ordinary noise. Replaced the
-   key-level-approach step entirely with the current design: the 15m FVG
-   still confirms the move (this is the "large FVG" the anchor), but the
-   entry itself comes from a 1-minute FVG nested inside that 15m gap, so
-   the entry price -- and therefore the stop -- reflects 1-minute-scale
-   structure instead of 15-minute-scale noise.)
+   Corrected again 2026-07-04: the entry was still priced off the
+   15-minute FVG's midpoint, which spans several points on a fast-moving
+   instrument like MNQ -- the resulting stop (sized off structural levels
+   near that entry) was too wide for how this actually trades and got hit
+   by ordinary noise. Replaced the key-level-approach step entirely with
+   the current design: the 15m FVG still confirms the move (this is the
+   "large FVG" the anchor), but the entry itself comes from a 1-minute FVG
+   nested inside that 15m gap, so the entry price -- and therefore the
+   stop -- reflects 1-minute-scale structure instead of 15-minute-scale
+   noise. Corrected again 2026-07-04, a chart inspection showed the bot
+   entering the instant the 15m anchor confirmed, with no visible pause
+   for a retest -- the nested-1m-FVG check had no time constraint, so it
+   could (and did) claim a 1m gap that had formed *during* the anchor's
+   own displacement leg, rather than a fresh one appearing afterward. That
+   isn't a retest, it's coincidental overlap. Added the requirement that
+   the nested FVG must have formed strictly after the anchor locked in.)
 7. Reward:risk is 2:1.
 8. Stop-loss is placed intelligently at a real structural level -- below
    the bottom of the 15m anchor FVG, or below the next break of structure
@@ -130,11 +142,19 @@ review these and adjust `config.yaml` before running live.
   has to nest inside the 15m gap) finds the precise entry trigger.
 - **"Nested"** (`src/strategy.py: WAIT_1M_FVG`): a 1m FVG counts as nested
   inside the 15m anchor when its whole range falls inside the anchor's
-  (`nested.gap_low >= anchor.gap_low and nested.gap_high <= anchor.gap_high`).
-  When more than one nested candidate is active at once, the nearest one
-  to current price is picked, breaking ties by the larger gap (same
-  nearest-first, size-as-tiebreak rule used for picking the 15m anchor
-  itself -- a judgment call on an ambiguous request; flip the sort key in
+  (`nested.gap_low >= anchor.gap_low and nested.gap_high <= anchor.gap_high`)
+  **and it formed after the anchor locked in**
+  (`fvg.formed_at > self._anchor_locked_in_at`, timestamped the moment the
+  anchor was selected in `WAIT_15M_FVG`). Both conditions are required --
+  geometric nesting alone isn't enough, since a 1m gap can easily sit
+  inside the 15m anchor's range simply because it formed as part of the
+  same displacement leg that built the anchor. Requiring it to be newer
+  than the anchor's lock-in is what makes it an actual retest rather than
+  a coincidental sub-gap of the same move. When more than one nested
+  candidate is active at once, the nearest one to current price is
+  picked, breaking ties by the larger gap (same nearest-first,
+  size-as-tiebreak rule used for picking the 15m anchor itself -- a
+  judgment call on an ambiguous request; flip the sort key in
   `strategy.py` if you actually wanted strongest-first instead).
 - **Previous day / Asia / London levels**: no longer part of the entry
   sequence at all (an earlier revision briefly used them for a "retest"/

@@ -107,19 +107,26 @@ def feed_large_15m_fvg(strategy: OpeningRangeStrategy, start: datetime) -> tuple
     return gap_low, gap_high
 
 
-def feed_nested_1m_fvg(strategy: OpeningRangeStrategy, start: datetime) -> tuple[float, float]:
+def feed_1m_fvg_pattern(strategy: OpeningRangeStrategy, start: datetime) -> tuple[float, float]:
     """Feeds a small 1-minute FVG (baseline + 3-candle pattern + flush)
-    around 106-107.5, nested inside the 105.x-109.x anchor. Returns the
-    resulting (gap_low, gap_high)."""
+    around 106-107.5. Returns the resulting (gap_low, gap_high). Makes no
+    assertion about strategy state -- callers decide whether this should
+    be picked up as an entry trigger."""
     for i in range(5):
         strategy.on_bar(bar_at(start + timedelta(minutes=i), 106.0, 106.2, 105.9, 106.0))
     strategy.on_bar(bar_at(start + timedelta(minutes=5), 106.0, 106.2, 105.9, 106.0))  # c0
     strategy.on_bar(bar_at(start + timedelta(minutes=6), 106.0, 107.5, 105.9, 107.4))  # c1: displacement
     strategy.on_bar(bar_at(start + timedelta(minutes=7), 107.4, 107.6, 107.0, 107.5))  # c2: confirms gap
-    signal = strategy.on_bar(bar_at(start + timedelta(minutes=8), 107.5, 107.6, 107.4, 107.5))  # flush
-    assert signal is None
-    assert strategy.state is State.WAIT_FILL
+    strategy.on_bar(bar_at(start + timedelta(minutes=8), 107.5, 107.6, 107.4, 107.5))  # flush -- detects it
     return 106.2, 107.0  # gap_low (c0.high), gap_high (c2.low)
+
+
+def feed_nested_1m_fvg(strategy: OpeningRangeStrategy, start: datetime) -> tuple[float, float]:
+    """Same as feed_1m_fvg_pattern, but asserts it was actually picked up
+    as the pending entry trigger (used by tests where that's expected)."""
+    gap_low, gap_high = feed_1m_fvg_pattern(strategy, start)
+    assert strategy.state is State.WAIT_FILL
+    return gap_low, gap_high
 
 
 def test_full_breakout_15m_anchor_then_nested_1m_entry():
@@ -150,6 +157,83 @@ def test_full_breakout_15m_anchor_then_nested_1m_entry():
     assert signal.direction is Direction.LONG
     assert signal.entry_price == midpoint
     assert strategy.state is State.IN_TRADE
+
+
+def feed_large_15m_fvg_with_embedded_1m_impostor(strategy: OpeningRangeStrategy, start: datetime) -> dict:
+    """Same overall 15m anchor as feed_large_15m_fvg (gap 105.3-109.1,
+    from a displacement move 105.1 -> 109.3), but the displacement leg
+    isn't a perfectly smooth ramp this time -- partway through it, price
+    pauses and displaces again over 3 sharp 1-minute candles, leaving
+    behind a small, genuine 1-minute FVG (105.9-106.7) that survives
+    unmitigated (price only continues upward afterward, on its way to
+    109.3). This mirrors what a real displacement leg looks like --
+    real price action isn't a smooth ramp -- and reproduces the exact
+    scenario that let the bot claim a stale, embedded 1m gap as its
+    entry trigger instead of waiting for a fresh retest after the anchor
+    locked in."""
+    feed_quiet_15m(strategy, start, 8, 105.0)
+    pattern_start = start + timedelta(minutes=15 * 8)
+
+    c0_bars = smooth_walk_1m(pattern_start, 15, 105.0, 105.1)
+
+    c1_start = pattern_start + timedelta(minutes=15)
+    c1_bars = smooth_walk_1m(c1_start, 6, 105.1, 105.7)  # smooth run-up
+    c1_bars += [
+        bar_at(c1_start + timedelta(minutes=6), 105.7, 105.9, 105.6, 105.75),  # embedded c0''
+        bar_at(c1_start + timedelta(minutes=7), 105.75, 107.2, 105.6, 107.1),  # embedded c1'': displacement
+        bar_at(c1_start + timedelta(minutes=8), 107.1, 107.3, 106.7, 107.2),  # embedded c2'': confirms 105.9-106.7
+    ]
+    c1_bars += smooth_walk_1m(c1_start + timedelta(minutes=9), 6, 107.2, 109.3)  # smooth run-up, resumes
+
+    c2_bars = smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, 109.3, 109.5)
+    for b in c0_bars + c1_bars + c2_bars:
+        signal = strategy.on_bar(b)
+        assert signal is None
+
+    anchor_low = max(b.high for b in c0_bars)
+    anchor_high = min(b.low for b in c2_bars)
+
+    flush_time = pattern_start + timedelta(minutes=45)
+    signal = strategy.on_bar(flat_bar(flush_time, 109.5))  # finalizes c2's 15m candle, detects the anchor
+    assert signal is None
+    assert strategy.state is State.WAIT_1M_FVG
+
+    return {
+        "anchor_low": anchor_low,
+        "anchor_high": anchor_high,
+        "impostor_low": 105.9,
+        "impostor_high": 106.7,
+        "flush_time": flush_time,
+    }
+
+
+def test_ignores_a_1m_fvg_embedded_in_the_anchors_own_displacement():
+    """A 1-minute FVG that formed as part of the same displacement move
+    that built the 15m anchor -- not a separate, later retracement --
+    must not be used as the entry trigger, even though it's nested inside
+    the anchor's range and never gets mitigated. Otherwise the bot claims
+    a stale gap the instant the anchor confirms, which looks like
+    entering as the anchor forms rather than waiting for a genuine retest
+    afterward."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)
+
+    info = feed_large_15m_fvg_with_embedded_1m_impostor(strategy, DAY + timedelta(minutes=45))
+    assert info["anchor_low"] <= info["impostor_low"]
+    assert info["impostor_high"] <= info["anchor_high"]  # geometrically nested, but embedded/stale
+
+    # This bar dips right into the impostor's gap (would fill its 106.3
+    # midpoint if it were wrongly considered) without breaching the
+    # anchor's own low -- must NOT produce an entry.
+    check_time = info["flush_time"] + timedelta(minutes=1)
+    signal = strategy.on_bar(bar_at(check_time, 109.5, 109.6, 106.2, 106.3))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_1M_FVG
+    assert strategy.stats["nested_1m_fvgs"] == 0
 
 
 def test_abandons_15m_anchor_mitigated_before_a_nested_entry_forms():

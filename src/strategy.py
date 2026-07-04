@@ -74,6 +74,7 @@ class OpeningRangeStrategy:
         self._breakout_direction: Direction | None = None
         self._levels: SessionLevelSet | None = None
         self._anchor_fvg: FairValueGap | None = None
+        self._anchor_locked_in_at: datetime | None = None
         self._pending_fvg: FairValueGap | None = None
         self._pending_limit_price: float | None = None
 
@@ -145,6 +146,7 @@ class OpeningRangeStrategy:
             candidates = self.fvg_detector_15m.unmitigated_in_direction(self._breakout_direction)
             if candidates:
                 self._anchor_fvg = _nearest_then_largest(candidates, bar.close)
+                self._anchor_locked_in_at = bar.timestamp
                 self.stats["large_15m_fvgs"] += 1
                 self.state = State.WAIT_1M_FVG
             return None
@@ -156,13 +158,23 @@ class OpeningRangeStrategy:
                 # so abandon it and look for a fresh 15m anchor instead.
                 self.stats["anchor_15m_fvgs_mitigated_before_entry"] += 1
                 self._anchor_fvg = None
+                self._anchor_locked_in_at = None
                 self.state = State.WAIT_15M_FVG
                 return None
 
+            # The nested 1m FVG must be a genuinely new structure that
+            # appeared *after* the anchor locked in -- not a gap that was
+            # already sitting there (or that formed as part of the same
+            # displacement that built the anchor itself). Without this,
+            # the bot could claim a coincidentally-overlapping 1m gap the
+            # instant the anchor confirms, which looks like "entering as
+            # the FVG forms" instead of waiting for an actual retest.
             nested = [
                 fvg
                 for fvg in self.fvg_detector_1m.unmitigated_in_direction(self._breakout_direction)
-                if fvg.gap_low >= self._anchor_fvg.gap_low and fvg.gap_high <= self._anchor_fvg.gap_high
+                if fvg.gap_low >= self._anchor_fvg.gap_low
+                and fvg.gap_high <= self._anchor_fvg.gap_high
+                and fvg.formed_at > self._anchor_locked_in_at
             ]
             if nested:
                 fvg = _nearest_then_largest(nested, bar.close)
@@ -236,6 +248,7 @@ class OpeningRangeStrategy:
 
         self._breakout_direction = None
         self._anchor_fvg = None
+        self._anchor_locked_in_at = None
         self._pending_fvg = None
         self._pending_limit_price = None
         self.state = State.WAIT_BREAKOUT
@@ -247,5 +260,6 @@ class OpeningRangeStrategy:
         self._breakout_direction = None
         self._levels = None
         self._anchor_fvg = None
+        self._anchor_locked_in_at = None
         self._pending_fvg = None
         self._pending_limit_price = None
