@@ -46,7 +46,7 @@ def smooth_walk_1m(start: datetime, minutes: int, start_price: float, end_price:
 def load_test_config():
     cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     # These tests exercise the box/breakout/FVG mechanics well past the
-    # real 11:30 ET cutoff -- push it out so the timing under test isn't
+    # real 12:30 ET cutoff -- push it out so the timing under test isn't
     # the no-new-entries cutoff (covered separately, see
     # test_stands_down_for_day_after_cutoff).
     cfg.session.no_new_entries_after = dtime(23, 59)
@@ -386,8 +386,8 @@ def test_stands_down_for_day_after_cutoff():
     cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     strategy = OpeningRangeStrategy(cfg)
 
-    # Jump straight to a bar past the no-new-entries cutoff (11:30 ET default).
-    late_bar = bar_at(DAY.replace(hour=11, minute=35), 100.0, 100.5, 99.5, 100.0)
+    # Jump straight to a bar past the no-new-entries cutoff (12:30 ET default).
+    late_bar = bar_at(DAY.replace(hour=12, minute=35), 100.0, 100.5, 99.5, 100.0)
     signal = strategy.on_bar(late_bar)
 
     assert signal is None

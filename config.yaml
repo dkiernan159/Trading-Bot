@@ -12,8 +12,12 @@ session:
   london_session: ["02:00", "05:00"]  # ASSUMPTION: ET window used to mark the London high/low
   ny_open: "09:30"
   opening_range_end: "09:45"          # first 15m candle closes here -> box is formed
-  no_new_entries_after: "11:30"       # ASSUMPTION: cutoff for taking any new setup
-  flatten_by: "11:45"                 # ASSUMPTION: hard flatten time if still in a trade
+  no_new_entries_after: "12:30"       # ASSUMPTION: cutoff for taking any new setup (extended 2026-07-04 from
+                                       # 11:30 -- the two-stage 15m-anchor + fresh-1m-retest design needs more
+                                       # runway per anchor than the original 2-hour morning window allowed;
+                                       # see STRATEGY.md)
+  flatten_by: "12:45"                  # ASSUMPTION: hard flatten time if still in a trade (extended with the
+                                       # cutoff above)
 
 strategy:
   reward_risk_ratio: 2.0
@@ -35,13 +39,13 @@ strategy:
   entry_fvg:                      # the 1m FVG nested inside the 15m FVG -- the actual entry trigger, kept
                                    # small/tight so the stop isn't sized off 15m-candle noise
     timeframe_minutes: 1
-    min_gap_points: 0.35          # ASSUMPTION: minimum 1m FVG size (loosened 2026-07-04, 0.75 -> 0.5 -> 0.35 --
-                                   # since the nested FVG also has to form *after* the anchor locks in and now
-                                   # only needs its midpoint (not its whole range) inside the anchor, requiring
-                                   # it to also be large on top of those was leaving almost no real setups
-                                   # qualifying; see STRATEGY.md)
-    displacement_multiplier: 1.0  # ASSUMPTION: "strong" = displacement candle body >= 1.0x recent avg range
-                                   # (loosened 2026-07-04, 1.5 -> 1.2 -> 1.0, same reasoning)
+    min_gap_points: 0.2           # ASSUMPTION: minimum 1m FVG size (loosened 2026-07-04, 0.75 -> 0.5 -> 0.35 ->
+                                   # 0.2 -- a real 30-day backtest still only found 4 nested candidates total
+                                   # across 36 anchor selections; see STRATEGY.md)
+    displacement_multiplier: 0.75 # ASSUMPTION: "strong" = displacement candle body >= 0.75x recent avg range
+                                   # (loosened 2026-07-04, 1.5 -> 1.2 -> 1.0 -> 0.75, same reasoning -- at this
+                                   # point "strong" mostly just means "a real gap formed here", not a
+                                   # meaningfully forceful displacement)
     lookback_bars: 20             # 1m candles used for the recent average range baseline (~20 minutes)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms

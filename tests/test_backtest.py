@@ -45,7 +45,7 @@ def smooth_walk_1m(start: datetime, minutes: int, start_price: float, end_price:
 def load_test_config():
     cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     # See tests/test_strategy.py: these fixtures span well past the real
-    # 11:30 ET cutoff -- push it out so the cutoff isn't what's under
+    # 12:30 ET cutoff -- push it out so the cutoff isn't what's under
     # test here.
     cfg.session.no_new_entries_after = dtime(23, 59)
     cfg.strategy.entry_fvg.lookback_bars = 5

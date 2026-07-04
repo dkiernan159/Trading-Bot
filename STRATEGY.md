@@ -204,9 +204,12 @@ review these and adjust `config.yaml` before running live.
 - **Asia / London session windows** (`config.yaml: session`): set to common
   ICT-style approximations (Asia 19:00-23:59 ET prior evening, London
   02:00-05:00 ET). Adjust to your exact definition.
-- **End of session for new entries**: no new setups after 11:30 ET, hard
-  flatten by 11:45 ET if still in a trade. You described this as a morning
-  strategy but didn't give an exact cutoff.
+- **End of session for new entries**: no new setups after 12:30 ET, hard
+  flatten by 12:45 ET if still in a trade. You described this as a morning
+  strategy but didn't give an exact cutoff. (Originally 11:30/11:45 --
+  extended 2026-07-04: the two-stage 15m-anchor + fresh-1m-retest design
+  needs more runway per anchor than the original 2-hour window gave it; a
+  real 30-day backtest was still only producing 1 fill.)
 - **After a winning trade**: bot stands down for the rest of the day by
   default (`allow_new_setup_after_win: false`). You only specified re-entry
   behavior after a *loss*; flip this flag if you also want multiple winners
