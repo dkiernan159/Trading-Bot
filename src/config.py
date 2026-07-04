@@ -53,6 +53,7 @@ class StrategyConfig:
     target_dollars_at_reference_size: float
     reference_contracts: int
     max_stop_dollars: float
+    min_stop_dollars: float
     fvg: FvgConfig
     reentry: ReentryConfig
 
@@ -122,6 +123,7 @@ def load_config(path: str | Path = "config.yaml") -> BotConfig:
         target_dollars_at_reference_size=strat["target_dollars_at_reference_size"],
         reference_contracts=strat["reference_contracts"],
         max_stop_dollars=strat["max_stop_dollars"],
+        min_stop_dollars=strat["min_stop_dollars"],
         fvg=FvgConfig(**strat["fvg"]),
         reentry=ReentryConfig(**strat["reentry"]),
     )

@@ -20,6 +20,7 @@ def compute_stop_target(
     entry_price: float,
     structural_levels: list[float],
     max_stop_dollars: float,
+    min_stop_dollars: float,
     point_value: float,
     contracts: int,
     reward_risk_ratio: float,
@@ -27,12 +28,13 @@ def compute_stop_target(
     """Stop is the nearest marked structural level beyond entry (previous
     day/Asia/London high-low, or opening range box edge -- see
     strategy.py's structural_levels). Returns None -- meaning "don't take
-    this trade" -- if no such level exists beyond entry at all, or if the
-    nearest one is farther out than max_stop_dollars allows: a stop with
-    no real level behind it isn't an invalidation point, just an
-    arbitrary number, so there's nothing to size a trade against. When a
-    real level *is* within budget, target is always reward_risk_ratio x
-    that level's actual distance.
+    this trade" -- if no such level exists beyond entry at all, if the
+    nearest one is farther out than max_stop_dollars allows, or if it's
+    closer than min_stop_dollars: either way, a stop with no real,
+    reasonably-sized level behind it isn't a genuine invalidation point,
+    so there's nothing to size a trade against. When a real level *is*
+    within that band, target is always reward_risk_ratio x that level's
+    actual distance.
 
     (Revision history: briefly changed 2026-07-04 to pick the *farthest*
     level within budget instead of the nearest, on the theory that
@@ -64,9 +66,21 @@ def compute_stop_target(
     max-risk trade with no real invalidation point behind it, such setups
     are now skipped entirely by returning None; see strategy.py's
     WAIT_FILL handling for how a rejected anchor is excluded from being
-    re-picked and the bot keeps hunting for a fresh one instead.)
+    re-picked and the bot keeps hunting for a fresh one instead.
+
+    Added a minimum 2026-07-04: a real 7-day backtest's --verbose detail
+    across 13 trades showed stops under ~20 points (usually the
+    opening-range box edge, which is often just where the breakout
+    happened, not real structure) won only 1 of 7 times (14%), versus 3
+    of 6 (50%) for trades with a wider, more genuine stop -- filtering
+    the under-20-point group out entirely would have turned a 31% win
+    rate / $192.50 net across 13 trades into a 50% win rate / $249.75 net
+    across the remaining 6. A stop that tight is inside ordinary MNQ
+    chop, not a real invalidation level, so it's now rejected the same
+    way an out-of-budget stop is.)
     """
     max_stop_points = max_stop_dollars / (point_value * contracts)
+    min_stop_points = min_stop_dollars / (point_value * contracts)
 
     if direction is Direction.LONG:
         candidates = [lvl for lvl in structural_levels if lvl < entry_price]
@@ -77,7 +91,7 @@ def compute_stop_target(
         nearest = min(candidates) if candidates else None
         structural_distance = (nearest - entry_price) if nearest is not None else None
 
-    if structural_distance is None or structural_distance > max_stop_points:
+    if structural_distance is None or not (min_stop_points <= structural_distance <= max_stop_points):
         return None
 
     stop_points = structural_distance

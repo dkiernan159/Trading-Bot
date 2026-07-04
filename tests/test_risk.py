@@ -13,6 +13,7 @@ def test_long_uses_nearby_structural_level_within_cap():
         entry_price=100.0,
         structural_levels=[95.0, 90.0, 105.0],
         max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
@@ -33,6 +34,7 @@ def test_long_returns_none_when_structural_level_too_far():
         entry_price=100.0,
         structural_levels=[-50.0],
         max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
@@ -46,6 +48,28 @@ def test_long_returns_none_with_no_levels_below_entry():
         entry_price=100.0,
         structural_levels=[105.0, 110.0],
         max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
+        point_value=2.0,
+        contracts=1,
+        reward_risk_ratio=2.0,
+    )
+    assert result is None
+
+
+def test_long_returns_none_when_structural_level_too_close():
+    """A real 7-day backtest showed trades whose stop landed under ~20
+    points away (usually the box edge -- close because that's where the
+    breakout happened, not real structure) won only 1 of 7 times, versus
+    3 of 6 for wider stops -- so a level closer than min_stop_dollars is
+    now rejected the same way an out-of-budget one is, rather than taken
+    as a noise-sized "stop." $40 / (2.0 * 1) = 20-point floor; the only
+    candidate (97.0) is just 3 points away."""
+    result = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        structural_levels=[97.0],
+        max_stop_dollars=200.0,
+        min_stop_dollars=40.0,
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
@@ -61,6 +85,7 @@ def test_short_uses_nearby_structural_level_within_cap():
         entry_price=100.0,
         structural_levels=[110.0, 120.0, 95.0],
         max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
@@ -83,6 +108,7 @@ def test_dollar_cap_shrinks_in_points_as_contract_size_scales_up():
         entry_price=100.0,
         structural_levels=level,
         max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
@@ -95,8 +121,40 @@ def test_dollar_cap_shrinks_in_points_as_contract_size_scales_up():
         entry_price=100.0,
         structural_levels=level,  # 50 points away -- beyond the 25pt cap at 4 contracts
         max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
         point_value=2.0,
         contracts=4,
         reward_risk_ratio=2.0,
     )
     assert at_four_contracts is None
+
+
+def test_dollar_floor_grows_in_points_as_contract_size_scales_up():
+    """The $40 floor stays fixed in dollars, so at more contracts it maps
+    to more points -- $40 / (2.0 point_value * 1 contract) = 20 points,
+    versus 5 points at 4 contracts. The same real level (10 points away)
+    is too close at 1 contract but clears the (smaller) floor at 4."""
+    level = [90.0]  # 10 points away
+    at_one_contract = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        structural_levels=level,
+        max_stop_dollars=200.0,
+        min_stop_dollars=40.0,
+        point_value=2.0,
+        contracts=1,
+        reward_risk_ratio=2.0,
+    )
+    assert at_one_contract is None
+
+    at_four_contracts = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        structural_levels=level,
+        max_stop_dollars=200.0,
+        min_stop_dollars=40.0,  # $40 / (2.0 * 4) = 5-point floor -- 10 points now clears it
+        point_value=2.0,
+        contracts=4,
+        reward_risk_ratio=2.0,
+    )
+    assert at_four_contracts.stop_points == 10.0

@@ -48,6 +48,10 @@ def load_test_config():
     # 13:30 ET cutoff -- push it out so the cutoff isn't what's under
     # test here.
     cfg.session.no_new_entries_after = dtime(23, 59)
+    # See tests/test_strategy.py: these fixed box/previous-day levels
+    # routinely land inside the real config's 20-point minimum stop
+    # distance -- zero it out since that gate isn't what's under test here.
+    cfg.strategy.min_stop_dollars = 0.0
     return cfg
 
 

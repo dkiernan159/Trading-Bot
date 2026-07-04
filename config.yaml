@@ -36,6 +36,13 @@ strategy:
                            # rather than defaulting to an arbitrary max-risk stop (changed 2026-07-04 after a
                            # real 7-day backtest showed both losing trades were exactly this case; see risk.py's
                            # compute_stop_target).
+  min_stop_dollars: 40    # ASSUMPTION: skip the trade if the nearest real structural level is even closer than
+                           # this (same conversion-to-points as max_stop_dollars) -- a real 7-day backtest showed
+                           # trades whose stop landed under ~20 points away (usually the opening-range box edge,
+                           # which is often just where the breakout happened, not a real invalidation point) won
+                           # only 1 of 7 times, versus 3 of 6 among trades with a wider, more genuine stop. A
+                           # stop that tight is inside ordinary MNQ chop, not a real structural level. Retune
+                           # against real data like every other threshold here; see STRATEGY.md.
   fvg:                            # the 5m FVG: confirms direction/anchors the move -- its own midpoint is
                                    # also the entry price (see rule 4/5 in STRATEGY.md). Changed from 15m to
                                    # 5m timeframe 2026-07-04 based on a real annotated trade example: the

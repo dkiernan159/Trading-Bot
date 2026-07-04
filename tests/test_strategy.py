@@ -49,6 +49,13 @@ def load_test_config():
     # the no-new-entries cutoff (covered separately, see
     # test_stands_down_for_day_after_cutoff).
     cfg.session.no_new_entries_after = dtime(23, 59)
+    # These fixtures' fixed box/previous-day levels routinely land within
+    # the real config's 20-point minimum stop distance -- zero it out so
+    # tests not specifically about that gate (covered separately, see
+    # test_anchor_rejected_and_a_fresh_one_is_hunted_when_no_real_level_is_within_budget
+    # and test_anchor_rejected_when_the_only_real_level_is_too_close) aren't
+    # incidentally exercising it too.
+    cfg.strategy.min_stop_dollars = 0.0
     return cfg
 
 
@@ -400,6 +407,35 @@ def test_anchor_rejected_and_a_fresh_one_is_hunted_when_no_real_level_is_within_
     assert len(strategy.anchor_history) == 2
     assert strategy.anchor_history[1].outcome == "filled"
     assert strategy.anchor_history[1].gap_low == pytest.approx(second_low)
+
+
+def test_anchor_rejected_when_the_only_real_level_is_too_close():
+    """The mirror image of the too-far case: a real 7-day backtest showed
+    stops under ~20 points (usually the box edge, close only because
+    that's where the breakout happened, not real structure) losing 6 of
+    7 times. Below that floor (min_stop_dollars), a trade is skipped just
+    like it would be above the cap -- there's no real invalidation point
+    behind a stop that tight, only ordinary chop."""
+    cfg = load_test_config()
+    cfg.strategy.min_stop_dollars = 40.0  # $40 / (point_value 2.0 * 1 contract) = 20-point floor
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)  # previous-day low=95, box low=99.5
+    feed_box_and_breakout(strategy)
+
+    # The default anchor's midpoint (107.2) sits only 7.7 points above the
+    # nearest real level below it (box low, 99.5) -- inside the 20-point
+    # floor, even though it's comfortably under the $200 cap too.
+    first_low, first_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
+
+    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    signal = strategy.on_bar(bar_at(fill_time, first_high, first_high + 0.1, first_low, first_low + 0.1))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_5M_FVG
+    assert strategy.stats["fills"] == 0
+    assert len(strategy.anchor_history) == 1
+    assert strategy.anchor_history[0].outcome == "no_valid_stop"
 
 
 def test_stands_down_for_day_after_cutoff():

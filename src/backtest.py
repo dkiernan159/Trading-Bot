@@ -127,6 +127,7 @@ def run_backtest(
                 entry_price=signal.entry_price,
                 structural_levels=signal.structural_levels,
                 max_stop_dollars=cfg.strategy.max_stop_dollars,
+                min_stop_dollars=cfg.strategy.min_stop_dollars,
                 point_value=cfg.instrument.point_value,
                 contracts=cfg.position_sizing.contract_size,
                 reward_risk_ratio=cfg.strategy.reward_risk_ratio,

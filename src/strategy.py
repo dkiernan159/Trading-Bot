@@ -40,8 +40,10 @@ class AnchorRecord:
     anchor replaced it before it ever filled), "invalidated" (the
     breakout thesis failed while it was still live), "no_valid_stop"
     (price retraced to its midpoint, but no real marked structural level
-    sat within the $200 budget beyond that entry, so the trade was
-    skipped rather than using an arbitrary max-risk stop -- see risk.py's
+    sat within the $40-$200 budget beyond that entry -- either none
+    existed, the nearest was too far, or the nearest was too close to be
+    a genuine invalidation point -- so the trade was skipped rather than
+    using an arbitrary or noise-sized stop -- see risk.py's
     compute_stop_target), or "session_ended" (time ran out with it still
     live, unfilled)."""
 
@@ -299,19 +301,23 @@ class OpeningRangeStrategy:
                     structural_levels.append(self.box.low)
 
                 # Reject the trade if no real marked level sits within the
-                # $200 stop budget beyond this entry -- a real 7-day
-                # backtest showed this exact case producing both of its
-                # losing trades (defaulting to a $200/100-point stop with
-                # nothing structural behind it), while the two winners had
-                # a real level only 8-31 points away. Rather than take a
-                # max-risk trade with no genuine invalidation point, skip
-                # it and keep hunting for a different anchor (see risk.py's
-                # compute_stop_target for the full reasoning).
+                # $40-$200 stop budget beyond this entry -- too far means
+                # no genuine invalidation point behind the stop; too close
+                # (usually just the box edge, a common noise-retest spot,
+                # not real structure) means it's sized like ordinary chop,
+                # not a real one. Real 7-day backtests showed both losing
+                # trades in one window defaulting to the max-risk cap with
+                # nothing structural behind it, and in another, stops under
+                # ~20 points winning only 1 of 7 times versus 3 of 6 for
+                # wider ones. Skip and keep hunting for a different anchor
+                # instead (see risk.py's compute_stop_target for the full
+                # reasoning).
                 bracket = compute_stop_target(
                     direction=self._breakout_direction,
                     entry_price=self._pending_limit_price,
                     structural_levels=structural_levels,
                     max_stop_dollars=self.cfg.strategy.max_stop_dollars,
+                    min_stop_dollars=self.cfg.strategy.min_stop_dollars,
                     point_value=self.cfg.instrument.point_value,
                     contracts=self.cfg.position_sizing.contract_size,
                     reward_risk_ratio=self.cfg.strategy.reward_risk_ratio,
