@@ -155,11 +155,20 @@ class OpeningRangeStrategy:
             return None
 
         if self.state is State.WAIT_1M_FVG:
-            # The anchor itself is fixed once picked -- it's a reference
-            # zone/direction confirmation, not something that gets
-            # abandoned just because price later trades through it. Only
-            # the nested 1m FVG (below) is subject to mitigation.
-            #
+            # Keep the anchor current: if a nearer-to-price unmitigated 15m
+            # FVG exists now (including ones that formed after the current
+            # anchor), switch to it. This is *not* "wait for mitigation" --
+            # the anchor is never abandoned because it broke, it's just
+            # kept up to date so the bot isn't stuck all session on the
+            # very first (possibly stale or far-away) anchor it found.
+            candidates = self.fvg_detector_15m.unmitigated_in_direction(self._breakout_direction)
+            if candidates:
+                best_anchor = _nearest_then_largest(candidates, bar.close)
+                if best_anchor is not self._anchor_fvg:
+                    self._anchor_fvg = best_anchor
+                    self._anchor_locked_in_at = bar.timestamp
+                    self.stats["large_15m_fvgs"] += 1
+
             # The nested 1m FVG must be a genuinely new structure that
             # appeared *after* the anchor locked in -- not a gap that was
             # already sitting there (or that formed as part of the same

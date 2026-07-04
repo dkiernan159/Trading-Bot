@@ -2,6 +2,8 @@ from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from src.config import load_config
 from src.models import Bar, Direction
 from src.strategy import OpeningRangeStrategy, State
@@ -81,17 +83,22 @@ def feed_quiet_15m(strategy: OpeningRangeStrategy, start: datetime, count: int, 
         assert signal is None
 
 
-def feed_large_15m_fvg(strategy: OpeningRangeStrategy, start: datetime) -> tuple[float, float]:
-    """Feeds 8 quiet 15m baseline candles, then a real (dense, 1-minute
-    resolution) displacement move from 105.1 up to 109.3 that forms a
-    large bullish 15m FVG, then a flush bar to finalize detection.
-    Returns the resulting (gap_low, gap_high)."""
-    feed_quiet_15m(strategy, start, 8, 105.0)
+def feed_large_15m_fvg(
+    strategy: OpeningRangeStrategy, start: datetime, quiet_price: float = 105.0, c1_end: float = 109.3
+) -> tuple[float, float]:
+    """Feeds 8 quiet 15m baseline candles at quiet_price, then a real
+    (dense, 1-minute resolution) displacement move from quiet_price+0.1 up
+    to c1_end that forms a large bullish 15m FVG, then a flush bar to
+    finalize detection. Returns the resulting (gap_low, gap_high). Default
+    values (105.0, 109.3) produce the same 105.3-109.1 gap used throughout
+    these tests; pass different values to build a second, distinct anchor
+    elsewhere on the chart."""
+    feed_quiet_15m(strategy, start, 8, quiet_price)
     pattern_start = start + timedelta(minutes=15 * 8)
 
-    c0_bars = smooth_walk_1m(pattern_start, 15, 105.0, 105.1)
-    c1_bars = smooth_walk_1m(pattern_start + timedelta(minutes=15), 15, 105.1, 109.3)
-    c2_bars = smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, 109.3, 109.5)
+    c0_bars = smooth_walk_1m(pattern_start, 15, quiet_price, quiet_price + 0.1)
+    c1_bars = smooth_walk_1m(pattern_start + timedelta(minutes=15), 15, quiet_price + 0.1, c1_end)
+    c2_bars = smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, c1_end, c1_end + 0.2)
     for b in c0_bars + c1_bars + c2_bars:
         signal = strategy.on_bar(b)
         assert signal is None
@@ -100,7 +107,7 @@ def feed_large_15m_fvg(strategy: OpeningRangeStrategy, start: datetime) -> tuple
     gap_high = min(b.low for b in c2_bars)
 
     flush_time = pattern_start + timedelta(minutes=45)
-    signal = strategy.on_bar(flat_bar(flush_time, 109.5))  # finalizes c2's 15m candle, detects the FVG
+    signal = strategy.on_bar(flat_bar(flush_time, c1_end + 0.2))  # finalizes c2's 15m candle, detects the FVG
     assert signal is None
     assert strategy.state is State.WAIT_1M_FVG
 
@@ -234,6 +241,35 @@ def test_ignores_a_1m_fvg_embedded_in_the_anchors_own_displacement():
     assert signal is None
     assert strategy.state is State.WAIT_1M_FVG
     assert strategy.stats["nested_1m_fvgs"] == 0
+
+
+def test_anchor_updates_to_a_fresher_nearer_15m_fvg_without_mitigation():
+    """If no nested 1m FVG ever forms inside the first 15m anchor, but a
+    second, later 15m FVG forms further along the same move (nearer to
+    current price), the bot switches to it -- without the first anchor
+    ever being mitigated. This is what keeps the bot from getting stuck
+    on the very first anchor of the session for the rest of the trading
+    window."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)
+
+    first_low, first_high = feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))
+    assert strategy._anchor_fvg.gap_low == pytest.approx(first_low)
+
+    # A second 15m FVG forms further along the same LONG move, well above
+    # (and never dipping back into) the first anchor -- it was never
+    # mitigated, it's just superseded by something more current. Must
+    # land on a 15-minute-aligned start, like every other bucket boundary
+    # in these tests, or the dense c0/c1/c2 bars split across buckets.
+    second_start = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=60)
+    second_low, second_high = feed_large_15m_fvg(strategy, second_start, quiet_price=109.6, c1_end=113.3)
+
+    assert second_low > first_high  # a distinct, higher zone -- first anchor untouched
+    assert strategy._anchor_fvg.gap_low == pytest.approx(second_low)
+    assert strategy.state is State.WAIT_1M_FVG
 
 
 def test_anchor_persists_even_after_price_trades_through_it():
