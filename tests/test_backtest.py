@@ -140,6 +140,7 @@ def test_funnel_stats_track_each_gate():
 
     assert stats == {
         "breakouts": 1,
+        "breakouts_invalidated": 0,
         "large_15m_fvgs": 1,
         "nested_1m_fvgs": 1,
         "fills": 1,

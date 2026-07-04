@@ -386,6 +386,42 @@ def test_reenters_after_stop_out_when_setup_reforms():
     assert strategy.state is State.WAIT_15M_FVG
 
 
+def test_breakout_invalidated_when_price_closes_back_through_opposite_box_edge():
+    """If price fully reverses -- closing back through the box's *opposite*
+    edge -- while still waiting on an anchor/entry, the original breakout
+    call is invalid and the state machine resets to WAIT_BREAKOUT instead
+    of continuing to hunt for a same-direction anchor/entry somewhere price
+    has already reversed away from. This is the bug behind a real live LONG
+    entry found 133.5 points below the box low, well after the breakout
+    had fully round-tripped and reversed."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)  # LONG breakout; box.low=99.5, box.high=101.0
+    feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))  # anchors -> WAIT_1M_FVG
+    assert strategy._anchor_fvg is not None
+
+    reversal_time = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=46)
+    # Price fully reverses, closing back below the box's low (99.5) --
+    # the opposite edge from the LONG breakout -- before any nested 1m
+    # retest ever fires.
+    signal = strategy.on_bar(bar_at(reversal_time, 100.0, 100.0, 98.0, 99.0))
+    assert signal is None
+    assert strategy.stats["breakouts_invalidated"] == 1
+    assert strategy.state is State.WAIT_BREAKOUT
+    assert strategy._breakout_direction is None
+    assert strategy._anchor_fvg is None
+    assert strategy._pending_fvg is None
+
+    # A fresh breakout -- even in the opposite (SHORT) direction -- is
+    # still detected normally afterward.
+    signal = strategy.on_bar(bar_at(reversal_time + timedelta(minutes=1), 99.0, 99.0, 95.0, 95.0))
+    assert signal is None
+    assert strategy.state is State.WAIT_15M_FVG
+    assert strategy._breakout_direction is Direction.SHORT
+
+
 def test_stale_fvg_from_a_previous_day_is_not_available_as_todays_anchor():
     """A 15m FVG that formed on a previous trading day and was simply
     never revisited (so it's still technically unmitigated) must not be

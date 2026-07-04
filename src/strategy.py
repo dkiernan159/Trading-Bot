@@ -56,7 +56,11 @@ class OpeningRangeStrategy:
     *selecting* a candidate 15m anchor or 1m entry -- a resting limit order
     at the midpoint always fills before price can reach far enough to
     break the gap it's sitting inside, so a pending entry is never
-    abandoned for having been mitigated.
+    abandoned for having been mitigated. The breakout thesis itself can
+    fail too, though: a close back through the box's opposite edge while
+    waiting on an anchor/entry invalidates it, resetting to WAIT_BREAKOUT
+    rather than continuing to chase a same-direction anchor somewhere
+    price has already fully reversed away from.
     """
 
     def __init__(self, cfg: BotConfig):
@@ -81,6 +85,7 @@ class OpeningRangeStrategy:
         # happened" when a backtest window produces zero trades.
         self.stats = {
             "breakouts": 0,
+            "breakouts_invalidated": 0,
             "large_15m_fvgs": 0,
             "nested_1m_fvgs": 0,
             "fills": 0,
@@ -111,6 +116,31 @@ class OpeningRangeStrategy:
         if self.state is not State.IN_TRADE and t >= self.cfg.session.no_new_entries_after:
             self.state = State.DONE_FOR_DAY
             return None
+
+        if self.state in (State.WAIT_15M_FVG, State.WAIT_1M_FVG, State.WAIT_FILL):
+            # The breakout thesis itself can fail: if price closes back
+            # through the *opposite* side of the box, the original
+            # direction call is no longer valid, no matter how "large" or
+            # "unmitigated" some same-direction 15m FVG elsewhere still
+            # looks. Without this, the bot could keep hunting for a
+            # same-direction anchor/entry arbitrarily far from where the
+            # breakout actually happened -- e.g. a bounce well below the
+            # entire opening range, long after a LONG breakout has
+            # completely round-tripped and reversed.
+            breakout_failed = (
+                bar.close < self.box.low
+                if self._breakout_direction is Direction.LONG
+                else bar.close > self.box.high
+            )
+            if breakout_failed:
+                self.stats["breakouts_invalidated"] += 1
+                self._breakout_direction = None
+                self._anchor_fvg = None
+                self._anchor_locked_in_at = None
+                self._pending_fvg = None
+                self._pending_limit_price = None
+                self.state = State.WAIT_BREAKOUT
+                return None
 
         if self.state is State.MARKING_LEVELS:
             if t >= self.cfg.session.ny_open:

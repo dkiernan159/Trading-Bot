@@ -11,7 +11,26 @@ review these and adjust `config.yaml` before running live.
 2. At 9:30 ET the NY session opens. Watch the first 15-minute candle; it
    closes at 9:45 ET. Mark its high/low as "the box".
 3. Wait for price to break the box high (bullish) or box low (bearish) --
-   this sets the trade direction/bias, it is not itself the entry.
+   this sets the trade direction/bias, it is not itself the entry. The
+   breakout call itself can fail, though: if price later closes back
+   through the box's **opposite** edge while still waiting on an anchor
+   or entry (rules 4-6), the original direction call is invalidated and
+   the bot resets to waiting for a fresh breakout, rather than continuing
+   to hunt for a same-direction anchor/entry somewhere price has already
+   reversed away from.
+
+   (Added 2026-07-04: a real 30-day backtest's `--verbose` trade detail
+   showed a LONG entry on 2026-06-22 filled at 133.5 points *below* the
+   box's low -- meaning the breakout had fully round-tripped and reversed
+   long before the bot's eventual entry, which was really a fresh
+   downward move being mistaken for a continuation of a dead LONG thesis.
+   Stop-distance was checked too and showed no correlation with win/loss
+   across the 5 real trades sampled, ruling that out as the cause. Since
+   nothing before this point invalidated `_breakout_direction` once set,
+   the bot could keep chasing a same-direction anchor arbitrarily far from
+   where the breakout actually happened. Fixed by resetting to
+   `WAIT_BREAKOUT` the moment price closes back through the box's opposite
+   edge while an anchor/entry is still pending.)
 4. After the breakout, the bot watches for a **large 15-minute FVG** in the
    breakout direction to **anchor** the move -- this is the higher-
    timeframe confirmation that a real move is underway, not the entry

@@ -194,6 +194,7 @@ def print_funnel(stats: dict) -> None:
     exactly which requirement is doing the filtering."""
     print("\nFunnel (how many setups made it past each gate):")
     print(f"  Breakouts (box broken, direction set):                {stats.get('breakouts', 0)}")
+    print(f"  ...of those, breakout thesis later invalidated:         {stats.get('breakouts_invalidated', 0)}")
     print(f"  ...of those, a large 15m FVG anchored the move:        {stats.get('large_15m_fvgs', 0)}")
     print(f"  ...of those, a 1m FVG formed nested inside it:          {stats.get('nested_1m_fvgs', 0)}")
     print(f"  ...of those, price retraced to fill the limit:          {stats.get('fills', 0)}")
