@@ -188,12 +188,26 @@ review these and adjust `config.yaml` before running live.
    bottleneck at every timeframe tried) -- here, the 1m and 5m detectors
    are independent, pooled alternatives; either one qualifying is
    sufficient on its own, matching the user's "either... or" framing
-   exactly. Untested against real data as of this writing: every
-   loosening tried so far in this project (wider stop search, shallower
-   retracement) recovered trades that were pure losers, and 1-minute-scale
-   gaps are noisier than 5-minute ones by nature, so this may follow the
-   same pattern -- watch win rate at least as closely as trade count once
-   real backtests are run.)
+   exactly.
+
+   As predicted, this did initially follow the same pattern as every
+   other loosening tried in this project: a real 30-day `--verbose`
+   backtest (25 trades) came back at 44% win rate / $217 net -- a real
+   frequency win (up from 2 trades in the same 7-day sub-window to 4),
+   but a clean quality problem underneath it. Every one of the 7 trades
+   whose anchor gap was under 14 points lost (0 of 7), while trades with
+   a gap >=14 points won 11 of 18 (61%) -- true regardless of direction,
+   stop distance, or which detector found the anchor (one of the 7 tiny
+   losers was even a 5m anchor). At the original `min_gap_points: 0.5`,
+   "any displacement counts" -- a 3.5-6.75 point 1-minute gap on MNQ is
+   ordinary noise, not real structure, and `displacement_multiplier`
+   alone doesn't catch this because a quiet stretch's recent average
+   range is also small, so a tiny gap can look "relatively strong" while
+   staying absolutely tiny. Raised `entry_fvg.min_gap_points` to `12`
+   (config.yaml) as a result -- excluding just those 7 trades would have
+   turned this same window into 61% win rate / $1,146.54 across the
+   remaining 18, while still leaving ~14 of 19 trading days with a
+   trade.)
 6. Reward:risk is 2:1.
 7. Stop-loss is placed intelligently at a real structural level -- the
    nearest marked previous-day/Asia/London high-low or opening-range box
@@ -400,9 +414,13 @@ review these and adjust `config.yaml` before running live.
   Added at the user's explicit request after a real 7-day backtest found
   only 2 trades against their >=1/trading-day requirement, with the
   funnel showing anchors weren't the scarce resource (23 5m ones formed)
-  but fills were (3). `min_gap_points: 0.5` / `displacement_multiplier:
-  1.0` / `lookback_bars: 8` are fresh ASSUMPTIONS for the 1-minute
-  timeframe, untested against real data as of this writing.)
+  but fills were (3). Started at `min_gap_points: 0.5` /
+  `displacement_multiplier: 1.0` / `lookback_bars: 8` as fresh
+  ASSUMPTIONS for the 1-minute timeframe; `min_gap_points` raised to
+  `12` the same day rule 5's revision history describes -- a real
+  30-day backtest showed every trade with an anchor gap under 14 points
+  losing (0 of 7), while `displacement_multiplier`/`lookback_bars`
+  remain untested against real data as of this writing.)
 - **Daily reset of the active-gap pool** (`src/fvg.py:
   FvgDetector.clear_active_gaps`, called from `strategy.py:
   _start_new_day`): a gap that simply never gets revisited stays

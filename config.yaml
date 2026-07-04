@@ -91,11 +91,23 @@ strategy:
                                    # against real data: 1-minute-scale gaps are noisier than 5-minute ones by
                                    # nature, and every other loosening tried in this project so far (a wider
                                    # stop search, a shallower retracement) recovered trades that were pure
-                                   # losers -- retune min_gap_points/displacement_multiplier hard against real
-                                   # backtests, and watch win rate as closely as trade count.
+                                   # losers.
     timeframe_minutes: 1
-    min_gap_points: 0.5           # ASSUMPTION: much smaller than the 5m gap floor -- 1-minute-scale genuine
-                                   # displacement on MNQ is naturally a fraction of a 5-minute move's size.
+    min_gap_points: 12             # Raised 2026-07-04 from the original 0.5 ASSUMPTION after a real 30-day
+                                   # --verbose backtest (25 trades): every trade whose anchor gap was under 14
+                                   # points lost (7 of 7, 0 wins), while trades with a gap >=14 points won 11 of
+                                   # 18 (61%) -- a clean cutoff, not a soft correlation, and true regardless of
+                                   # direction, stop distance, or which detector (one of the 7 tiny losers was
+                                   # even a 5m anchor). Excluding just those 7 trades would have turned a 44%
+                                   # win rate / $217 net window into 61% / $1,146.54 across the remaining 18,
+                                   # while still leaving ~14 of 19 trading days with a trade. At min_gap_points
+                                   # 0.5, "any displacement counts" -- a 3.5-6.75 point 1-minute gap on MNQ is
+                                   # ordinary noise, not real structure; displacement_multiplier alone doesn't
+                                   # catch this because in a quiet stretch the recent average range is also
+                                   # small, so a tiny gap can look "relatively strong" while staying absolutely
+                                   # tiny. Set to 12 (just below the observed 14-point minimum winning gap, to
+                                   # avoid overfitting the exact boundary of a 25-trade sample) -- retune
+                                   # against more real data.
     displacement_multiplier: 1.0  # ASSUMPTION: same ratio-based "strong" definition as the 5m detector.
     lookback_bars: 8              # 1m candles used for the recent average range baseline (~8 minutes)
   reentry:

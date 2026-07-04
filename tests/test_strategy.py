@@ -238,17 +238,20 @@ def test_a_1m_fvg_can_anchor_and_fill_a_trade_on_its_own():
     c0_time = baseline_start + timedelta(minutes=8)
     signal = strategy.on_bar(bar_at(c0_time, 103.0, 103.05, 102.95, 103.0))
     assert signal is None
-    signal = strategy.on_bar(bar_at(c0_time + timedelta(minutes=1), 103.0, 104.3, 103.0, 104.2))  # c1: displacement
+    # c1: a much larger displacement than the earlier 15m-nested design
+    # ever needed -- entry_fvg.min_gap_points was raised from 0.5 to 12
+    # after real data showed every trade with a gap under 14 points lost.
+    signal = strategy.on_bar(bar_at(c0_time + timedelta(minutes=1), 103.0, 120.3, 103.0, 120.2))  # c1: displacement
     assert signal is None
-    signal = strategy.on_bar(bar_at(c0_time + timedelta(minutes=2), 104.2, 104.5, 103.7, 104.4))  # c2: confirms gap
+    signal = strategy.on_bar(bar_at(c0_time + timedelta(minutes=2), 120.2, 120.5, 120.05, 120.4))  # c2: confirms gap
     assert signal is None
     # One more bar to finalize c2's 1-minute "candle" (each fed bar already
     # is one, at this timeframe) and trigger detection.
-    signal = strategy.on_bar(bar_at(c0_time + timedelta(minutes=3), 104.4, 104.45, 104.35, 104.4))
+    signal = strategy.on_bar(bar_at(c0_time + timedelta(minutes=3), 120.4, 120.45, 120.35, 120.4))
     assert signal is None
     assert strategy.state is State.WAIT_FILL
 
-    anchor_low, anchor_high = 103.05, 103.7  # c0.high, c2.low
+    anchor_low, anchor_high = 103.05, 120.05  # c0.high, c2.low
     midpoint = (anchor_low + anchor_high) / 2
     assert strategy._anchor_fvg.timeframe_minutes == 1
     assert strategy._pending_limit_price == pytest.approx(midpoint)
