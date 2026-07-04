@@ -141,10 +141,8 @@ review these and adjust `config.yaml` before running live.
    hardcoded to the exact midpoint; `entry_retracement_pct`
    (`config.yaml`) sets how far into the gap price must retrace, as a
    fraction of that anchor's own width -- `0.5` reproduces the exact
-   midpoint, and `config.yaml` currently loosens it to `0.35` as a
-   starting ASSUMPTION to retest against real data, same as every other
-   threshold here. Confirmed with the user beforehand (not guessed) that
-   this should be a configurable retracement fraction scaling with each
+   midpoint. Confirmed with the user beforehand (not guessed) that this
+   should be a configurable retracement fraction scaling with each
    anchor's own size -- not a fixed point-distance tolerance, and not an
    entry aligned to wherever a marked structural level happens to sit
    inside the gap. The "always fills before it could be mitigated"
@@ -153,7 +151,20 @@ review these and adjust `config.yaml` before running live.
    the gap's two edges has the same property, since a single bar's
    low/high can't reach the far edge without having already reached
    anything closer to where price is coming from. No separate mitigation
-   check was added as a result, since it would never fire.)
+   check was added as a result, since it would never fire.
+
+   Loosened to `0.35` the same day to actually recover some of that
+   "superseded" frequency; reverted back to `0.5` also the same day after
+   a real `--verbose` run showed the 3 trades this recovered
+   (2026-06-12 x2, 2026-06-29) all lost -- win rate dropped from 50% to
+   33% and net from $249.75 to $159.28 despite the extra trades. This was
+   the *second* consecutive loosening attempt (see rule 7's `min_stop_dollars`
+   history) where the specific trades a loosened rule recovered were pure
+   losers -- 0 of 8 combined across both -- a real pattern rather than
+   noise: setups that only qualify once a rule is loosened tend to be
+   lower quality by exactly the measure that rule was checking. Kept the
+   mechanism (it's a legitimate, structure-scaled lever) but reset the
+   value to the original midpoint until real data supports moving it.)
 6. Reward:risk is 2:1.
 7. Stop-loss is placed intelligently at a real structural level -- the
    nearest marked previous-day/Asia/London high-low or opening-range box
