@@ -31,8 +31,8 @@ def smooth_walk_1m(start: datetime, minutes: int, start_price: float, end_price:
     """`minutes` consecutive real 1-minute bars walking smoothly from
     start_price to end_price -- gentle enough relative to WICK that no 3
     consecutive bars form their own 1-minute gap, so this same price
-    action can build a genuine 15m (or 5m) candle without also
-    registering as a contaminating 1-minute-scale FVG."""
+    action can build a genuine 15m candle without also registering as a
+    contaminating 1-minute-scale FVG."""
     bars = []
     for i in range(minutes):
         o = start_price + (end_price - start_price) * i / minutes
@@ -48,17 +48,15 @@ def load_test_config():
     # 12:30 ET cutoff -- push it out so the cutoff isn't what's under
     # test here.
     cfg.session.no_new_entries_after = dtime(23, 59)
-    cfg.strategy.entry_fvg.lookback_bars = 5
     return cfg
 
 
-def breakout_15m_anchor_nested_5m_bars() -> list[Bar]:
+def breakout_15m_anchor_bars() -> list[Bar]:
     """Previous-day high of 105 and low of 95, box 9:30-9:45 (high=101/
-    low=99.5), breakout above the box, 8 quiet 15m baseline candles, a
-    real displacement move from 105.1 to 109.3 that forms a large 15m FVG
-    anchor (gap 105.3-109.1), then a small 5m FVG nested inside it (gap
-    106.3-107.9) whose midpoint (107.1) is where the resulting limit
-    order fills."""
+    low=99.5), breakout above the box, 8 quiet 15m baseline candles, then
+    a real displacement move from 105.1 to 109.3 that forms a large 15m
+    FVG anchor (gap 105.3-109.1) -- its own midpoint (107.2) is the entry
+    trigger, filled by the final bar's retrace back down to it."""
     bars = [
         bar_at(PREV_DAY_BASE, 100.0, 101.0, 99.0, 100.0),
         bar_at(PREV_DAY_BASE + timedelta(minutes=15), 100.0, 105.0, 100.0, 104.0),
@@ -77,43 +75,35 @@ def breakout_15m_anchor_nested_5m_bars() -> list[Bar]:
     bars += smooth_walk_1m(pattern_start + timedelta(minutes=15), 15, 105.1, 109.3)  # c1: displacement
     bars += smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, 109.3, 109.5)  # c2: confirms gap
     bars.append(flat_bar(pattern_start + timedelta(minutes=45), 109.5))  # flush -- detects the 15m anchor
-
-    # nested_start lands on a 5-minute-aligned boundary (flush + 5) so the
-    # dense c0/c1/c2 bars below bucket cleanly into three 5-minute candles.
-    nested_start = pattern_start + timedelta(minutes=50)
-    bars += smooth_walk_1m(nested_start, 5, 106.0, 106.1)  # c0
-    bars += smooth_walk_1m(nested_start + timedelta(minutes=5), 5, 106.1, 108.1)  # c1: displacement
-    bars += smooth_walk_1m(nested_start + timedelta(minutes=10), 5, 108.1, 108.3)  # c2: confirms gap
-    bars.append(flat_bar(nested_start + timedelta(minutes=15), 108.3))  # flush -- detects it
-    bars.append(bar_at(nested_start + timedelta(minutes=16), 108.0, 108.1, 106.3, 106.8))  # fills the 107.1 limit
+    bars.append(bar_at(pattern_start + timedelta(minutes=46), 109.5, 109.6, 105.3, 107.2))  # fills the 107.2 midpoint
     return bars
 
 
 def test_backtest_records_a_win():
     cfg = load_test_config()
-    bars = breakout_15m_anchor_nested_5m_bars()
+    bars = breakout_15m_anchor_bars()
     # Stop is the 15m anchor's own bottom (105.3), the nearest structural
-    # level below entry (107.1) -- nearer than the previous-day high (105.0)
-    # -- so target is 107.1 + 2*(107.1-105.3) = 110.7.
-    # Runs up to the target (110.7) without dipping to the stop (105.3) first.
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.4, 111.0, 107.0, 110.8))
+    # level below entry (107.2) -- nearer than the previous-day high (105.0)
+    # -- so target is 107.2 + 2*(107.2-105.3) = 111.0.
+    # Runs up to the target (111.0) without dipping to the stop (105.3) first.
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.3, 107.1, 111.1))
 
     results = run_backtest(cfg, bars)
 
     assert len(results) == 1
     assert results[0]["won"] is True
     assert results[0]["date"] == DAY.date()
-    assert results[0]["entry_price"] == pytest.approx(107.1)
+    assert results[0]["entry_price"] == pytest.approx(107.2)
     assert results[0]["stop_price"] == pytest.approx(105.3)
-    assert results[0]["target_price"] == pytest.approx(110.7)
+    assert results[0]["target_price"] == pytest.approx(111.0)
 
 
 def test_backtest_records_a_loss():
     cfg = load_test_config()
-    bars = breakout_15m_anchor_nested_5m_bars()
+    bars = breakout_15m_anchor_bars()
     # Drops to the stop (105.3, the 15m anchor's bottom) without reaching
-    # the target (110.7) first.
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 106.8, 107.0, 104.5, 105.0))
+    # the target (111.0) first.
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.0, 107.2, 104.5, 105.0))
 
     results = run_backtest(cfg, bars)
 
@@ -132,8 +122,8 @@ def test_backtest_reports_no_trades_when_nothing_triggers():
 
 def test_funnel_stats_track_each_gate():
     cfg = load_test_config()
-    bars = breakout_15m_anchor_nested_5m_bars()
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 106.8, 110.0, 106.7, 109.9))
+    bars = breakout_15m_anchor_bars()
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.3, 107.1, 111.1))
 
     stats: dict = {}
     run_backtest(cfg, bars, stats_out=stats)
@@ -142,15 +132,14 @@ def test_funnel_stats_track_each_gate():
         "breakouts": 1,
         "breakouts_invalidated": 0,
         "large_15m_fvgs": 1,
-        "nested_5m_fvgs": 1,
         "fills": 1,
     }
 
 
-def test_funnel_stats_show_anchor_but_no_nested_fvg_afterward():
-    """A breakout that anchors on a large 15m FVG but never gets a
-    qualifying nested 5m FVG inside it should show up as a near-miss:
-    breakout + anchor counted, zero nested_5m_fvgs, zero fills."""
+def test_funnel_stats_show_anchor_but_no_fill_afterward():
+    """A breakout that anchors on a large 15m FVG but where price never
+    retraces back to the anchor's own midpoint should show up as a
+    near-miss: breakout + anchor counted, zero fills."""
     cfg = load_test_config()
     bars = [
         bar_at(PREV_DAY_BASE, 100.0, 101.0, 99.0, 100.0),
@@ -171,9 +160,11 @@ def test_funnel_stats_show_anchor_but_no_nested_fvg_afterward():
     bars += smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, 109.3, 109.5)
     bars.append(flat_bar(pattern_start + timedelta(minutes=45), 109.5))  # flush -- detects the 15m anchor
 
+    # Price stays well above the anchor's midpoint (107.2) for the rest of
+    # the session -- it never retraces back down to fill.
     flat_after = pattern_start + timedelta(minutes=46)
     for i in range(20):
-        bars.append(flat_bar(flat_after + timedelta(minutes=i), 109.5, spread=0.3))  # flat, no 5m FVG ever forms
+        bars.append(flat_bar(flat_after + timedelta(minutes=i), 109.5, spread=0.3))
 
     stats: dict = {}
     results = run_backtest(cfg, bars, stats_out=stats)
@@ -181,7 +172,6 @@ def test_funnel_stats_show_anchor_but_no_nested_fvg_afterward():
     assert results == []
     assert stats["breakouts"] == 1
     assert stats["large_15m_fvgs"] == 1
-    assert stats["nested_5m_fvgs"] == 0
     assert stats["fills"] == 0
 
 
@@ -207,8 +197,8 @@ def test_pnl_points_is_positive_for_a_short_win():
 
 def test_export_chart_json_writes_candles_and_levels(tmp_path):
     cfg = load_test_config()
-    bars = breakout_15m_anchor_nested_5m_bars()
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.4, 111.0, 107.0, 110.8))
+    bars = breakout_15m_anchor_bars()
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.3, 107.1, 111.1))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.json"
@@ -227,8 +217,6 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
     assert trade["previous_day_low"] == 95.0
     assert trade["anchor_gap_low"] == pytest.approx(105.3)
     assert trade["anchor_gap_high"] == pytest.approx(109.1)
-    assert trade["fvg_gap_low"] == pytest.approx(106.3)
-    assert trade["fvg_gap_high"] == pytest.approx(107.9)
     # entry_time should exactly match one of the candle labels, so the
     # chart can find that candle and place a marker there.
     assert any(c["t"] == trade["entry_time"] for c in trade["candles"])
@@ -239,8 +227,8 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
 
 def test_export_chart_html_embeds_trade_data(tmp_path):
     cfg = load_test_config()
-    bars = breakout_15m_anchor_nested_5m_bars()
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.4, 111.0, 107.0, 110.8))
+    bars = breakout_15m_anchor_bars()
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.3, 107.1, 111.1))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.html"

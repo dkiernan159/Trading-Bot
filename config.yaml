@@ -29,27 +29,18 @@ strategy:
                            # is placed at whichever marked structural level (previous day/Asia/London high-low,
                            # box edge, or the 15m anchor FVG's far boundary) is nearest beyond entry -- this cap
                            # only kicks in if that nearest level is farther away than $200 allows.
-  fvg:                            # the "large" 15m FVG: confirms direction, anchors where to look for an entry
+  fvg:                            # the 15m FVG: confirms direction/anchors the move -- its own midpoint is
+                                   # also the entry price (see rule 5 in STRATEGY.md; removed 2026-07-04 the
+                                   # separate nested-entry-timeframe stage that used to sit inside this gap --
+                                   # a real 30-day backtest showed it was by far the tightest bottleneck in the
+                                   # funnel regardless of whether it looked at 1m or 5m gaps for that stage,
+                                   # so the anchor's own midpoint is now traded directly instead)
     timeframe_minutes: 15
     min_gap_points: 2.5           # ASSUMPTION: minimum 15m FVG size to count as a valid gap (loosened 2026-07-04
                                    # from 3.0 -- too few anchors were forming; see STRATEGY.md)
     displacement_multiplier: 1.3  # ASSUMPTION: "strong" = displacement candle body >= 1.3x recent avg range
                                    # (loosened 2026-07-04 from 1.5)
     lookback_bars: 8              # 15m candles used for the recent average range baseline (~2 hours)
-  entry_fvg:                      # the 5m FVG nested inside the 15m FVG -- the actual entry trigger. Switched
-                                   # 2026-07-04 from a 1m timeframe: a real 7-day backtest showed only 1 of 4
-                                   # anchored setups ever produced a qualifying nested candidate (funnel:
-                                   # breakouts=12, anchors=8, nested=1, fills=1) -- requiring a fresh 1-minute
-                                   # retest inside the anchor was too strict, missing good moves that retraced
-                                   # cleanly on a 5-minute scale instead. Still tighter than the 15m anchor
-                                   # itself, so the resulting stop isn't sized off 15m-candle noise.
-    timeframe_minutes: 5
-    min_gap_points: 1.0           # ASSUMPTION: minimum 5m FVG size, scaled up from the old 1m threshold (0.2)
-                                   # for the larger timeframe -- retune from real backtests same as the others.
-    displacement_multiplier: 0.75 # ASSUMPTION: "strong" = displacement candle body >= 0.75x recent avg range
-                                   # (carried over unchanged from the 1m setting -- same reasoning: "strong"
-                                   # mostly just means "a real gap formed here", not a forceful displacement)
-    lookback_bars: 8              # 5m candles used for the recent average range baseline (~40 minutes)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
     allow_new_setup_after_win: false    # ASSUMPTION: stand down for the day after a winner (change if wrong)

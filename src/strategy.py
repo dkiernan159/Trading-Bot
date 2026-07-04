@@ -17,8 +17,7 @@ class State(Enum):
     BUILDING_BOX = auto()     # 9:30-9:45: accumulating the opening range candle
     WAIT_BREAKOUT = auto()    # waiting for a close beyond the box high/low
     WAIT_15M_FVG = auto()     # breakout direction set; waiting for a large, unmitigated 15m FVG in that direction
-    WAIT_5M_FVG = auto()      # 15m FVG anchored; waiting for a 5m FVG nested inside it
-    WAIT_FILL = auto()        # a valid nested 5m FVG was found; limit order resting at its midpoint
+    WAIT_FILL = auto()        # anchor 15m FVG found; limit order resting at its own midpoint
     IN_TRADE = auto()         # limit order filled, waiting on the runner/broker to close it
     DONE_FOR_DAY = auto()
 
@@ -27,7 +26,6 @@ class State(Enum):
 class EntrySignal:
     direction: Direction
     entry_price: float
-    fvg: FairValueGap
     anchor_fvg: FairValueGap
     structural_levels: list[float]
     timestamp: datetime
@@ -40,27 +38,27 @@ def _nearest_then_largest(fvgs: list[FairValueGap], current_price: float) -> Fai
 
 
 class OpeningRangeStrategy:
-    """State machine implementing the NY-open opening-range breakout + large
-    15m FVG + nested 5m FVG entry strategy described in STRATEGY.md.
+    """State machine implementing the NY-open opening-range breakout + 15m
+    FVG anchor entry strategy described in STRATEGY.md.
 
     Sequence: mark previous-day/Asia/London levels (kept for stop-loss
     placement, see risk.py) -> form the 9:30-9:45 box -> a close beyond the
     box sets the breakout direction -> wait for a large 15m FVG in that
-    direction to anchor the move (whenever it formed, and kept live/current
-    rather than frozen on the first pick, see WAIT_5M_FVG) -> once anchored,
-    wait for a fresh 5-minute FVG whose midpoint falls inside that 15m FVG's
-    range -> a limit order rests at that midpoint, kept tighter/more precise
-    (5m-scale) than the 15m anchor itself, so the resulting stop isn't sized
-    off 15m-candle noise. Mitigation (a gap broken by price trading through
-    its far side) only matters when
-    *selecting* a candidate 15m anchor or 5m entry -- a resting limit order
+    direction to anchor the move -> a limit order rests at that anchor's
+    own midpoint, kept live/current while waiting to fill (see WAIT_FILL:
+    switching to a nearer/fresher unmitigated 15m FVG, and updating the
+    resting price, rather than staying frozen on the first anchor found).
+    Mitigation (a gap broken by price trading through its far side) only
+    matters when *selecting* a candidate anchor -- a resting limit order
     at the midpoint always fills before price can reach far enough to
-    break the gap it's sitting inside, so a pending entry is never
-    abandoned for having been mitigated. The breakout thesis itself can
-    fail too, though: a close back through the box's opposite edge while
-    waiting on an anchor/entry invalidates it, resetting to WAIT_BREAKOUT
-    rather than continuing to chase a same-direction anchor somewhere
-    price has already fully reversed away from.
+    break the gap it's sitting inside (the midpoint is strictly between
+    the gap's two edges), so a pending entry is never abandoned for
+    having been mitigated; if it were going to be mitigated, it already
+    filled first. The breakout thesis itself can fail too: a close back
+    through the box's opposite edge while waiting on an anchor/entry
+    invalidates it, resetting to WAIT_BREAKOUT rather than continuing to
+    chase a same-direction anchor somewhere price has already fully
+    reversed away from.
     """
 
     def __init__(self, cfg: BotConfig):
@@ -69,15 +67,12 @@ class OpeningRangeStrategy:
         self.session_levels = SessionLevels(cfg.session)
         self.box = OpeningRangeBox(cfg.session)
         self.fvg_detector_15m = FvgDetector(cfg.strategy.fvg, self.tz)
-        self.fvg_detector_5m = FvgDetector(cfg.strategy.entry_fvg, self.tz)
 
         self.state = State.MARKING_LEVELS
         self._trading_date: date | None = None
         self._breakout_direction: Direction | None = None
         self._levels: SessionLevelSet | None = None
         self._anchor_fvg: FairValueGap | None = None
-        self._anchor_locked_in_at: datetime | None = None
-        self._pending_fvg: FairValueGap | None = None
         self._pending_limit_price: float | None = None
 
         # Funnel counters -- how many setups made it past each gate. Lets
@@ -87,7 +82,6 @@ class OpeningRangeStrategy:
             "breakouts": 0,
             "breakouts_invalidated": 0,
             "large_15m_fvgs": 0,
-            "nested_5m_fvgs": 0,
             "fills": 0,
         }
 
@@ -108,7 +102,6 @@ class OpeningRangeStrategy:
         self.session_levels.add_bar(bar)
         self.box.add_bar(bar)
         self.fvg_detector_15m.add_bar(bar)
-        self.fvg_detector_5m.add_bar(bar)
 
         if self.state is State.DONE_FOR_DAY:
             return None
@@ -117,7 +110,7 @@ class OpeningRangeStrategy:
             self.state = State.DONE_FOR_DAY
             return None
 
-        if self.state in (State.WAIT_15M_FVG, State.WAIT_5M_FVG, State.WAIT_FILL):
+        if self.state in (State.WAIT_15M_FVG, State.WAIT_FILL):
             # The breakout thesis itself can fail: if price closes back
             # through the *opposite* side of the box, the original
             # direction call is no longer valid, no matter how "large" or
@@ -136,8 +129,6 @@ class OpeningRangeStrategy:
                 self.stats["breakouts_invalidated"] += 1
                 self._breakout_direction = None
                 self._anchor_fvg = None
-                self._anchor_locked_in_at = None
-                self._pending_fvg = None
                 self._pending_limit_price = None
                 self.state = State.WAIT_BREAKOUT
                 return None
@@ -168,70 +159,44 @@ class OpeningRangeStrategy:
             # Any large, unmitigated 15m FVG in the breakout direction
             # anchors the move -- it doesn't need to have just formed on
             # this bar, it may already have been sitting there, untouched,
-            # since earlier in the session.
+            # since earlier in the session. Its own midpoint is the entry
+            # itself, so as soon as one's found, a limit order rests there.
             candidates = self.fvg_detector_15m.unmitigated_in_direction(self._breakout_direction)
             if candidates:
                 self._anchor_fvg = _nearest_then_largest(candidates, bar.close)
-                self._anchor_locked_in_at = bar.timestamp
+                self._pending_limit_price = (self._anchor_fvg.gap_low + self._anchor_fvg.gap_high) / 2
                 self.stats["large_15m_fvgs"] += 1
-                self.state = State.WAIT_5M_FVG
+                self.state = State.WAIT_FILL
             return None
 
-        if self.state is State.WAIT_5M_FVG:
-            # Keep the anchor current: if a nearer-to-price unmitigated 15m
-            # FVG exists now (including ones that formed after the current
-            # anchor), switch to it. This is *not* "wait for mitigation" --
-            # the anchor is never abandoned because it broke, it's just
-            # kept up to date so the bot isn't stuck all session on the
-            # very first (possibly stale or far-away) anchor it found.
+        if self.state is State.WAIT_FILL:
+            # Keep the anchor current while waiting for price to retrace
+            # to its midpoint: if a nearer-to-price unmitigated 15m FVG
+            # exists now, switch to it and move the resting limit order to
+            # its midpoint -- the anchor is never abandoned because it
+            # broke, it's just kept up to date so the bot isn't stuck all
+            # session on the very first (possibly stale or far-away)
+            # anchor it found.
             candidates = self.fvg_detector_15m.unmitigated_in_direction(self._breakout_direction)
             if candidates:
                 best_anchor = _nearest_then_largest(candidates, bar.close)
                 if best_anchor is not self._anchor_fvg:
                     self._anchor_fvg = best_anchor
-                    self._anchor_locked_in_at = bar.timestamp
+                    self._pending_limit_price = (best_anchor.gap_low + best_anchor.gap_high) / 2
                     self.stats["large_15m_fvgs"] += 1
 
-            # The nested 5m FVG must be a genuinely new structure that
-            # appeared *after* the anchor locked in -- not a gap that was
-            # already sitting there (or that formed as part of the same
-            # displacement that built the anchor itself). Without this,
-            # the bot could claim a coincidentally-overlapping 5m gap the
-            # instant the anchor confirms, which looks like "entering as
-            # the FVG forms" instead of waiting for an actual retest.
-            #
-            # "Nested" only requires the 5m gap's midpoint (the actual
-            # entry price) to fall inside the anchor's range -- requiring
-            # the whole 5m gap to fit inside left very little room in a
-            # tight anchor and was starving the bot of entries entirely.
-            nested = [
-                fvg
-                for fvg in self.fvg_detector_5m.unmitigated_in_direction(self._breakout_direction)
-                if self._anchor_fvg.gap_low <= (fvg.gap_low + fvg.gap_high) / 2 <= self._anchor_fvg.gap_high
-                and fvg.formed_at > self._anchor_locked_in_at
-            ]
-            if nested:
-                fvg = _nearest_then_largest(nested, bar.close)
-                self.stats["nested_5m_fvgs"] += 1
-                self._pending_fvg = fvg
-                self._pending_limit_price = (fvg.gap_low + fvg.gap_high) / 2
-                self.state = State.WAIT_FILL
-            return None
-
-        if self.state is State.WAIT_FILL:
             # No separate mitigation check here: the limit order rests
-            # exactly at the midpoint, strictly between gap_low and
-            # gap_high, so any bar that reaches far enough to break the
-            # gap's far edge has necessarily *also* reached the midpoint
-            # first (the midpoint is always closer to where price is
-            # coming from than the far edge is). A resting limit order
-            # fills the instant price touches it -- it doesn't wait to see
-            # where price ends up by the close of the bar. So "mitigated
-            # before it could fill" can't happen for the pending FVG; it
-            # always fills. (Mitigation still matters earlier, in
-            # WAIT_5M_FVG's candidate search -- a gap that's already
-            # broken is never selected as the pending FVG in the first
-            # place.)
+            # exactly at the anchor's midpoint, strictly between gap_low
+            # and gap_high, so any bar that reaches far enough to break
+            # the gap's far edge has necessarily *also* reached the
+            # midpoint first (the midpoint is always closer to where
+            # price is coming from than the far edge is). A resting limit
+            # order fills the instant price touches it -- it doesn't wait
+            # to see where price ends up by the close of the bar. So
+            # "mitigated before it could fill" can't happen for the
+            # pending entry; it always fills. (Mitigation still matters
+            # earlier, in the candidate search above -- an already-broken
+            # gap is never selected as the anchor in the first place.)
             filled = (
                 bar.low <= self._pending_limit_price
                 if self._breakout_direction is Direction.LONG
@@ -256,14 +221,12 @@ class OpeningRangeStrategy:
                 signal = EntrySignal(
                     direction=self._breakout_direction,
                     entry_price=self._pending_limit_price,
-                    fvg=self._pending_fvg,
                     anchor_fvg=self._anchor_fvg,
                     structural_levels=structural_levels,
                     timestamp=bar.timestamp,
                 )
                 self.state = State.IN_TRADE
                 self._anchor_fvg = None
-                self._pending_fvg = None
                 self._pending_limit_price = None
                 self.stats["fills"] += 1
                 return signal
@@ -283,8 +246,6 @@ class OpeningRangeStrategy:
 
         self._breakout_direction = None
         self._anchor_fvg = None
-        self._anchor_locked_in_at = None
-        self._pending_fvg = None
         self._pending_limit_price = None
         self.state = State.WAIT_BREAKOUT
 
@@ -301,11 +262,8 @@ class OpeningRangeStrategy:
         # average-range baseline) is left alone, so it's already
         # populated with real pre-market/overnight data by 9:30.
         self.fvg_detector_15m.clear_active_gaps()
-        self.fvg_detector_5m.clear_active_gaps()
         self.state = State.MARKING_LEVELS
         self._breakout_direction = None
         self._levels = None
         self._anchor_fvg = None
-        self._anchor_locked_in_at = None
-        self._pending_fvg = None
         self._pending_limit_price = None
