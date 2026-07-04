@@ -66,6 +66,7 @@ class OpeningRangeStrategy:
             "key_level_retests": 0,
             "strong_fvgs_after_retest": 0,
             "fills": 0,
+            "fvgs_mitigated_before_fill": 0,
         }
 
     @property
@@ -130,6 +131,23 @@ class OpeningRangeStrategy:
             return None
 
         if self.state is State.WAIT_FILL:
+            mitigated = (
+                bar.low < self._pending_fvg.gap_low
+                if self._breakout_direction is Direction.LONG
+                else bar.high > self._pending_fvg.gap_high
+            )
+            if mitigated:
+                # Price traded clean through the FVG's far edge instead of
+                # retracing to the midpoint -- the gap is used up/broken, not
+                # a valid entry. Abandon it and go back to looking for a
+                # fresh, unmitigated FVG rather than filling into a level
+                # that no longer means anything.
+                self.stats["fvgs_mitigated_before_fill"] += 1
+                self._pending_fvg = None
+                self._pending_limit_price = None
+                self.state = State.WAIT_FVG
+                return None
+
             filled = (
                 bar.low <= self._pending_limit_price
                 if self._breakout_direction is Direction.LONG

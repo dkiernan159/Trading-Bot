@@ -98,6 +98,7 @@ def test_funnel_stats_track_each_gate():
         "key_level_retests": 1,
         "strong_fvgs_after_retest": 1,
         "fills": 1,
+        "fvgs_mitigated_before_fill": 0,
     }
 
 

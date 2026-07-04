@@ -193,6 +193,7 @@ def print_funnel(stats: dict) -> None:
     print(f"  ...of those, price retested a marked key level: {stats.get('key_level_retests', 0)}")
     print(f"  ...of those, a strong FVG formed afterward:     {stats.get('strong_fvgs_after_retest', 0)}")
     print(f"  ...of those, price retraced to fill the limit:  {stats.get('fills', 0)}")
+    print(f"  (FVGs mitigated/broken before they could fill:   {stats.get('fvgs_mitigated_before_fill', 0)})")
 
 
 def print_trade_detail(results: list[dict]) -> None:

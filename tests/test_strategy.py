@@ -106,6 +106,34 @@ def test_does_not_enter_on_fvg_before_any_retest():
     assert strategy.state is State.WAIT_KEY_LEVEL_RETEST  # never advanced to WAIT_FVG
 
 
+def test_abandons_fvg_that_gets_mitigated_before_fill():
+    """If price blows straight through the far side of the pending FVG
+    (105.4-107.0, LONG, midpoint 106.2) instead of retracing cleanly to the
+    midpoint, the gap is mitigated/broken and must NOT be treated as a
+    fill -- even though the same bar's low also crosses the midpoint. The
+    bot should abandon it and go back to watching for a fresh FVG."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)
+    strategy.on_bar(bar(17, 102.5, 105.5, 102.3, 105.0))
+    feed_quiet_baseline(strategy, 18, 38, 105.0, 105.5, 104.5, 105.0)
+    strategy.on_bar(bar(38, 105.0, 105.4, 104.7, 105.1))  # c0
+    strategy.on_bar(bar(39, 105.1, 108.2, 105.0, 108.0))  # c1: displacement
+    strategy.on_bar(bar(40, 108.0, 108.5, 107.0, 108.3))  # c2: confirms gap 105.4-107.0
+    assert strategy.state is State.WAIT_FILL
+
+    # Instead of retracing to the 106.2 midpoint, price drops clean through
+    # the whole gap and beyond its far (low) edge of 105.4.
+    signal = strategy.on_bar(bar(41, 108.3, 108.5, 105.0, 105.2))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_FVG
+    assert strategy.stats["fvgs_mitigated_before_fill"] == 1
+    assert strategy.stats["fills"] == 0
+
+
 def test_reenters_after_stop_out_when_setup_reforms():
     cfg = load_test_config()
     strategy = OpeningRangeStrategy(cfg)

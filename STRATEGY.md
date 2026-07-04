@@ -24,7 +24,16 @@ review these and adjust `config.yaml` before running live.
    (`(gap_low + gap_high) / 2`), not a market order at whatever price the
    confirming candle closed at. The trade only starts once price actually
    trades back to that midpoint -- if it never comes back, there's no
-   entry that setup.
+   entry that setup. If price instead blows straight through the gap's
+   **far** edge (below `gap_low` for a bullish/LONG gap, above `gap_high`
+   for a bearish/SHORT gap) before ever retracing to the midpoint, the FVG
+   is **mitigated** -- it's been fully traded through, not just tapped --
+   and is abandoned rather than filled. The bot drops back to watching for
+   a fresh, unmitigated FVG in the same breakout direction instead of
+   entering off a level that no longer means anything. This only looks at
+   the single most-recently-detected FVG (the one currently resting as the
+   pending limit order); it does not track a history of older FVGs from
+   earlier in the session as still-tradeable candidates.
 
    (Revision history: v1 entered at the confirming candle's close, which
    put entries well outside the FVG zone entirely -- caught by inspecting
@@ -32,7 +41,11 @@ review these and adjust `config.yaml` before running live.
    level's zone, as a single combined condition -- too strict in practice
    (most setups were being filtered at that step, per the funnel
    diagnostics), and not actually what was meant. Corrected 2026-07-04 to
-   the current two-step retest-then-FVG design.)
+   the current two-step retest-then-FVG design. Also corrected 2026-07-04
+   to add mitigation: a chart inspection showed the bot entering short off
+   a FVG that price had already broken clean through on the way down --
+   the old fill check only asked "did price reach the midpoint," which is
+   also trivially true when price breaks clean through the entire gap.)
 7. Reward:risk is 2:1.
 8. Stop-loss: **either** the 2:1 ratio itself, **or** placed at a large
    support/resistance level whose break would imply a large move -- but never
