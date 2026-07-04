@@ -1,4 +1,4 @@
-# Strategy: NQ/MNQ NY-Open Opening Range Breakout + Retest + 1m FVG
+# Strategy: NQ/MNQ NY-Open Opening Range Breakout + Retest + 15m FVG
 
 This document is the source of truth for what the bot implements. Anything
 marked **ASSUMPTION** was not fully specified and was filled in with a
@@ -16,10 +16,17 @@ review these and adjust `config.yaml` before running live.
    (previous day high/low, Asia high/low, or London high/low -- any of
    them) -- i.e. trade through that exact price at some point.
 5. Only *after* that retest has happened does the bot start watching for
-   the entry trigger: the next strong 1-minute FVG in the breakout
-   direction. This FVG does **not** need to form at or near the key level
-   that was retested -- the retest and the FVG are two separate,
-   sequential steps, not one combined condition.
+   the entry trigger: a strong 15-minute FVG in the breakout direction that
+   has **not been mitigated** -- i.e. price has not yet traded clean
+   through its far side. This FVG does **not** need to form at or near the
+   key level that was retested (the retest and the FVG are two separate,
+   sequential conditions, not one combined condition), and it does **not**
+   need to have formed *after* the retest either -- any still-unmitigated
+   15m FVG already sitting on the chart, from earlier in the session,
+   qualifies the moment the retest completes. The bot keeps a running pool
+   of every 15m FVG detected in the session and continuously drops any that
+   get mitigated; once a retest happens, it picks the most recent
+   still-active one in the breakout direction, if any exist.
 6. Entry is a **limit order at the midpoint of that FVG's gap**
    (`(gap_low + gap_high) / 2`), not a market order at whatever price the
    confirming candle closed at. The trade only starts once price actually
@@ -28,12 +35,11 @@ review these and adjust `config.yaml` before running live.
    **far** edge (below `gap_low` for a bullish/LONG gap, above `gap_high`
    for a bearish/SHORT gap) before ever retracing to the midpoint, the FVG
    is **mitigated** -- it's been fully traded through, not just tapped --
-   and is abandoned rather than filled. The bot drops back to watching for
-   a fresh, unmitigated FVG in the same breakout direction instead of
-   entering off a level that no longer means anything. This only looks at
-   the single most-recently-detected FVG (the one currently resting as the
-   pending limit order); it does not track a history of older FVGs from
-   earlier in the session as still-tradeable candidates.
+   and is abandoned rather than filled. The bot drops the mitigated gap
+   from its pool and, on the next bar, immediately picks another
+   still-active unmitigated FVG in the same direction if one exists (this
+   is the same pool described in rule 5, not a separate concept) rather
+   than entering off a level that no longer means anything.
 
    (Revision history: v1 entered at the confirming candle's close, which
    put entries well outside the FVG zone entirely -- caught by inspecting
@@ -41,11 +47,17 @@ review these and adjust `config.yaml` before running live.
    level's zone, as a single combined condition -- too strict in practice
    (most setups were being filtered at that step, per the funnel
    diagnostics), and not actually what was meant. Corrected 2026-07-04 to
-   the current two-step retest-then-FVG design. Also corrected 2026-07-04
-   to add mitigation: a chart inspection showed the bot entering short off
-   a FVG that price had already broken clean through on the way down --
-   the old fill check only asked "did price reach the midpoint," which is
-   also trivially true when price breaks clean through the entire gap.)
+   the two-step retest-then-FVG design. Also corrected 2026-07-04 to add
+   mitigation: a chart inspection showed the bot entering short off a FVG
+   that price had already broken clean through on the way down -- the old
+   fill check only asked "did price reach the midpoint," which is also
+   trivially true when price breaks clean through the entire gap.
+   Corrected again 2026-07-04 to move FVG detection from 1-minute to
+   15-minute candles, and from "only the single most-recently-detected
+   FVG" to a running pool of every unmitigated 15m FVG in the session --
+   requiring the FVG to form fresh *after* the retest was discarding
+   perfectly valid, still-untouched gaps that had simply formed earlier,
+   and cutting down on the number of setups found.)
 7. Reward:risk is 2:1.
 8. Stop-loss: **either** the 2:1 ratio itself, **or** placed at a large
    support/resistance level whose break would imply a large move -- but never
@@ -72,10 +84,17 @@ review these and adjust `config.yaml` before running live.
     / point_value / reward_risk_ratio = 300 / 5 / 2.0 / 2.0 = 15 points.`
   - Take-profit is always `2 x actual_stop_distance` (so smaller structural
     stops give a smaller, still-2:1, target).
-- **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on the 1-minute
-  chart where (a) the gap size is >= `min_gap_points` and (b) the middle
-  (displacement) candle's body is >= `displacement_multiplier` times the
-  recent average candle range. Both thresholds are configurable.
+- **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on the
+  `timeframe_minutes` chart (15-minute by default) where (a) the gap size is
+  >= `min_gap_points` and (b) the middle (displacement) candle's body is >=
+  `displacement_multiplier` times the recent average candle range (over
+  `lookback_bars` candles on that same timeframe). All three are
+  configurable. `FvgDetector` builds these candles internally from whatever
+  bars it's fed (1-minute bars from the broker/backtest) and keeps a
+  running pool of every gap detected in the session, dropping ones the
+  moment they're mitigated (checked against every incoming 1-minute bar,
+  not just at each 15m close, so mitigation is caught as soon as it
+  actually happens).
 - **"Retest"** (`src/strategy.py: _touches_any_key_level`): a bar's range
   (low-to-high) trading through the *exact* price of any of the 6 marked
   levels (previous day high/low, Asia high/low, London high/low) counts as

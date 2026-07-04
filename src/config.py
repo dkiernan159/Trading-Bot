@@ -38,6 +38,7 @@ class FvgConfig:
     min_gap_points: float
     displacement_multiplier: float
     lookback_bars: int
+    timeframe_minutes: int
 
 
 @dataclass

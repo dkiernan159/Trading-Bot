@@ -34,14 +34,15 @@ class EntrySignal:
 
 class OpeningRangeStrategy:
     """State machine implementing the NY-open opening-range breakout + key-
-    level retest + 1m FVG strategy described in STRATEGY.md.
+    level retest + 15m FVG strategy described in STRATEGY.md.
 
     Sequence: mark previous-day/Asia/London levels -> form the 9:30-9:45 box
     -> a close beyond the box sets the breakout direction -> wait for price
-    to touch (retest) any marked key level -> once that's happened, the next
-    strong FVG in the breakout direction (regardless of where it forms)
-    rests a limit order at its midpoint -> enter only once price actually
-    trades back to that midpoint.
+    to touch (retest) any marked key level -> once that's happened, any
+    still-unmitigated 15m FVG in the breakout direction (whenever it formed,
+    before or after the retest) rests a limit order at its midpoint -> enter
+    only once price actually trades back to that midpoint, without first
+    breaking clean through the gap's far side.
     """
 
     def __init__(self, cfg: BotConfig):
@@ -49,7 +50,7 @@ class OpeningRangeStrategy:
         self.tz = ZoneInfo(cfg.session.timezone)
         self.session_levels = SessionLevels(cfg.session)
         self.box = OpeningRangeBox(cfg.session)
-        self.fvg_detector = FvgDetector(cfg.strategy.fvg)
+        self.fvg_detector = FvgDetector(cfg.strategy.fvg, self.tz)
 
         self.state = State.MARKING_LEVELS
         self._trading_date: date | None = None
@@ -85,7 +86,7 @@ class OpeningRangeStrategy:
 
         self.session_levels.add_bar(bar)
         self.box.add_bar(bar)
-        fvg = self.fvg_detector.add_bar(bar)
+        self.fvg_detector.add_bar(bar)
 
         if self.state is State.DONE_FOR_DAY:
             return None
@@ -123,7 +124,14 @@ class OpeningRangeStrategy:
             return None
 
         if self.state is State.WAIT_FVG:
-            if fvg is not None and fvg.direction is self._breakout_direction:
+            # Any 15m FVG in the breakout direction that hasn't been
+            # mitigated qualifies -- it doesn't need to have just formed on
+            # this bar. It may already have been sitting there, untouched,
+            # since earlier in the session; the retest is what unlocks it,
+            # not its formation time.
+            candidates = self.fvg_detector.unmitigated_in_direction(self._breakout_direction)
+            if candidates:
+                fvg = candidates[-1]  # most recently formed of the still-active ones
                 self.stats["strong_fvgs_after_retest"] += 1
                 self._pending_fvg = fvg
                 self._pending_limit_price = (fvg.gap_low + fvg.gap_high) / 2

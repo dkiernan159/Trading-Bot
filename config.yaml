@@ -23,9 +23,10 @@ strategy:
   #   = 300 / 5 / 2.0 / 2.0 = 15 points. Reward target at that size is 2 x 15 = 30 points (~$300 @ 5 contracts).
   max_stop_points: 15.0
   fvg:
-    min_gap_points: 1.5           # ASSUMPTION: minimum 1m FVG size to count as a valid gap
+    timeframe_minutes: 15         # candles the FVG pattern is detected on (changed from 1m -- see STRATEGY.md)
+    min_gap_points: 3.0           # ASSUMPTION: minimum 15m FVG size to count as a valid gap
     displacement_multiplier: 1.5  # ASSUMPTION: "strong" = displacement candle body >= 1.5x recent avg range
-    lookback_bars: 20             # bars used to compute the recent average range baseline
+    lookback_bars: 8              # 15m candles used for the recent average range baseline (~2 hours)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
     allow_new_setup_after_win: false    # ASSUMPTION: stand down for the day after a winner (change if wrong)

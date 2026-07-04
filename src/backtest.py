@@ -218,7 +218,7 @@ def print_trade_detail(results: list[dict]) -> None:
         print(f"    Asia session: high={_fmt(t['asia_high'])}  low={_fmt(t['asia_low'])}")
         print(f"    London session: high={_fmt(t['london_high'])}  low={_fmt(t['london_low'])}")
         print(f"    9:30-9:45 box: high={_fmt(t['box_high'])}  low={_fmt(t['box_low'])}")
-        print(f"    Confirming 1m FVG: {_fmt(t['fvg_gap_low'])} - {_fmt(t['fvg_gap_high'])}")
+        print(f"    Confirming 15m FVG: {_fmt(t['fvg_gap_low'])} - {_fmt(t['fvg_gap_high'])}")
         print(
             f"    Entry={_fmt(t['entry_price'])}  Stop={_fmt(t['stop_price'])}  Target={_fmt(t['target_price'])}"
         )
