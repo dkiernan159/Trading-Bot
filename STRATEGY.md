@@ -105,16 +105,16 @@ review these and adjust `config.yaml` before running live.
    thresholds it used.)
 6. Reward:risk is 2:1.
 7. Stop-loss is placed intelligently at a real structural level -- the
-   farthest marked previous-day/Asia/London high-low or opening-range box
-   edge beyond entry that still fits within the $200 budget (not the
-   nearest one -- see "How ambiguous points were resolved" below for why),
-   whichever makes sense on the chart -- **capped at $200 of risk per
-   trade** (`config.yaml: strategy.max_stop_dollars`) at the current
-   `position_sizing.contract_size`, so the stop is never wider than that
-   regardless of how far away the farthest usable structural level is
-   (see "How ambiguous points were resolved" below for why the 15m
-   anchor's own boundary is deliberately *not* one of these
-   candidates now that entry sits at its midpoint).
+   nearest marked previous-day/Asia/London high-low or opening-range box
+   edge beyond entry, whichever makes sense on the chart -- **capped at
+   $200 of risk per trade** (`config.yaml: strategy.max_stop_dollars`) at
+   the current `position_sizing.contract_size`, so the stop is never
+   wider than that regardless of how far away the nearest structural
+   level is (see "How ambiguous points were resolved" below for why the
+   15m anchor's own boundary is deliberately *not* one of these
+   candidates now that entry sits at its midpoint, and for why "nearest"
+   rather than "farthest within budget" is what the real data actually
+   supports).
 8. Reference size is 5 MNQ contracts, targeting ~$300/trade. The bot starts
    at a smaller size (`config.yaml: position_sizing.contract_size`) until a
    consistent win rate is shown; scaling back up to 5 is **manual only** --
@@ -125,19 +125,19 @@ review these and adjust `config.yaml` before running live.
 ## How ambiguous points were resolved (ASSUMPTIONS)
 
 - **Stop-loss placement** (`src/risk.py`): the "large formed area of
-  resistance/support" is interpreted as the **farthest** already-marked
-  level beyond entry in the stop direction that still fits within the
-  dollar cap -- previous day high/low, Asia high/low, London high/low,
-  or the opening range box edge (`strategy.py`'s `structural_levels`,
-  built when the trade signal fires) -- not the nearest one. The
-  distance to that level is **capped** at `max_stop_dollars`
-  (`config.yaml`, $200) converted to points at signal time
-  (`max_stop_dollars / (instrument.point_value *
+  resistance/support" is interpreted as the nearest already-marked level
+  beyond entry in the stop direction -- previous day high/low, Asia
+  high/low, London high/low, or the opening range box edge
+  (`strategy.py`'s `structural_levels`, built when the trade signal
+  fires). Whichever of these ends up nearest beyond entry becomes the
+  stop. The distance to that nearest level is **capped** at
+  `max_stop_dollars` (`config.yaml`, $200) converted to points at signal
+  time (`max_stop_dollars / (instrument.point_value *
   position_sizing.contract_size)`) -- so the dollar risk per trade never
-  exceeds $200 regardless of contract size; if *no* marked level exists
-  below (long) or above (short) entry within that budget at all (either
-  none exists on that side, or the nearest one is still farther out than
-  $200 allows), the cap itself is used as the stop distance outright.
+  exceeds $200 regardless of contract size, even if the nearest
+  structural level is farther out; if *no* marked level exists below
+  (long) or above (short) entry at all, the cap itself is used as the
+  stop distance outright.
   - Take-profit is always `2 x actual_stop_distance` (so smaller structural
     stops give a smaller, still-2:1, target -- this is why the target
     varies per trade rather than always chasing the reference $300).
@@ -164,21 +164,29 @@ review these and adjust `config.yaml` before running live.
     matched exactly half of that trade's own anchor gap width, while the
     bot had up to $200 available and real structural levels sat farther
     out unused. The anchor's own boundary is no longer a stop candidate;
-    only the marked previous-day/Asia/London/box levels are. Changed the
-    selection itself from nearest-level to farthest-level-within-budget
-    2026-07-04, the same day: a real 30-day backtest's `--verbose` detail
-    across 7 trades showed 0 of 4 trades whose stop landed on the nearest
-    available level (in every case, the opening-range box edge, which is
-    often close simply because that's literally where the breakout
-    happened) won, while 2 of 3 trades that instead fell back to the full
-    $200 cap (because even the nearest real level was farther out than
-    the cap) won. "Nearest" was consistently finding a minor speed bump
-    rather than a real invalidation point, and silently leaving budget
-    unused even when a farther, equally-real marked level would have
-    fit. Now the farthest marked level that still fits within
-    `max_stop_dollars` is used, maximizing the affordable, structurally-
-    justified stop distance instead of defaulting to whichever level
-    happens to be closest.)
+    only the marked previous-day/Asia/London/box levels are.
+
+    Briefly changed the selection itself from nearest-level to
+    farthest-level-within-budget the same day, on this reasoning: a real
+    30-day backtest's `--verbose` detail across 7 trades showed 0 of 4
+    trades whose stop landed on the nearest available level (in every
+    case, the opening-range box edge, which is often close simply
+    because that's literally where the breakout happened) won, while 2
+    of 3 trades that instead fell back to the full $200 cap (because
+    even the nearest real level was farther out than the cap) won.
+    "Nearest" looked like it was consistently finding a minor speed bump
+    rather than a real invalidation point. Reverted this the same day
+    after re-running the identical 7 trades with the farthest-level
+    change applied: it only actually changed the stop for 2 of them
+    (2026-06-11, 2026-06-23) -- both were already losses, and the wider
+    stop just made them lose *more* ($47.75->$93.24 and
+    $115.25->$174.76) without turning either into a win. Win rate stayed
+    at 2/7 (28.6%) but net P&L dropped from $354.25 to $249.26. Those 2
+    trades weren't stopped out by noise a wider stop would have ridden
+    through -- they kept moving against the position regardless -- so
+    nearest, the more conservative choice when multiple levels are
+    equally "real" structure, is what the evidence actually supports.
+    Reverted back to nearest-level selection.)
 - **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on
   `FvgConfig.timeframe_minutes` where (a) the gap size is >=
   `min_gap_points` and (b) the middle (displacement) candle's body is >=

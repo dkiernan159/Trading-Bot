@@ -24,41 +24,43 @@ def compute_stop_target(
     contracts: int,
     reward_risk_ratio: float,
 ) -> BracketLevels:
-    """Stop is the *farthest* marked structural level beyond entry that
-    still fits within the max_stop_dollars budget (previous day/Asia/
-    London high-low or opening range box edge -- see strategy.py's
-    structural_levels), so the dollar risk never exceeds that cap
-    regardless of which structural level ends up used, but a nearby level
-    doesn't automatically win over a farther one that's still affordable.
-    If nothing fits within budget at all (the nearest real level is
-    farther out than the cap allows, or there's no level on that side at
-    all), the cap itself is used as the stop distance outright. Target is
-    always reward_risk_ratio x the actual stop distance used.
+    """Stop is the nearest marked structural level beyond entry (previous
+    day/Asia/London high-low, or opening range box edge -- see
+    strategy.py's structural_levels), capped at whatever max_stop_dollars
+    is worth in points at the current contract size, so the dollar risk
+    never exceeds that cap regardless of which structural level ends up
+    nearest. Target is always reward_risk_ratio x the actual stop
+    distance used.
 
-    Deliberately picks the farthest-within-budget level, not the nearest
-    one: a real 30-day backtest showed every trade whose stop landed on
-    the nearest available level (typically the opening-range box edge,
-    which is often close simply because that's where the breakout itself
-    happened) lost, while every trade that fell back to the full budget
-    won or lost like a normal 2:1 setup -- "nearest" was consistently
-    finding a minor speed bump, not a real invalidation point. Using
-    whichever real level maximizes the affordable stop distance still
-    respects "market structure validates it" (the level is real and
-    marked, not arbitrary) while not leaving budget unused just because
-    a closer, weaker level happened to exist too.
+    (Revision history: briefly changed 2026-07-04 to pick the *farthest*
+    level within budget instead of the nearest, on the theory that
+    "nearest" was consistently just the opening-range box edge -- close
+    because that's where the breakout happened, not a real invalidation
+    point -- after a 7-trade sample showed 0 of 4 nearest-level trades
+    winning versus 2 of 3 cap-based trades winning. Reverted the same
+    day: re-running the identical 7 trades with farthest-within-budget
+    selection only actually changed the stop for 2 of them (2026-06-11,
+    2026-06-23) -- both were already losses, and the wider stop just
+    made them lose *more* ($47.75->$93.24 and $115.25->$174.76) without
+    turning either into a win. Win rate stayed at 2/7 (28.6%) but net P&L
+    dropped from $354.25 to $249.26. Those 2 trades weren't stopped out
+    by noise that a wider stop would have ridden through -- they were
+    setups that kept moving against the position regardless, so nearest
+    -- the more conservative choice when both are equally "real"
+    structure -- is what the evidence actually supports.)
     """
     max_stop_points = max_stop_dollars / (point_value * contracts)
 
     if direction is Direction.LONG:
-        candidates = [lvl for lvl in structural_levels if lvl < entry_price and entry_price - lvl <= max_stop_points]
-        farthest = min(candidates) if candidates else None
-        structural_distance = (entry_price - farthest) if farthest is not None else None
+        candidates = [lvl for lvl in structural_levels if lvl < entry_price]
+        nearest = max(candidates) if candidates else None
+        structural_distance = (entry_price - nearest) if nearest is not None else None
     else:
-        candidates = [lvl for lvl in structural_levels if lvl > entry_price and lvl - entry_price <= max_stop_points]
-        farthest = max(candidates) if candidates else None
-        structural_distance = (farthest - entry_price) if farthest is not None else None
+        candidates = [lvl for lvl in structural_levels if lvl > entry_price]
+        nearest = min(candidates) if candidates else None
+        structural_distance = (nearest - entry_price) if nearest is not None else None
 
-    if structural_distance is None:
+    if structural_distance is None or structural_distance > max_stop_points:
         stop_points = max_stop_points
     else:
         stop_points = structural_distance
