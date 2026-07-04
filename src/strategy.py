@@ -9,6 +9,7 @@ from src.config import BotConfig
 from src.fvg import FairValueGap, FvgDetector
 from src.models import Bar, Direction
 from src.opening_range import OpeningRangeBox
+from src.risk import compute_stop_target
 from src.session_levels import SessionLevels, SessionLevelSet
 
 
@@ -37,8 +38,12 @@ class AnchorRecord:
     backtest.py's print_near_miss_anchors), not used by the trading logic
     itself. `outcome` is one of "filled", "superseded" (a nearer/fresher
     anchor replaced it before it ever filled), "invalidated" (the
-    breakout thesis failed while it was still live), or "session_ended"
-    (time ran out with it still live, unfilled)."""
+    breakout thesis failed while it was still live), "no_valid_stop"
+    (price retraced to its midpoint, but no real marked structural level
+    sat within the $200 budget beyond that entry, so the trade was
+    skipped rather than using an arbitrary max-risk stop -- see risk.py's
+    compute_stop_target), or "session_ended" (time ran out with it still
+    live, unfilled)."""
 
     direction: Direction
     gap_low: float
@@ -96,6 +101,14 @@ class OpeningRangeStrategy:
         self._anchor_fvg: FairValueGap | None = None
         self._anchor_started_at: datetime | None = None
         self._pending_limit_price: float | None = None
+        # Anchors rejected for having no real structural level within the
+        # $200 stop budget (see the WAIT_FILL fill check below) -- tracked
+        # by identity so a rejected anchor isn't immediately re-picked
+        # every subsequent bar just because it's still the nearest
+        # unmitigated gap; nothing about it changed by being re-examined,
+        # so it stays excluded until mitigated, the day rolls over, or a
+        # different anchor supersedes it.
+        self._rejected_anchor_ids: set[int] = set()
 
         # Funnel counters -- how many setups made it past each gate. Lets
         # you tell "nothing happened" apart from "something almost
@@ -117,6 +130,14 @@ class OpeningRangeStrategy:
         """Previous-day/Asia/London levels marked for the trading day in
         progress (None before 9:30 ET marks them for the day)."""
         return self._levels
+
+    def _candidate_anchors(self, direction: Direction) -> list[FairValueGap]:
+        """Unmitigated FVGs in `direction`, excluding any already rejected
+        for having no real structural stop within budget (see WAIT_FILL) --
+        re-examining one wouldn't change that outcome, since it depends only
+        on entry price vs. the day's fixed marked levels."""
+        candidates = self.fvg_detector_5m.unmitigated_in_direction(direction)
+        return [g for g in candidates if id(g) not in self._rejected_anchor_ids]
 
     def _close_anchor(self, outcome: str, ended_at: datetime) -> None:
         """Records the currently-active anchor's outcome, if there is one
@@ -210,7 +231,7 @@ class OpeningRangeStrategy:
             # this bar, it may already have been sitting there, untouched,
             # since earlier in the session. Its own midpoint is the entry
             # itself, so as soon as one's found, a limit order rests there.
-            candidates = self.fvg_detector_5m.unmitigated_in_direction(self._breakout_direction)
+            candidates = self._candidate_anchors(self._breakout_direction)
             if candidates:
                 self._anchor_fvg = _nearest_then_largest(candidates, bar.close)
                 self._anchor_started_at = bar.timestamp
@@ -229,7 +250,7 @@ class OpeningRangeStrategy:
             # anchor it found. No time or distance limit on the retest
             # itself -- price can come back to it whenever it does, right
             # up to the session cutoff.
-            candidates = self.fvg_detector_5m.unmitigated_in_direction(self._breakout_direction)
+            candidates = self._candidate_anchors(self._breakout_direction)
             if candidates:
                 best_anchor = _nearest_then_largest(candidates, bar.close)
                 if best_anchor is not self._anchor_fvg:
@@ -276,6 +297,33 @@ class OpeningRangeStrategy:
                     structural_levels.append(self.box.high)
                 if self.box.low is not None:
                     structural_levels.append(self.box.low)
+
+                # Reject the trade if no real marked level sits within the
+                # $200 stop budget beyond this entry -- a real 7-day
+                # backtest showed this exact case producing both of its
+                # losing trades (defaulting to a $200/100-point stop with
+                # nothing structural behind it), while the two winners had
+                # a real level only 8-31 points away. Rather than take a
+                # max-risk trade with no genuine invalidation point, skip
+                # it and keep hunting for a different anchor (see risk.py's
+                # compute_stop_target for the full reasoning).
+                bracket = compute_stop_target(
+                    direction=self._breakout_direction,
+                    entry_price=self._pending_limit_price,
+                    structural_levels=structural_levels,
+                    max_stop_dollars=self.cfg.strategy.max_stop_dollars,
+                    point_value=self.cfg.instrument.point_value,
+                    contracts=self.cfg.position_sizing.contract_size,
+                    reward_risk_ratio=self.cfg.strategy.reward_risk_ratio,
+                )
+                if bracket is None:
+                    self._close_anchor("no_valid_stop", bar.timestamp)
+                    self._rejected_anchor_ids.add(id(self._anchor_fvg))
+                    self._anchor_fvg = None
+                    self._anchor_started_at = None
+                    self._pending_limit_price = None
+                    self.state = State.WAIT_5M_FVG
+                    return None
 
                 signal = EntrySignal(
                     direction=self._breakout_direction,
@@ -330,6 +378,7 @@ class OpeningRangeStrategy:
         # average-range baseline) is left alone, so it's already
         # populated with real pre-market/overnight data by 9:30.
         self.fvg_detector_5m.clear_active_gaps()
+        self._rejected_anchor_ids = set()
         self.state = State.MARKING_LEVELS
         self._breakout_direction = None
         self._levels = None

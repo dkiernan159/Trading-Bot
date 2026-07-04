@@ -23,14 +23,16 @@ def compute_stop_target(
     point_value: float,
     contracts: int,
     reward_risk_ratio: float,
-) -> BracketLevels:
+) -> BracketLevels | None:
     """Stop is the nearest marked structural level beyond entry (previous
     day/Asia/London high-low, or opening range box edge -- see
-    strategy.py's structural_levels), capped at whatever max_stop_dollars
-    is worth in points at the current contract size, so the dollar risk
-    never exceeds that cap regardless of which structural level ends up
-    nearest. Target is always reward_risk_ratio x the actual stop
-    distance used.
+    strategy.py's structural_levels). Returns None -- meaning "don't take
+    this trade" -- if no such level exists beyond entry at all, or if the
+    nearest one is farther out than max_stop_dollars allows: a stop with
+    no real level behind it isn't an invalidation point, just an
+    arbitrary number, so there's nothing to size a trade against. When a
+    real level *is* within budget, target is always reward_risk_ratio x
+    that level's actual distance.
 
     (Revision history: briefly changed 2026-07-04 to pick the *farthest*
     level within budget instead of the nearest, on the theory that
@@ -47,7 +49,22 @@ def compute_stop_target(
     by noise that a wider stop would have ridden through -- they were
     setups that kept moving against the position regardless, so nearest
     -- the more conservative choice when both are equally "real"
-    structure -- is what the evidence actually supports.)
+    structure -- is what the evidence actually supports.
+
+    Changed again 2026-07-04: previously, when no real level was within
+    budget, the cap itself (max_stop_dollars converted to points) was
+    used as the stop distance outright -- an arbitrary, structurally
+    unjustified number. A real 7-day backtest's --verbose detail showed
+    exactly this: both losing trades (2026-06-29, 2026-06-30) had no real
+    level within $200 of entry and so defaulted straight to the full
+    $200/100-point cap, while the two winning trades happened to have a
+    real level just 8-31 points from entry, making their (correctly,
+    proportionally smaller) 2:1 targets tiny by comparison -- $16.50 and
+    $62.26 of wins couldn't offset two $200 losses. Rather than take a
+    max-risk trade with no real invalidation point behind it, such setups
+    are now skipped entirely by returning None; see strategy.py's
+    WAIT_FILL handling for how a rejected anchor is excluded from being
+    re-picked and the bot keeps hunting for a fresh one instead.)
     """
     max_stop_points = max_stop_dollars / (point_value * contracts)
 
@@ -61,10 +78,9 @@ def compute_stop_target(
         structural_distance = (nearest - entry_price) if nearest is not None else None
 
     if structural_distance is None or structural_distance > max_stop_points:
-        stop_points = max_stop_points
-    else:
-        stop_points = structural_distance
+        return None
 
+    stop_points = structural_distance
     target_points = stop_points * reward_risk_ratio
 
     if direction is Direction.LONG:

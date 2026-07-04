@@ -23,8 +23,11 @@ def test_long_uses_nearby_structural_level_within_cap():
     assert result.target_price == 110.0
 
 
-def test_long_caps_stop_when_structural_level_too_far():
-    # $200 / (2.0 point_value * 1 contract) = 100 point cap.
+def test_long_returns_none_when_structural_level_too_far():
+    # $200 / (2.0 point_value * 1 contract) = 100 point cap -- the only
+    # candidate (-50.0) is 150 points away, so there's no real level
+    # within budget and the trade is skipped rather than defaulting to
+    # an arbitrary 100-point stop with nothing structural behind it.
     result = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
@@ -34,13 +37,10 @@ def test_long_caps_stop_when_structural_level_too_far():
         contracts=1,
         reward_risk_ratio=2.0,
     )
-    assert result.stop_points == 100.0
-    assert result.stop_price == 0.0
-    assert result.target_points == 200.0
-    assert result.target_price == 300.0
+    assert result is None
 
 
-def test_long_falls_back_to_cap_with_no_levels_below_entry():
+def test_long_returns_none_with_no_levels_below_entry():
     result = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
@@ -50,8 +50,7 @@ def test_long_falls_back_to_cap_with_no_levels_below_entry():
         contracts=1,
         reward_risk_ratio=2.0,
     )
-    assert result.stop_points == 100.0
-    assert result.stop_price == 0.0
+    assert result is None
 
 
 def test_short_uses_nearby_structural_level_within_cap():
@@ -75,15 +74,29 @@ def test_short_uses_nearby_structural_level_within_cap():
 def test_dollar_cap_shrinks_in_points_as_contract_size_scales_up():
     """The $200 cap stays fixed in dollars, so at more contracts it maps
     to fewer points -- $200 / (2.0 point_value * 4 contracts) = 25 points,
-    versus 100 points at 1 contract."""
-    result = compute_stop_target(
+    versus 100 points at 1 contract. The same real level (50 points away)
+    fits the budget at 1 contract but not at 4, where it's now skipped
+    rather than falling back to an arbitrary stop."""
+    level = [50.0]
+    at_one_contract = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
-        structural_levels=[50.0],  # 50 points away -- beyond the 25pt cap at 4 contracts
+        structural_levels=level,
+        max_stop_dollars=200.0,
+        point_value=2.0,
+        contracts=1,
+        reward_risk_ratio=2.0,
+    )
+    assert at_one_contract.stop_points == 50.0
+    assert at_one_contract.stop_price == 50.0
+
+    at_four_contracts = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        structural_levels=level,  # 50 points away -- beyond the 25pt cap at 4 contracts
         max_stop_dollars=200.0,
         point_value=2.0,
         contracts=4,
         reward_risk_ratio=2.0,
     )
-    assert result.stop_points == 25.0
-    assert result.stop_price == 75.0
+    assert at_four_contracts is None

@@ -341,6 +341,67 @@ def test_stale_fvg_from_a_previous_day_is_not_available_as_todays_anchor():
     assert strategy._anchor_fvg is None
 
 
+def test_anchor_rejected_and_a_fresh_one_is_hunted_when_no_real_level_is_within_budget():
+    """If price retraces to an anchor's midpoint but no real marked level
+    (previous-day/Asia/London/box) sits within the $200 stop budget beyond
+    it, the trade is skipped -- recorded as "no_valid_stop" -- instead of
+    defaulting to an arbitrary max-risk stop with nothing structural
+    behind it (see risk.py's compute_stop_target). The rejected anchor
+    isn't silently re-offered forever, and the bot keeps hunting: a
+    different anchor that *does* sit near a real level fills normally."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)  # previous-day high=105 -- the highest real level below this anchor
+    feed_box_and_breakout(strategy)
+
+    # This anchor's midpoint (~212.2) sits 107.2 points above the nearest
+    # real level below it (previous-day high, 105.0) -- past the
+    # $200/100-point cap. (All the other marked levels -- previous-day
+    # low 95, box high/low 101/99.5 -- are even farther away.)
+    first_low, first_high = feed_large_5m_fvg(
+        strategy, DAY + timedelta(minutes=45), quiet_price=210.0, c1_end=214.3
+    )
+
+    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    signal = strategy.on_bar(bar_at(fill_time, first_high, first_high + 0.1, first_low, first_low + 0.1))
+
+    assert signal is None  # rejected, not entered
+    assert strategy.state is State.WAIT_5M_FVG
+    assert strategy._anchor_fvg is None
+    assert strategy.stats["fills"] == 0
+    assert len(strategy.anchor_history) == 1
+    assert strategy.anchor_history[0].outcome == "no_valid_stop"
+    assert strategy.anchor_history[0].gap_low == pytest.approx(first_low)
+
+    # The rejected anchor is still sitting, unmitigated, in the detector's
+    # pool -- but it must not be re-offered as a candidate just because
+    # nothing fresher has formed yet.
+    signal_again = strategy.on_bar(bar_at(fill_time + timedelta(minutes=1), first_high, first_high, first_high, first_high))
+    assert signal_again is None
+    assert strategy.state is State.WAIT_5M_FVG
+    assert len(strategy.anchor_history) == 1  # not re-rejected
+
+    # A different anchor, close enough to a real level (box low, 99.5) to
+    # have a valid stop, forms next and fills normally.
+    second_start = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=20)
+    second_low, second_high = feed_large_5m_fvg(strategy, second_start, quiet_price=100.0, c1_end=104.3)
+    second_midpoint = (second_low + second_high) / 2
+
+    second_fill_time = second_start + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    signal = strategy.on_bar(
+        bar_at(second_fill_time, second_high, second_high + 0.1, second_low, second_low + 0.1)
+    )
+
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(second_midpoint)
+    assert strategy.state is State.IN_TRADE
+    assert strategy.stats["fills"] == 1
+    assert len(strategy.anchor_history) == 2
+    assert strategy.anchor_history[1].outcome == "filled"
+    assert strategy.anchor_history[1].gap_low == pytest.approx(second_low)
+
+
 def test_stands_down_for_day_after_cutoff():
     cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     strategy = OpeningRangeStrategy(cfg)

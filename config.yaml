@@ -31,8 +31,11 @@ strategy:
                            # Converted to points at signal time (max_stop_dollars / point_value / contract_size),
                            # so it stays a $200 cap even as contract_size is manually scaled up. The actual stop
                            # is placed at whichever marked structural level (previous day/Asia/London high-low,
-                           # or box edge) is nearest beyond entry -- this cap only kicks in if that nearest level
-                           # is farther away than $200 allows, or if no such level exists beyond entry at all.
+                           # or box edge) is nearest beyond entry -- if that nearest level is farther away than
+                           # $200 allows, or no such level exists beyond entry at all, the trade is skipped
+                           # rather than defaulting to an arbitrary max-risk stop (changed 2026-07-04 after a
+                           # real 7-day backtest showed both losing trades were exactly this case; see risk.py's
+                           # compute_stop_target).
   fvg:                            # the 5m FVG: confirms direction/anchors the move -- its own midpoint is
                                    # also the entry price (see rule 4/5 in STRATEGY.md). Changed from 15m to
                                    # 5m timeframe 2026-07-04 based on a real annotated trade example: the

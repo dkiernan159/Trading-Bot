@@ -130,13 +130,14 @@ review these and adjust `config.yaml` before running live.
    nearest marked previous-day/Asia/London high-low or opening-range box
    edge beyond entry, whichever makes sense on the chart -- **capped at
    $200 of risk per trade** (`config.yaml: strategy.max_stop_dollars`) at
-   the current `position_sizing.contract_size`, so the stop is never
-   wider than that regardless of how far away the nearest structural
-   level is (see "How ambiguous points were resolved" below for why the
-   anchor's own boundary is deliberately *not* one of these
-   candidates now that entry sits at its midpoint, and for why "nearest"
-   rather than "farthest within budget" is what the real data actually
-   supports).
+   the current `position_sizing.contract_size`. If no such level exists
+   beyond entry, or the nearest one is farther out than $200 allows, the
+   trade is skipped entirely rather than taking a stop with no real
+   structural backing (see "How ambiguous points were resolved" below for
+   why the anchor's own boundary is deliberately *not* one of these
+   candidates now that entry sits at its midpoint, why "nearest" rather
+   than "farthest within budget" is what the real data actually supports,
+   and why skipping replaced the original max-risk-cap fallback).
 8. Reference size is 5 MNQ contracts, targeting ~$300/trade. The bot starts
    at a smaller size (`config.yaml: position_sizing.contract_size`) until a
    consistent win rate is shown; scaling back up to 5 is **manual only** --
@@ -152,14 +153,15 @@ review these and adjust `config.yaml` before running live.
   high/low, London high/low, or the opening range box edge
   (`strategy.py`'s `structural_levels`, built when the trade signal
   fires). Whichever of these ends up nearest beyond entry becomes the
-  stop. The distance to that nearest level is **capped** at
-  `max_stop_dollars` (`config.yaml`, $200) converted to points at signal
-  time (`max_stop_dollars / (instrument.point_value *
+  stop, as long as that distance fits within `max_stop_dollars`
+  (`config.yaml`, $200) converted to points at signal time
+  (`max_stop_dollars / (instrument.point_value *
   position_sizing.contract_size)`) -- so the dollar risk per trade never
-  exceeds $200 regardless of contract size, even if the nearest
-  structural level is farther out; if *no* marked level exists below
-  (long) or above (short) entry at all, the cap itself is used as the
-  stop distance outright.
+  exceeds $200 regardless of contract size. If *no* marked level exists
+  below (long) or above (short) entry at all, or the nearest one is
+  farther out than the cap allows, the trade is skipped entirely
+  (`compute_stop_target` returns `None`) rather than using the cap as a
+  stop distance with no real level behind it.
   - Take-profit is always `2 x actual_stop_distance` (so smaller structural
     stops give a smaller, still-2:1, target -- this is why the target
     varies per trade rather than always chasing the reference $300).
@@ -208,7 +210,26 @@ review these and adjust `config.yaml` before running live.
     through -- they kept moving against the position regardless -- so
     nearest, the more conservative choice when multiple levels are
     equally "real" structure, is what the evidence actually supports.
-    Reverted back to nearest-level selection.)
+    Reverted back to nearest-level selection.
+
+    Changed again 2026-07-04: previously, when no real level was within
+    budget at all, the cap itself was used as the stop distance outright
+    -- an arbitrary, structurally unjustified number. A real 7-day
+    backtest's `--verbose` detail showed this was exactly what broke a
+    50%-win-rate window: both losing trades (2026-06-29, 2026-06-30) had
+    no real level within $200 of entry and defaulted straight to the full
+    $200/100-point cap, while the two winning trades happened to have a
+    real level only 8.25-31.13 points from entry, making their (correctly
+    proportional) 2:1 targets tiny by comparison -- $16.50 and $124.50 of
+    wins couldn't offset two $200 losses, for a net of -$242.50 despite
+    2/4 trades winning. Rather than take a max-risk trade with no genuine
+    invalidation point behind it, `compute_stop_target` now returns
+    `None` in this case and the trade is skipped entirely --
+    `strategy.py`'s `WAIT_FILL` handling records it as a new
+    "no_valid_stop" anchor outcome and keeps hunting for a different
+    anchor, excluding the rejected one by identity so it isn't
+    immediately re-offered every subsequent bar just because it's still
+    the nearest unmitigated gap.)
 - **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on
   `FvgConfig.timeframe_minutes` where (a) the gap size is >=
   `min_gap_points` and (b) the middle (displacement) candle's body is >=
