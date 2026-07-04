@@ -36,17 +36,20 @@ strategy:
     displacement_multiplier: 1.3  # ASSUMPTION: "strong" = displacement candle body >= 1.3x recent avg range
                                    # (loosened 2026-07-04 from 1.5)
     lookback_bars: 8              # 15m candles used for the recent average range baseline (~2 hours)
-  entry_fvg:                      # the 1m FVG nested inside the 15m FVG -- the actual entry trigger, kept
-                                   # small/tight so the stop isn't sized off 15m-candle noise
-    timeframe_minutes: 1
-    min_gap_points: 0.2           # ASSUMPTION: minimum 1m FVG size (loosened 2026-07-04, 0.75 -> 0.5 -> 0.35 ->
-                                   # 0.2 -- a real 30-day backtest still only found 4 nested candidates total
-                                   # across 36 anchor selections; see STRATEGY.md)
+  entry_fvg:                      # the 5m FVG nested inside the 15m FVG -- the actual entry trigger. Switched
+                                   # 2026-07-04 from a 1m timeframe: a real 7-day backtest showed only 1 of 4
+                                   # anchored setups ever produced a qualifying nested candidate (funnel:
+                                   # breakouts=12, anchors=8, nested=1, fills=1) -- requiring a fresh 1-minute
+                                   # retest inside the anchor was too strict, missing good moves that retraced
+                                   # cleanly on a 5-minute scale instead. Still tighter than the 15m anchor
+                                   # itself, so the resulting stop isn't sized off 15m-candle noise.
+    timeframe_minutes: 5
+    min_gap_points: 1.0           # ASSUMPTION: minimum 5m FVG size, scaled up from the old 1m threshold (0.2)
+                                   # for the larger timeframe -- retune from real backtests same as the others.
     displacement_multiplier: 0.75 # ASSUMPTION: "strong" = displacement candle body >= 0.75x recent avg range
-                                   # (loosened 2026-07-04, 1.5 -> 1.2 -> 1.0 -> 0.75, same reasoning -- at this
-                                   # point "strong" mostly just means "a real gap formed here", not a
-                                   # meaningfully forceful displacement)
-    lookback_bars: 20             # 1m candles used for the recent average range baseline (~20 minutes)
+                                   # (carried over unchanged from the 1m setting -- same reasoning: "strong"
+                                   # mostly just means "a real gap formed here", not a forceful displacement)
+    lookback_bars: 8              # 5m candles used for the recent average range baseline (~40 minutes)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
     allow_new_setup_after_win: false    # ASSUMPTION: stand down for the day after a winner (change if wrong)

@@ -1,4 +1,4 @@
-# Strategy: NQ/MNQ NY-Open Opening Range Breakout + 15m FVG Anchor + Nested 1m FVG Entry
+# Strategy: NQ/MNQ NY-Open Opening Range Breakout + 15m FVG Anchor + Nested 5m FVG Entry
 
 This document is the source of truth for what the bot implements. Anything
 marked **ASSUMPTION** was not fully specified and was filled in with a
@@ -38,7 +38,7 @@ review these and adjust `config.yaml` before running live.
    currently-unmitigated 15m FVG in the breakout direction, from anywhere
    in the session, qualifies. Whichever one is nearest to current price
    is picked, breaking ties by the larger gap -- and this selection is
-   kept **live**: while waiting for a nested 1-minute entry (rule 5), the
+   kept **live**: while waiting for a nested 5-minute entry (rule 5), the
    bot keeps checking for a nearer/fresher unmitigated 15m FVG and
    switches to it if one appears, so it's never stuck all session on the
    very first anchor it happened to find. This is **not** the same as
@@ -46,24 +46,24 @@ review these and adjust `config.yaml` before running live.
    abandoned just because price trades through it; it's simply kept
    up to date, superseded by something more current when available.
 5. Once a 15m FVG has anchored the move, the bot watches **inside that
-   anchor's gap** (whichever one is current, per rule 4) for a **1-minute
+   anchor's gap** (whichever one is current, per rule 4) for a **5-minute
    FVG whose midpoint (the actual entry price) falls inside that anchor's
    range** (`anchor.gap_low <= nested_midpoint <= anchor.gap_high` --
-   loosened 2026-07-04 from requiring the *whole* 1m gap to fit inside the
-   anchor, which left very little room in anything but the widest anchors)
-   **that formed after the anchor locked in** -- this is the actual entry
-   trigger, and it must be a genuinely new structure, not one that already
-   existed (or that formed as part of the very same displacement that
-   built the anchor itself). This is what makes it a real *retest*: price
-   has to actually come back and do something new inside the zone, not
-   just have some incidental smaller gap sitting there from the move that
-   built the zone in the first place. Using the 1-minute FVG instead of
-   the 15-minute one for entry/stop sizing keeps the entry precise and the
-   resulting stop tight, instead of being sized off 15-minute-candle noise
-   (see rule 8 -- the stop is placed off structural levels near the entry
-   price, and a 15-minute-scale entry price was producing stops too wide
-   for how tightly this trades).
-6. Entry is a **limit order at the midpoint of that nested 1m FVG's gap**
+   loosened 2026-07-04 from requiring the *whole* nested gap to fit inside
+   the anchor, which left very little room in anything but the widest
+   anchors) **that formed after the anchor locked in** -- this is the
+   actual entry trigger, and it must be a genuinely new structure, not one
+   that already existed (or that formed as part of the very same
+   displacement that built the anchor itself). This is what makes it a
+   real *retest*: price has to actually come back and do something new
+   inside the zone, not just have some incidental smaller gap sitting
+   there from the move that built the zone in the first place. Using a
+   tighter-than-the-anchor FVG for entry/stop sizing keeps the entry more
+   precise and the resulting stop tighter, instead of being sized off
+   15-minute-candle noise (see rule 8 -- the stop is placed off structural
+   levels near the entry price, and a 15-minute-scale entry price was
+   producing stops too wide for how tightly this trades).
+6. Entry is a **limit order at the midpoint of that nested 5m FVG's gap**
    (`(gap_low + gap_high) / 2`), not a market order at whatever price the
    confirming candle closed at. The trade only starts once price actually
    trades back to that midpoint -- if it never comes back, there's no
@@ -72,7 +72,7 @@ review these and adjust `config.yaml` before running live.
    *already* reached the midpoint first -- so the resting limit order
    always fills; there's no such thing as this pending entry getting
    "mitigated before it could fill." (Mitigation still matters earlier,
-   when *choosing* a 1m FVG in the first place -- an already-broken gap
+   when *choosing* a 5m FVG in the first place -- an already-broken gap
    is never selected as the entry trigger to begin with.)
 
    (Revision history: v1 entered at the confirming candle's close, which
@@ -129,7 +129,17 @@ review these and adjust `config.yaml` before running live.
    price is coming from). A resting limit order fills the instant price
    touches it; it doesn't wait to see where price ends up by the bar's
    close. Removed the mitigation check on the pending 1m FVG entirely --
-   it can only ever fill, never get mitigated first.)
+   it can only ever fill, never get mitigated first. Switched the entry
+   timeframe itself from 1-minute to 5-minute 2026-07-04: a real 7-day
+   backtest showed only 1 of 4 anchored setups ever producing a
+   qualifying nested candidate (funnel: breakouts=12, anchors=8,
+   nested=1, fills=1) -- waiting for a fresh 1-minute retest inside the
+   anchor was too strict and was missing good moves that retraced
+   cleanly on a 5-minute scale instead. `config.yaml:
+   strategy.entry_fvg.timeframe_minutes` changed from 1 to 5 (thresholds
+   retuned accordingly); every other rule in this section -- midpoint
+   entry, formed-after-anchor-lock-in, no mitigation check on the
+   pending entry -- is unchanged, just operating one timeframe up.)
 7. Reward:risk is 2:1.
 8. Stop-loss is placed intelligently at a real structural level -- below
    the bottom of the 15m anchor FVG, or below the next break of structure
@@ -189,17 +199,20 @@ review these and adjust `config.yaml` before running live.
   actually happens). The strategy runs **two independent instances** of
   this detector: `fvg_detector_15m` (`config.yaml: strategy.fvg`,
   `timeframe_minutes: 15`) finds the large anchor FVG that confirms the
-  move; `fvg_detector_1m` (`config.yaml: strategy.entry_fvg`,
-  `timeframe_minutes: 1`, deliberately smaller `min_gap_points` since it
+  move; `fvg_detector_5m` (`config.yaml: strategy.entry_fvg`,
+  `timeframe_minutes: 5`, deliberately smaller `min_gap_points` since it
   has to nest inside the 15m gap) finds the precise entry trigger. Both
   sets of thresholds were loosened 2026-07-04 (15m: `min_gap_points`
-  3.0->2.5, `displacement_multiplier` 1.5->1.3; 1m: `min_gap_points`
-  0.75->0.5, `displacement_multiplier` 1.5->1.2) after a real week of
-  history produced zero trades once the nested-1m-FVG check also started
-  requiring the gap to form *after* the anchor locked in (previous
-  entry) -- that correctness fix narrowed the window to find a
-  qualifying nested gap, so the strength bar needed to come down a
-  notch to compensate.
+  3.0->2.5, `displacement_multiplier` 1.5->1.3; entry: `min_gap_points`
+  0.75->0.5->0.35->0.2 while it was still a 1m detector, then the
+  timeframe itself changed 1->5 with `min_gap_points` retuned to 1.0 for
+  the larger scale) after a real week of history kept producing too few
+  trades once the nested-FVG check also started requiring the gap to
+  form *after* the anchor locked in (previous entry) -- that correctness
+  fix narrowed the window to find a qualifying nested gap, so first the
+  strength bar came down to compensate, then (once that still wasn't
+  enough, see rule 5/6's revision history) the entry timeframe itself
+  moved from 1-minute to 5-minute.
 - **Daily reset of the active-gap pool** (`src/fvg.py:
   FvgDetector.clear_active_gaps`, called from `strategy.py:
   _start_new_day`): a gap that simply never gets revisited stays
@@ -213,18 +226,20 @@ review these and adjust `config.yaml` before running live.
   matching "the session" in rules 4-5. The candle history used for the
   average-range baseline is untouched by this, so it's still populated
   with real pre-market/overnight data from the moment 9:30 arrives.
-- **"Nested"** (`src/strategy.py: WAIT_1M_FVG`): a 1m FVG counts as nested
+- **"Nested"** (`src/strategy.py: WAIT_5M_FVG`): a 5m FVG counts as nested
   inside the 15m anchor when its **midpoint** falls inside the anchor's
   range (`anchor.gap_low <= nested_midpoint <= anchor.gap_high`) **and it
   formed after the anchor locked in**
   (`fvg.formed_at > self._anchor_locked_in_at`, timestamped the moment the
   anchor was selected/refreshed). Both conditions are required -- the
-  timing check alone isn't enough, since a 1m gap can easily sit inside
+  timing check alone isn't enough, since a 5m gap can easily sit inside
   the 15m anchor's range simply because it formed as part of the same
-  displacement leg that built the anchor; requiring it to be newer than
-  the anchor's lock-in is what makes it an actual retest rather than a
-  coincidental sub-gap of the same move. (Originally required the whole
-  1m gap, both edges, to fit inside the anchor -- loosened 2026-07-04 to
+  displacement leg that built the anchor (a real, non-flat 15-minute
+  displacement candle, chopped into 5-minute buckets, routinely leaves
+  behind a "gap" of its own); requiring it to be newer than the anchor's
+  lock-in is what makes it an actual retest rather than a coincidental
+  sub-gap of the same move. (Originally required the whole nested gap,
+  both edges, to fit inside the anchor -- loosened 2026-07-04 to
   midpoint-only after a real week of history produced almost no
   qualifying setups: a 2.5+-point-wide anchor leaves very little room for
   an entire second gap to fit inside it, but the actual entry only ever
@@ -238,7 +253,7 @@ review these and adjust `config.yaml` before running live.
 - **Previous day / Asia / London levels**: no longer part of the entry
   sequence at all (an earlier revision briefly used them for a "retest"/
   "approach" step -- removed 2026-07-04 in favor of the 15m-anchor +
-  nested-1m design above). They're still marked every day and still feed
+  nested-5m design above). They're still marked every day and still feed
   `src/risk.py`'s stop-loss placement (nearest structural level beyond
   entry, capped at `max_stop_dollars`) and the chart's shaded reference
   bands -- just not the entry trigger anymore.
