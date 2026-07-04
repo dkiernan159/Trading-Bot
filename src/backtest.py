@@ -197,7 +197,6 @@ def print_funnel(stats: dict) -> None:
     print(f"  ...of those, a large 15m FVG anchored the move:        {stats.get('large_15m_fvgs', 0)}")
     print(f"  ...of those, a 1m FVG formed nested inside it:          {stats.get('nested_1m_fvgs', 0)}")
     print(f"  ...of those, price retraced to fill the limit:          {stats.get('fills', 0)}")
-    print(f"  (15m anchors mitigated before a nested entry formed:     {stats.get('anchor_15m_fvgs_mitigated_before_entry', 0)})")
     print(f"  (1m entry FVGs mitigated before they could fill:         {stats.get('entry_1m_fvgs_mitigated_before_fill', 0)})")
 
 

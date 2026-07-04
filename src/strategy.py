@@ -51,14 +51,18 @@ class OpeningRangeStrategy:
 
     Sequence: mark previous-day/Asia/London levels (kept for stop-loss
     placement, see risk.py) -> form the 9:30-9:45 box -> a close beyond the
-    box sets the breakout direction -> wait for a large, unmitigated 15m FVG
-    in that direction to anchor the move (whenever it formed) -> once
-    anchored, wait for a 1-minute FVG whose gap is fully nested inside that
-    15m FVG's range -> that nested 1m FVG's midpoint is the entry, kept
-    tight/precise (1m-scale) rather than sized off 15m-candle noise, so the
-    resulting stop isn't blown out by ordinary 15m volatility. Either level
-    getting mitigated before the next step completes abandons it and goes
-    back to looking for a fresh one.
+    box sets the breakout direction -> wait for a large 15m FVG in that
+    direction to anchor the move (whenever it formed) -> once anchored, the
+    anchor is fixed for the rest of the setup (it's a reference zone, not
+    something that itself needs to be "tested" -- it doesn't get abandoned
+    just because price later trades through it) -> wait for a 1-minute FVG
+    whose gap is fully nested inside that 15m FVG's range -> that nested 1m
+    FVG's midpoint is the entry, kept tight/precise (1m-scale) rather than
+    sized off 15m-candle noise, so the resulting stop isn't blown out by
+    ordinary 15m volatility. Only the nested 1m FVG is subject to
+    mitigation -- if price trades clean through its far side before
+    retracing to fill, it's abandoned and the bot looks for another one
+    inside the same, still-fixed anchor.
     """
 
     def __init__(self, cfg: BotConfig):
@@ -86,7 +90,6 @@ class OpeningRangeStrategy:
             "large_15m_fvgs": 0,
             "nested_1m_fvgs": 0,
             "fills": 0,
-            "anchor_15m_fvgs_mitigated_before_entry": 0,
             "entry_1m_fvgs_mitigated_before_fill": 0,
         }
 
@@ -152,16 +155,11 @@ class OpeningRangeStrategy:
             return None
 
         if self.state is State.WAIT_1M_FVG:
-            if _is_mitigated(self._anchor_fvg, bar):
-                # The anchor 15m FVG got broken before a nested entry ever
-                # formed inside it -- it no longer means anything as a zone,
-                # so abandon it and look for a fresh 15m anchor instead.
-                self.stats["anchor_15m_fvgs_mitigated_before_entry"] += 1
-                self._anchor_fvg = None
-                self._anchor_locked_in_at = None
-                self.state = State.WAIT_15M_FVG
-                return None
-
+            # The anchor itself is fixed once picked -- it's a reference
+            # zone/direction confirmation, not something that gets
+            # abandoned just because price later trades through it. Only
+            # the nested 1m FVG (below) is subject to mitigation.
+            #
             # The nested 1m FVG must be a genuinely new structure that
             # appeared *after* the anchor locked in -- not a gap that was
             # already sitting there (or that formed as part of the same
@@ -189,8 +187,7 @@ class OpeningRangeStrategy:
                 # Price traded clean through the 1m FVG's far edge instead of
                 # retracing to the midpoint -- the gap is used up/broken, not
                 # a valid entry. Abandon it and go back to looking for a
-                # fresh nested 1m FVG inside the same 15m anchor (unless that
-                # anchor itself gets mitigated first, handled above).
+                # fresh nested 1m FVG inside the same (still-fixed) 15m anchor.
                 self.stats["entry_1m_fvgs_mitigated_before_fill"] += 1
                 self._pending_fvg = None
                 self._pending_limit_price = None

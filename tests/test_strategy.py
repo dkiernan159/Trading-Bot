@@ -236,10 +236,12 @@ def test_ignores_a_1m_fvg_embedded_in_the_anchors_own_displacement():
     assert strategy.stats["nested_1m_fvgs"] == 0
 
 
-def test_abandons_15m_anchor_mitigated_before_a_nested_entry_forms():
-    """If the 15m anchor FVG gets mitigated (price breaks its far/low
-    side) before any nested 1m FVG ever forms inside it, the anchor is
-    abandoned and the bot goes back to looking for a fresh one."""
+def test_anchor_persists_even_after_price_trades_through_it():
+    """The 15m anchor is a fixed reference zone once picked -- unlike the
+    nested 1m FVG (which does get abandoned if mitigated), the anchor
+    itself is never re-evaluated or abandoned just because price later
+    trades through its far side. A nested 1m FVG that forms afterward,
+    still inside the original anchor's range, is used normally."""
     cfg = load_test_config()
     strategy = OpeningRangeStrategy(cfg)
 
@@ -248,12 +250,23 @@ def test_abandons_15m_anchor_mitigated_before_a_nested_entry_forms():
     anchor_low, _ = feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))
     assert strategy.state is State.WAIT_1M_FVG
 
-    mitigate_time = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=46)
-    signal = strategy.on_bar(bar_at(mitigate_time, anchor_low, anchor_low + 0.1, anchor_low - 1.0, anchor_low - 0.5))
-
+    # Price trades straight through the anchor's low -- would have
+    # abandoned the anchor under the old design; now it's just ignored.
+    poke_time = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=46)
+    signal = strategy.on_bar(bar_at(poke_time, anchor_low, anchor_low + 0.1, anchor_low - 1.0, anchor_low - 0.5))
     assert signal is None
-    assert strategy.state is State.WAIT_15M_FVG
-    assert strategy.stats["anchor_15m_fvgs_mitigated_before_entry"] == 1
+    assert strategy.state is State.WAIT_1M_FVG
+
+    # A nested 1m FVG still inside the same (unchanged) anchor forms
+    # afterward and fills normally.
+    nested_start = poke_time + timedelta(minutes=1)
+    nested_low, nested_high = feed_nested_1m_fvg(strategy, nested_start)
+    midpoint = (nested_low + nested_high) / 2
+    fill_time = nested_start + timedelta(minutes=9)
+    signal = strategy.on_bar(bar_at(fill_time, 107.5, 107.6, 106.3, 106.8))
+
+    assert signal is not None
+    assert signal.entry_price == midpoint
 
 
 def test_abandons_nested_1m_fvg_mitigated_before_fill():

@@ -16,13 +16,16 @@ review these and adjust `config.yaml` before running live.
    breakout direction to **anchor** the move -- this is the higher-
    timeframe confirmation that a real move is underway, not the entry
    itself. It doesn't need to form right after the breakout; any
-   still-unmitigated 15m FVG in the breakout direction, from anywhere in
-   the session, qualifies (the bot keeps a running pool of every 15m FVG
-   detected and continuously drops any that get mitigated). When more than
-   one candidate qualifies, the nearest one to current price is picked,
-   breaking ties by the larger gap.
+   currently-unmitigated 15m FVG in the breakout direction, from anywhere
+   in the session, qualifies. When more than one candidate qualifies, the
+   nearest one to current price is picked, breaking ties by the larger
+   gap. Once picked, **the anchor is fixed** -- it's a reference zone/
+   direction confirmation, not itself something that gets "tested."
+   Mitigation only matters at the moment of picking (so it can't be a
+   broken gap to begin with); it's never re-checked or abandoned
+   afterward just because price later trades through it.
 5. Once a 15m FVG has anchored the move, the bot watches **inside that
-   anchor's gap** for a **1-minute FVG fully nested within it**
+   fixed anchor's gap** for a **1-minute FVG fully nested within it**
    (`nested.gap_low >= anchor.gap_low and nested.gap_high <= anchor.gap_high`)
    **that formed after the anchor locked in** -- this is the actual entry
    trigger, and it must be a genuinely new structure, not one that already
@@ -35,9 +38,7 @@ review these and adjust `config.yaml` before running live.
    resulting stop tight, instead of being sized off 15-minute-candle noise
    (see rule 8 -- the stop is placed off structural levels near the entry
    price, and a 15-minute-scale entry price was producing stops too wide
-   for how tightly this trades). If the 15m anchor itself gets mitigated
-   before any nested 1m FVG ever forms, it's abandoned and the bot goes
-   back to watching for a fresh anchor.
+   for how tightly this trades).
 6. Entry is a **limit order at the midpoint of that nested 1m FVG's gap**
    (`(gap_low + gap_high) / 2`), not a market order at whatever price the
    confirming candle closed at. The trade only starts once price actually
@@ -46,9 +47,10 @@ review these and adjust `config.yaml` before running live.
    **far** edge (below `gap_low` for a bullish/LONG gap, above `gap_high`
    for a bearish/SHORT gap) before ever retracing to the midpoint, the FVG
    is **mitigated** -- it's been fully traded through, not just tapped --
-   and is abandoned rather than filled. The bot then goes back to watching
-   for another nested 1m FVG inside the *same* 15m anchor (unless that
-   anchor itself has since been mitigated too, in which case rule 4 restarts).
+   and is abandoned rather than filled. Only the nested 1m FVG works this
+   way -- the bot goes back to watching for another one inside the
+   *same, still-fixed* 15m anchor (the anchor itself is never abandoned;
+   see rule 4).
 
    (Revision history: v1 entered at the confirming candle's close, which
    put entries well outside the FVG zone entirely -- caught by inspecting
@@ -77,7 +79,15 @@ review these and adjust `config.yaml` before running live.
    could (and did) claim a 1m gap that had formed *during* the anchor's
    own displacement leg, rather than a fresh one appearing afterward. That
    isn't a retest, it's coincidental overlap. Added the requirement that
-   the nested FVG must have formed strictly after the anchor locked in.)
+   the nested FVG must have formed strictly after the anchor locked in.
+   Corrected again 2026-07-04: the 15m anchor also had its own mitigation
+   check, abandoning it (and forcing a search for a new one) if price
+   later traded through its far side before a nested 1m entry ever
+   formed -- this was wrong. The anchor is a reference zone/direction
+   confirmation, not something that itself needs to be "tested"; only the
+   nested 1m FVG (the actual entry trigger) should be judged as
+   tested-vs-mitigated. Removed the anchor's mitigation check entirely --
+   once picked, the anchor is fixed for the rest of the setup.)
 7. Reward:risk is 2:1.
 8. Stop-loss is placed intelligently at a real structural level -- below
    the bottom of the 15m anchor FVG, or below the next break of structure
