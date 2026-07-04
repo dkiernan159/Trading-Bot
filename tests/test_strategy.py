@@ -303,8 +303,8 @@ def test_stands_down_for_day_after_cutoff():
     cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     strategy = OpeningRangeStrategy(cfg)
 
-    # Jump straight to a bar past the no-new-entries cutoff (12:30 ET default).
-    late_bar = bar_at(DAY.replace(hour=12, minute=35), 100.0, 100.5, 99.5, 100.0)
+    # Jump straight to a bar past the no-new-entries cutoff (13:30 ET default).
+    late_bar = bar_at(DAY.replace(hour=13, minute=35), 100.0, 100.5, 99.5, 100.0)
     signal = strategy.on_bar(late_bar)
 
     assert signal is None

@@ -12,11 +12,15 @@ session:
   london_session: ["02:00", "05:00"]  # ASSUMPTION: ET window used to mark the London high/low
   ny_open: "09:30"
   opening_range_end: "09:45"          # first 15m candle closes here -> box is formed
-  no_new_entries_after: "12:30"       # ASSUMPTION: cutoff for taking any new setup (extended 2026-07-04 from
-                                       # 11:30 -- the two-stage 15m-anchor + fresh-1m-retest design needs more
-                                       # runway per anchor than the original 2-hour morning window allowed;
-                                       # see STRATEGY.md)
-  flatten_by: "12:45"                  # ASSUMPTION: hard flatten time if still in a trade (extended with the
+  no_new_entries_after: "13:30"       # ASSUMPTION: cutoff for taking any new setup (extended 2026-07-04, first
+                                       # 11:30->12:30 for the two-stage 15m-anchor + fresh-retest design, then
+                                       # 12:30->13:30: a real 30-day backtest's funnel showed anchors forming
+                                       # fine (26 of 37 breakouts, 70%) but only 7 of those 26 (27%) ever
+                                       # retraced back to their own midpoint before running out of session --
+                                       # that's now the actual bottleneck for trade frequency, not anchor
+                                       # strength, so cutoff is extended again to give already-formed anchors
+                                       # more real time to retrace; see STRATEGY.md)
+  flatten_by: "13:45"                  # ASSUMPTION: hard flatten time if still in a trade (extended with the
                                        # cutoff above)
 
 strategy:
