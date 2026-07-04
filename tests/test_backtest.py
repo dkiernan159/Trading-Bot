@@ -143,7 +143,6 @@ def test_funnel_stats_track_each_gate():
         "large_15m_fvgs": 1,
         "nested_1m_fvgs": 1,
         "fills": 1,
-        "entry_1m_fvgs_mitigated_before_fill": 0,
     }
 
 

@@ -332,11 +332,13 @@ def test_anchor_persists_even_after_price_trades_through_it():
     assert signal.entry_price == midpoint
 
 
-def test_abandons_nested_1m_fvg_mitigated_before_fill():
-    """If the nested 1m entry FVG gets mitigated before price retraces to
-    its midpoint, it's abandoned (same as the old single-stage mitigation
-    rule) but the 15m anchor itself is untouched, so the bot keeps
-    watching for another nested 1m FVG inside the same anchor."""
+def test_still_fills_even_when_the_bar_also_breaks_the_nested_fvgs_far_edge():
+    """A resting limit order at the nested FVG's midpoint fills the
+    instant price reaches it -- even if the same bar's range continues on
+    to also break the gap's far edge. The midpoint sits strictly between
+    the two edges, so price can never break the far edge without having
+    already reached the midpoint first; there's no such thing as this
+    pending entry getting "mitigated before it could fill"."""
     cfg = load_test_config()
     strategy = OpeningRangeStrategy(cfg)
 
@@ -345,17 +347,19 @@ def test_abandons_nested_1m_fvg_mitigated_before_fill():
     feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))
 
     nested_start = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=46)
-    nested_low, _ = feed_nested_1m_fvg(strategy, nested_start)
+    nested_low, nested_high = feed_nested_1m_fvg(strategy, nested_start)
+    midpoint = (nested_low + nested_high) / 2
 
-    # Breaches the nested gap's low (106.2) without breaching the wider
-    # 15m anchor's low (105.3), isolating this to a nested-only mitigation.
-    mitigate_time = nested_start + timedelta(minutes=9)
-    signal = strategy.on_bar(bar_at(mitigate_time, 107.5, 107.6, nested_low - 0.2, nested_low - 0.1))
+    # This bar's low breaks straight through the nested gap's far (low)
+    # edge (106.2) -- well past the midpoint (106.6) it necessarily
+    # crossed on the way down.
+    fill_time = nested_start + timedelta(minutes=9)
+    signal = strategy.on_bar(bar_at(fill_time, 107.5, 107.6, nested_low - 0.2, nested_low - 0.1))
 
-    assert signal is None
-    assert strategy.state is State.WAIT_1M_FVG
-    assert strategy.stats["entry_1m_fvgs_mitigated_before_fill"] == 1
-    assert strategy.stats["fills"] == 0
+    assert signal is not None
+    assert signal.entry_price == midpoint
+    assert strategy.state is State.IN_TRADE
+    assert strategy.stats["fills"] == 1
 
 
 def test_reenters_after_stop_out_when_setup_reforms():

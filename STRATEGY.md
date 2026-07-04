@@ -48,15 +48,13 @@ review these and adjust `config.yaml` before running live.
    (`(gap_low + gap_high) / 2`), not a market order at whatever price the
    confirming candle closed at. The trade only starts once price actually
    trades back to that midpoint -- if it never comes back, there's no
-   entry that setup. If price instead blows straight through the gap's
-   **far** edge (below `gap_low` for a bullish/LONG gap, above `gap_high`
-   for a bearish/SHORT gap) before ever retracing to the midpoint, the FVG
-   is **mitigated** -- it's been fully traded through, not just tapped --
-   and is abandoned rather than filled. Only the nested 1m FVG works this
-   way -- the bot goes back to watching for another one inside whichever
-   15m anchor is current (it's never abandoned on mitigation, though it
-   may have been kept updated to something fresher in the meantime; see
-   rule 4).
+   entry that setup. Since the midpoint sits strictly between the gap's
+   two edges, a bar can never break the gap's **far** edge without having
+   *already* reached the midpoint first -- so the resting limit order
+   always fills; there's no such thing as this pending entry getting
+   "mitigated before it could fill." (Mitigation still matters earlier,
+   when *choosing* a 1m FVG in the first place -- an already-broken gap
+   is never selected as the entry trigger to begin with.)
 
    (Revision history: v1 entered at the confirming candle's close, which
    put entries well outside the FVG zone entirely -- caught by inspecting
@@ -101,7 +99,18 @@ review these and adjust `config.yaml` before running live.
    selection is now re-run on every bar while waiting for a nested entry,
    switching to a nearer/fresher unmitigated 15m FVG whenever one exists
    -- still never triggered by the old anchor being mitigated, just kept
-   live so a stale first pick can't waste the rest of the session.)
+   live so a stale first pick can't waste the rest of the session.
+   Corrected again 2026-07-04: a real 30-day backtest showed the nested
+   1m FVG getting "mitigated before it could fill" on the majority of
+   setups (3 of 5), starving the bot of fills. Turns out the mitigation
+   check for the *pending* entry was backwards -- since the limit order
+   sits at the exact midpoint, any bar reaching far enough to break the
+   gap's far edge has mathematically already reached the midpoint first
+   (the midpoint, being between the two edges, is always closer to where
+   price is coming from). A resting limit order fills the instant price
+   touches it; it doesn't wait to see where price ends up by the bar's
+   close. Removed the mitigation check on the pending 1m FVG entirely --
+   it can only ever fill, never get mitigated first.)
 7. Reward:risk is 2:1.
 8. Stop-loss is placed intelligently at a real structural level -- below
    the bottom of the 15m anchor FVG, or below the next break of structure
