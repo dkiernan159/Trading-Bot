@@ -251,19 +251,31 @@ review these and adjust `config.yaml` before running live.
     now rejected -- recorded as the same "no_valid_stop" outcome -- the
     same way an out-of-budget one is.
 
-    Changed the selection itself again 2026-07-04, chasing more trade
-    frequency after a real 30-day `--near-miss` run showed 12 of 65
+    Briefly changed the selection itself again 2026-07-04, chasing more
+    trade frequency after a real 30-day `--near-miss` run showed 12 of 65
     near-miss anchors rejected as "no_valid_stop": previously, only the
     single nearest candidate beyond entry was ever checked against the
     $40-$200 band, so if *that one* happened to be too close, the trade
     was skipped even when a second, farther marked level existed that
     would have cleared the floor comfortably while staying well within
-    the cap. `compute_stop_target` now picks the nearest candidate that
-    actually clears the band, rather than checking only the nearest
-    candidate overall -- not a return to "farthest within budget"
-    (reverted above), since it still prefers the nearest *usable* level;
-    it just no longer lets one unrealistically-close level block a
-    perfectly good farther one from ever being considered.
+    the cap. Tried having `compute_stop_target` pick the nearest
+    candidate that actually clears the band, rather than checking only
+    the nearest candidate overall -- reasoned to be different from
+    "farthest within budget" (reverted above) since it still prefers the
+    nearest *usable* level, just without letting one unrealistically-close
+    level block a perfectly good farther one. Reverted the same day: a
+    real 30-day `--verbose` run showed this recovered exactly 5 trades
+    (matching the drop in "no_valid_stop" near-misses) and all 5 lost
+    (2026-06-11, -12, -17, -19, -29) -- every one landed on an Asia or
+    London session level reached by skipping a tighter box-edge
+    candidate, while the 6 trades that didn't need to skip anything held
+    their existing 50% win rate. Despite the different reasoning, this
+    turned out to be the same failure shape as farthest-within-budget:
+    reaching past the nearest level for a "more valid-looking" one
+    produced worse trades, not better ones. Reverted back to checking
+    only the single nearest candidate against the band -- if it doesn't
+    clear, the trade is skipped outright rather than substituting a
+    farther level.
 
     That same `--near-miss` run also surfaced an unrelated bookkeeping
     bug: every "session_ended" anchor in the report appeared twice, once

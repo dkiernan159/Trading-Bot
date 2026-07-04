@@ -77,14 +77,17 @@ def test_long_returns_none_when_structural_level_too_close():
     assert result is None
 
 
-def test_long_skips_past_a_too_close_level_to_a_farther_valid_one():
+def test_long_returns_none_when_only_the_nearest_level_is_too_close_even_if_a_farther_one_exists():
     """The nearest candidate (97.0, 3 points away) is too close to be a
-    real invalidation point -- but a second, farther candidate (70.0, 30
-    points away) exists that clears the 20-point floor and is still well
-    within the 100-point cap. Previously only the single nearest
-    candidate was ever checked against the band, so this would have been
-    rejected entirely even though a perfectly good level existed a bit
-    farther out; now the nearest *usable* one is picked instead."""
+    real invalidation point. A second, farther candidate (70.0, 30 points
+    away) does clear the 20-point floor -- but the trade is still
+    skipped rather than reaching past the too-close nearest level to use
+    it. (Briefly changed to prefer this farther-but-valid level 2026-07-04;
+    reverted the same day after a real 30-day backtest showed every trade
+    recovered that way -- 5 of them -- lost, all landing on Asia/London
+    levels reached by skipping a tighter box edge, the same failure shape
+    as the farthest-within-budget experiment. See risk.py's revision
+    history.)"""
     result = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
@@ -95,10 +98,7 @@ def test_long_skips_past_a_too_close_level_to_a_farther_valid_one():
         contracts=1,
         reward_risk_ratio=2.0,
     )
-    assert result.stop_points == 30.0
-    assert result.stop_price == 70.0
-    assert result.target_points == 60.0
-    assert result.target_price == 160.0
+    assert result is None
 
 
 def test_short_uses_nearby_structural_level_within_cap():
