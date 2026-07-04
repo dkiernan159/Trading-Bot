@@ -28,8 +28,10 @@ review these and adjust `config.yaml` before running live.
    up to date, superseded by something more current when available.
 5. Once a 15m FVG has anchored the move, the bot watches **inside that
    anchor's gap** (whichever one is current, per rule 4) for a **1-minute
-   FVG fully nested within it**
-   (`nested.gap_low >= anchor.gap_low and nested.gap_high <= anchor.gap_high`)
+   FVG whose midpoint (the actual entry price) falls inside that anchor's
+   range** (`anchor.gap_low <= nested_midpoint <= anchor.gap_high` --
+   loosened 2026-07-04 from requiring the *whole* 1m gap to fit inside the
+   anchor, which left very little room in anything but the widest anchors)
    **that formed after the anchor locked in** -- this is the actual entry
    trigger, and it must be a genuinely new structure, not one that already
    existed (or that formed as part of the very same displacement that
@@ -171,16 +173,22 @@ review these and adjust `config.yaml` before running live.
   qualifying nested gap, so the strength bar needed to come down a
   notch to compensate.
 - **"Nested"** (`src/strategy.py: WAIT_1M_FVG`): a 1m FVG counts as nested
-  inside the 15m anchor when its whole range falls inside the anchor's
-  (`nested.gap_low >= anchor.gap_low and nested.gap_high <= anchor.gap_high`)
-  **and it formed after the anchor locked in**
+  inside the 15m anchor when its **midpoint** falls inside the anchor's
+  range (`anchor.gap_low <= nested_midpoint <= anchor.gap_high`) **and it
+  formed after the anchor locked in**
   (`fvg.formed_at > self._anchor_locked_in_at`, timestamped the moment the
-  anchor was selected in `WAIT_15M_FVG`). Both conditions are required --
-  geometric nesting alone isn't enough, since a 1m gap can easily sit
-  inside the 15m anchor's range simply because it formed as part of the
-  same displacement leg that built the anchor. Requiring it to be newer
-  than the anchor's lock-in is what makes it an actual retest rather than
-  a coincidental sub-gap of the same move. When more than one nested
+  anchor was selected/refreshed). Both conditions are required -- the
+  timing check alone isn't enough, since a 1m gap can easily sit inside
+  the 15m anchor's range simply because it formed as part of the same
+  displacement leg that built the anchor; requiring it to be newer than
+  the anchor's lock-in is what makes it an actual retest rather than a
+  coincidental sub-gap of the same move. (Originally required the whole
+  1m gap, both edges, to fit inside the anchor -- loosened 2026-07-04 to
+  midpoint-only after a real week of history produced almost no
+  qualifying setups: a 2.5+-point-wide anchor leaves very little room for
+  an entire second gap to fit inside it, but the actual entry only ever
+  uses the midpoint anyway, so requiring the far edge to also fit added
+  a strictness the trade itself doesn't need.) When more than one nested
   candidate is active at once, the nearest one to current price is
   picked, breaking ties by the larger gap (same nearest-first,
   size-as-tiebreak rule used for picking the 15m anchor itself -- a

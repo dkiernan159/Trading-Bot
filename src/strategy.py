@@ -176,11 +176,15 @@ class OpeningRangeStrategy:
             # the bot could claim a coincidentally-overlapping 1m gap the
             # instant the anchor confirms, which looks like "entering as
             # the FVG forms" instead of waiting for an actual retest.
+            #
+            # "Nested" only requires the 1m gap's midpoint (the actual
+            # entry price) to fall inside the anchor's range -- requiring
+            # the whole 1m gap to fit inside left very little room in a
+            # tight anchor and was starving the bot of entries entirely.
             nested = [
                 fvg
                 for fvg in self.fvg_detector_1m.unmitigated_in_direction(self._breakout_direction)
-                if fvg.gap_low >= self._anchor_fvg.gap_low
-                and fvg.gap_high <= self._anchor_fvg.gap_high
+                if self._anchor_fvg.gap_low <= (fvg.gap_low + fvg.gap_high) / 2 <= self._anchor_fvg.gap_high
                 and fvg.formed_at > self._anchor_locked_in_at
             ]
             if nested:

@@ -166,6 +166,33 @@ def test_full_breakout_15m_anchor_then_nested_1m_entry():
     assert strategy.state is State.IN_TRADE
 
 
+def test_nested_only_requires_midpoint_inside_anchor_not_full_containment():
+    """A 1m FVG doesn't need to fit entirely inside the anchor's range --
+    only its midpoint (the actual entry price) does. Requiring the whole
+    gap to fit inside a tight anchor left very little room and was
+    starving the bot of entries."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)
+    feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))  # anchor 105.3-109.1
+    assert strategy._anchor_fvg.gap_low == pytest.approx(105.3)
+
+    nested_start = DAY + timedelta(minutes=45) + timedelta(minutes=15 * 8) + timedelta(minutes=46)
+    # This 1m FVG's low edge (104.9) falls OUTSIDE the anchor's low (105.3),
+    # but its midpoint (105.7) is still inside the anchor's range.
+    strategy.on_bar(bar_at(nested_start, 104.7, 104.9, 104.5, 104.7))  # c0
+    strategy.on_bar(bar_at(nested_start + timedelta(minutes=1), 104.7, 106.7, 104.5, 106.6))  # c1: displacement
+    strategy.on_bar(bar_at(nested_start + timedelta(minutes=2), 106.6, 106.8, 106.5, 106.7))  # c2: confirms 104.9-106.5
+    signal = strategy.on_bar(bar_at(nested_start + timedelta(minutes=3), 106.7, 106.8, 106.6, 106.7))  # flush
+
+    assert signal is None
+    assert strategy.state is State.WAIT_FILL
+    assert strategy._pending_fvg.gap_low == pytest.approx(104.9)
+    assert strategy._pending_limit_price == pytest.approx(105.7)
+
+
 def feed_large_15m_fvg_with_embedded_1m_impostor(strategy: OpeningRangeStrategy, start: datetime) -> dict:
     """Same overall 15m anchor as feed_large_15m_fvg (gap 105.3-109.1,
     from a displacement move 105.1 -> 109.3), but the displacement leg

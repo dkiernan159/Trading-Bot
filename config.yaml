@@ -35,11 +35,13 @@ strategy:
   entry_fvg:                      # the 1m FVG nested inside the 15m FVG -- the actual entry trigger, kept
                                    # small/tight so the stop isn't sized off 15m-candle noise
     timeframe_minutes: 1
-    min_gap_points: 0.5           # ASSUMPTION: minimum 1m FVG size (loosened 2026-07-04 from 0.75 -- since the
-                                   # nested FVG now also has to form *after* the anchor locks in, requiring it
-                                   # to also be large was leaving too narrow a window to find one; see STRATEGY.md)
-    displacement_multiplier: 1.2  # ASSUMPTION: "strong" = displacement candle body >= 1.2x recent avg range
-                                   # (loosened 2026-07-04 from 1.5, same reasoning)
+    min_gap_points: 0.35          # ASSUMPTION: minimum 1m FVG size (loosened 2026-07-04, 0.75 -> 0.5 -> 0.35 --
+                                   # since the nested FVG also has to form *after* the anchor locks in and now
+                                   # only needs its midpoint (not its whole range) inside the anchor, requiring
+                                   # it to also be large on top of those was leaving almost no real setups
+                                   # qualifying; see STRATEGY.md)
+    displacement_multiplier: 1.0  # ASSUMPTION: "strong" = displacement candle body >= 1.0x recent avg range
+                                   # (loosened 2026-07-04, 1.5 -> 1.2 -> 1.0, same reasoning)
     lookback_bars: 20             # 1m candles used for the recent average range baseline (~20 minutes)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
