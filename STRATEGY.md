@@ -249,7 +249,34 @@ review these and adjust `config.yaml` before running live.
     rate and $249.75 net across the remaining 6 trades. A stop that tight
     is inside ordinary MNQ chop, not a real invalidation level, so it's
     now rejected -- recorded as the same "no_valid_stop" outcome -- the
-    same way an out-of-budget one is.)
+    same way an out-of-budget one is.
+
+    Changed the selection itself again 2026-07-04, chasing more trade
+    frequency after a real 30-day `--near-miss` run showed 12 of 65
+    near-miss anchors rejected as "no_valid_stop": previously, only the
+    single nearest candidate beyond entry was ever checked against the
+    $40-$200 band, so if *that one* happened to be too close, the trade
+    was skipped even when a second, farther marked level existed that
+    would have cleared the floor comfortably while staying well within
+    the cap. `compute_stop_target` now picks the nearest candidate that
+    actually clears the band, rather than checking only the nearest
+    candidate overall -- not a return to "farthest within budget"
+    (reverted above), since it still prefers the nearest *usable* level;
+    it just no longer lets one unrealistically-close level block a
+    perfectly good farther one from ever being considered.
+
+    That same `--near-miss` run also surfaced an unrelated bookkeeping
+    bug: every "session_ended" anchor in the report appeared twice, once
+    with a plausible same-day duration and once with an inflated (in a
+    few cases multi-day) one. The `no_new_entries_after` cutoff branch in
+    `strategy.py`'s `on_bar` recorded the anchor's outcome but never
+    cleared `_anchor_fvg`/`_anchor_started_at`/`_pending_limit_price`
+    afterward, unlike every other close site -- so the stale anchor got
+    silently re-recorded by `_start_new_day`'s defensive close whenever
+    the next bar happened to arrive, sometimes days later if the fed data
+    had a gap. Fixed by clearing those fields at the cutoff close too;
+    this only affects the near-miss diagnostic report, not any trading
+    decision or past backtest P&L.)
 - **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on
   `FvgConfig.timeframe_minutes` where (a) the gap size is >=
   `min_gap_points` and (b) the middle (displacement) candle's body is >=

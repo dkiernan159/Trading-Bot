@@ -177,6 +177,18 @@ class OpeningRangeStrategy:
 
         if self.state is not State.IN_TRADE and t >= self.cfg.session.no_new_entries_after:
             self._close_anchor("session_ended", bar.timestamp)
+            # Must actually clear the anchor here, same as every other
+            # _close_anchor call site -- otherwise it sits around stale
+            # (DONE_FOR_DAY skips straight past this branch for the rest
+            # of the day) and gets silently re-recorded by
+            # _start_new_day's defensive close on whatever day the next
+            # bar happens to arrive, doubling up this same anchor in the
+            # history with an inflated, sometimes multi-day, duration.
+            # Found via a real 30-day --near-miss backtest where every
+            # single "session_ended" anchor appeared twice.
+            self._anchor_fvg = None
+            self._anchor_started_at = None
+            self._pending_limit_price = None
             self.state = State.DONE_FOR_DAY
             return None
 

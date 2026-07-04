@@ -77,6 +77,30 @@ def test_long_returns_none_when_structural_level_too_close():
     assert result is None
 
 
+def test_long_skips_past_a_too_close_level_to_a_farther_valid_one():
+    """The nearest candidate (97.0, 3 points away) is too close to be a
+    real invalidation point -- but a second, farther candidate (70.0, 30
+    points away) exists that clears the 20-point floor and is still well
+    within the 100-point cap. Previously only the single nearest
+    candidate was ever checked against the band, so this would have been
+    rejected entirely even though a perfectly good level existed a bit
+    farther out; now the nearest *usable* one is picked instead."""
+    result = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        structural_levels=[97.0, 70.0, 105.0],
+        max_stop_dollars=200.0,
+        min_stop_dollars=40.0,
+        point_value=2.0,
+        contracts=1,
+        reward_risk_ratio=2.0,
+    )
+    assert result.stop_points == 30.0
+    assert result.stop_price == 70.0
+    assert result.target_points == 60.0
+    assert result.target_price == 160.0
+
+
 def test_short_uses_nearby_structural_level_within_cap():
     """Two candidates (110.0, 120.0) both fit within the 100-point cap --
     the nearer one (110.0) is used, not the farther one (120.0)."""

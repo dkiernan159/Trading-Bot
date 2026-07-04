@@ -303,6 +303,18 @@ def test_anchor_recorded_as_session_ended_when_cutoff_hits_before_it_fills():
     assert len(strategy.anchor_history) == 1
     assert strategy.anchor_history[0].outcome == "session_ended"
     assert strategy.anchor_history[0].gap_low == pytest.approx(anchor_low)
+    assert strategy.anchor_history[0].ended_at == late_bar.timestamp
+
+    # The cutoff close must actually clear the anchor -- otherwise it sits
+    # around stale and gets silently re-recorded by _start_new_day's
+    # defensive close on the next day, doubling up this same anchor in
+    # the history with an inflated (real bug: sometimes multi-day)
+    # duration. A real 30-day --near-miss backtest showed exactly this:
+    # every single "session_ended" anchor appeared twice.
+    next_day_bar = bar_at(late_bar.timestamp + timedelta(days=1), anchor_high, anchor_high, anchor_high, anchor_high)
+    signal = strategy.on_bar(next_day_bar)
+    assert signal is None
+    assert len(strategy.anchor_history) == 1  # not re-recorded
 
 
 def test_stale_fvg_from_a_previous_day_is_not_available_as_todays_anchor():

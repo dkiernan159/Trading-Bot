@@ -25,16 +25,18 @@ def compute_stop_target(
     contracts: int,
     reward_risk_ratio: float,
 ) -> BracketLevels | None:
-    """Stop is the nearest marked structural level beyond entry (previous
+    """Stop is the *nearest* marked structural level beyond entry (previous
     day/Asia/London high-low, or opening range box edge -- see
-    strategy.py's structural_levels). Returns None -- meaning "don't take
-    this trade" -- if no such level exists beyond entry at all, if the
-    nearest one is farther out than max_stop_dollars allows, or if it's
-    closer than min_stop_dollars: either way, a stop with no real,
-    reasonably-sized level behind it isn't a genuine invalidation point,
-    so there's nothing to size a trade against. When a real level *is*
-    within that band, target is always reward_risk_ratio x that level's
-    actual distance.
+    strategy.py's structural_levels) whose distance actually falls between
+    min_stop_dollars and max_stop_dollars -- not necessarily the nearest
+    level overall, since a closer level that's too tight to be a genuine
+    invalidation point doesn't disqualify a different, farther one that's
+    still realistic. Returns None -- meaning "don't take this trade" -- if
+    no candidate falls in that band at all: either nothing exists beyond
+    entry, everything beyond entry is farther than max_stop_dollars, or
+    everything beyond entry is closer than min_stop_dollars. When a real
+    level *is* within that band, target is always reward_risk_ratio x
+    that level's actual distance.
 
     (Revision history: briefly changed 2026-07-04 to pick the *farthest*
     level within budget instead of the nearest, on the theory that
@@ -77,24 +79,46 @@ def compute_stop_target(
     rate / $192.50 net across 13 trades into a 50% win rate / $249.75 net
     across the remaining 6. A stop that tight is inside ordinary MNQ
     chop, not a real invalidation level, so it's now rejected the same
-    way an out-of-budget stop is.)
+    way an out-of-budget stop is.
+
+    Changed the selection itself 2026-07-04: previously, only the single
+    nearest candidate was ever checked against the band, so if *that one*
+    happened to be too close, the trade was skipped even when a second,
+    farther candidate existed that would have cleared min_stop_dollars
+    comfortably while still being well within max_stop_dollars. Since a
+    trade needs multiple marked levels beyond entry (previous day, Asia,
+    London, box) for this to matter, and the near-miss data motivating
+    the floor above didn't distinguish "only candidate, too close" from
+    "nearest candidate too close, but a farther one exists," this is a
+    plausible source of some of the frequency lost to the floor -- fixed
+    by picking the nearest candidate that clears the band, instead of
+    checking only the nearest candidate overall. This is not the
+    farthest-within-budget idea already tried and reverted above: it
+    still prefers the nearest usable level, it just no longer lets one
+    unrealistically-close level block a perfectly good farther one from
+    ever being considered.)
     """
     max_stop_points = max_stop_dollars / (point_value * contracts)
     min_stop_points = min_stop_dollars / (point_value * contracts)
 
     if direction is Direction.LONG:
-        candidates = [lvl for lvl in structural_levels if lvl < entry_price]
-        nearest = max(candidates) if candidates else None
-        structural_distance = (entry_price - nearest) if nearest is not None else None
+        distances = [entry_price - lvl for lvl in structural_levels if lvl < entry_price]
     else:
-        candidates = [lvl for lvl in structural_levels if lvl > entry_price]
-        nearest = min(candidates) if candidates else None
-        structural_distance = (nearest - entry_price) if nearest is not None else None
+        distances = [lvl - entry_price for lvl in structural_levels if lvl > entry_price]
 
-    if structural_distance is None or not (min_stop_points <= structural_distance <= max_stop_points):
+    # Nearest candidate whose distance actually falls in the realistic
+    # band -- not the nearest candidate overall. A level just outside the
+    # band (in either direction) doesn't disqualify a different, farther
+    # real level that's still within budget; see revision history for why
+    # this isn't the same as the "farthest within budget" idea already
+    # tried and reverted (this still prefers nearest -- only among
+    # candidates that clear the noise floor -- rather than preferring far
+    # for its own sake).
+    in_band = [d for d in distances if min_stop_points <= d <= max_stop_points]
+    if not in_band:
         return None
 
-    stop_points = structural_distance
+    stop_points = min(in_band)
     target_points = stop_points * reward_risk_ratio
 
     if direction is Direction.LONG:
