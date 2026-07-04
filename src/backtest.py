@@ -31,7 +31,7 @@ from src.broker.projectx_gateway import ProjectXGatewayBroker
 from src.config import BotConfig, load_config
 from src.models import Bar, Direction
 from src.risk import compute_stop_target
-from src.strategy import OpeningRangeStrategy
+from src.strategy import AnchorRecord, OpeningRangeStrategy
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +44,13 @@ def parse_args() -> argparse.Namespace:
         "--verbose",
         action="store_true",
         help="Print the levels/box/FVG behind each trade, to verify the mechanics rather than just outcomes.",
+    )
+    parser.add_argument(
+        "--near-miss",
+        action="store_true",
+        help="Print every anchor that formed but never filled, with why it ended (superseded by a "
+        "fresher anchor, the breakout thesis was invalidated, or the session ran out of time) -- "
+        "diagnoses what's actually happening to the anchors that don't become trades.",
     )
     parser.add_argument(
         "--chart-json",
@@ -73,10 +80,17 @@ def fetch_recent_bars(broker: ProjectXGatewayBroker, symbol: str, tz: ZoneInfo, 
     return all_bars
 
 
-def run_backtest(cfg: BotConfig, bars: list[Bar], stats_out: dict | None = None) -> list[dict]:
+def run_backtest(
+    cfg: BotConfig,
+    bars: list[Bar],
+    stats_out: dict | None = None,
+    anchor_history_out: list[AnchorRecord] | None = None,
+) -> list[dict]:
     """stats_out, if given, is populated with the strategy's funnel counters
     (breakouts / strong_fvgs_in_direction / fvgs_at_key_level / fills) --
-    lets a zero-trade window be diagnosed instead of just reported."""
+    lets a zero-trade window be diagnosed instead of just reported.
+    anchor_history_out, if given, is populated with every anchor's full
+    lifecycle (filled or not) -- see print_near_miss_anchors."""
     strategy = OpeningRangeStrategy(cfg)
     tz = ZoneInfo(cfg.session.timezone)
     open_trade: dict | None = None
@@ -140,6 +154,8 @@ def run_backtest(cfg: BotConfig, bars: list[Bar], stats_out: dict | None = None)
 
     if stats_out is not None:
         stats_out.update(strategy.stats)
+    if anchor_history_out is not None:
+        anchor_history_out.extend(strategy.anchor_history)
     return results
 
 
@@ -195,6 +211,35 @@ def print_funnel(stats: dict) -> None:
     print(f"  ...of those, breakout thesis later invalidated:         {stats.get('breakouts_invalidated', 0)}")
     print(f"  ...of those, a large 15m FVG anchored the move:        {stats.get('large_15m_fvgs', 0)}")
     print(f"  ...of those, price retraced to fill the limit:          {stats.get('fills', 0)}")
+
+
+def print_near_miss_anchors(anchor_history: list[AnchorRecord]) -> None:
+    """Prints every anchor that never converted into a fill, with why it
+    ended -- superseded by a fresher/nearer anchor before it ever
+    retraced, the breakout thesis got invalidated while it was still
+    live, or the session simply ran out of time. Lets you see what's
+    actually happening to the majority of anchors that don't result in
+    a trade, instead of just the aggregate fills count in the funnel."""
+    near_misses = [a for a in anchor_history if a.outcome != "filled"]
+    if not near_misses:
+        print("\nNo near-miss anchors -- every anchor that formed either filled, or none formed at all.")
+        return
+
+    print(f"\nNear-miss anchors ({len(near_misses)} formed but never filled):")
+    for a in near_misses:
+        live_for = a.ended_at - a.started_at
+        gap_size = a.gap_high - a.gap_low
+        print(
+            f"  {a.started_at.strftime('%Y-%m-%d %H:%M')}  {a.direction.value.upper():<6}"
+            f" gap={_fmt(a.gap_low)}-{_fmt(a.gap_high)} (size {gap_size:.2f})"
+            f" live for {live_for}  ended: {a.outcome}"
+        )
+
+    counts: dict[str, int] = {}
+    for a in near_misses:
+        counts[a.outcome] = counts.get(a.outcome, 0) + 1
+    breakdown = ", ".join(f"{outcome}={count}" for outcome, count in sorted(counts.items()))
+    print(f"\n  Breakdown: {breakdown}")
 
 
 def print_trade_detail(results: list[dict]) -> None:
@@ -311,11 +356,14 @@ def main() -> None:
     print(f"Fetched {len(bars)} bars. Running backtest...\n")
 
     stats: dict = {}
-    results = run_backtest(cfg, bars, stats_out=stats)
+    anchor_history: list = []
+    results = run_backtest(cfg, bars, stats_out=stats, anchor_history_out=anchor_history)
     print_report(cfg, results)
     print_funnel(stats)
     if args.verbose:
         print_trade_detail(results)
+    if args.near_miss:
+        print_near_miss_anchors(anchor_history)
     if args.chart_json:
         export_chart_json(cfg, results, bars, args.chart_json)
         print(f"\nChart data written to {args.chart_json} -- cat it and paste the contents into chat to visualize.")

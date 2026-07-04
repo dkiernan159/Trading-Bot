@@ -31,6 +31,23 @@ class EntrySignal:
     timestamp: datetime
 
 
+@dataclass
+class AnchorRecord:
+    """One anchor's full lifecycle -- for near-miss diagnostics only (see
+    backtest.py's print_near_miss_anchors), not used by the trading logic
+    itself. `outcome` is one of "filled", "superseded" (a nearer/fresher
+    anchor replaced it before it ever filled), "invalidated" (the
+    breakout thesis failed while it was still live), or "session_ended"
+    (time ran out with it still live, unfilled)."""
+
+    direction: Direction
+    gap_low: float
+    gap_high: float
+    started_at: datetime
+    ended_at: datetime
+    outcome: str
+
+
 def _nearest_then_largest(fvgs: list[FairValueGap], current_price: float) -> FairValueGap:
     """Picks whichever gap's midpoint is nearest to current price, breaking
     ties by the larger gap."""
@@ -73,6 +90,7 @@ class OpeningRangeStrategy:
         self._breakout_direction: Direction | None = None
         self._levels: SessionLevelSet | None = None
         self._anchor_fvg: FairValueGap | None = None
+        self._anchor_started_at: datetime | None = None
         self._pending_limit_price: float | None = None
 
         # Funnel counters -- how many setups made it past each gate. Lets
@@ -85,11 +103,35 @@ class OpeningRangeStrategy:
             "fills": 0,
         }
 
+        # Every anchor's full lifecycle, filled or not -- near-miss
+        # diagnostics only (see AnchorRecord / backtest.py's
+        # print_near_miss_anchors), no effect on trading decisions.
+        self.anchor_history: list[AnchorRecord] = []
+
     @property
     def current_session_levels(self) -> SessionLevelSet | None:
         """Previous-day/Asia/London levels marked for the trading day in
         progress (None before 9:30 ET marks them for the day)."""
         return self._levels
+
+    def _close_anchor(self, outcome: str, ended_at: datetime) -> None:
+        """Records the currently-active anchor's outcome, if there is one
+        (a no-op otherwise -- e.g. a breakout invalidated before any
+        anchor ever formed). Must be called before self._anchor_fvg is
+        replaced or cleared, since it reads the anchor that's about to
+        stop being current."""
+        if self._anchor_fvg is None:
+            return
+        self.anchor_history.append(
+            AnchorRecord(
+                direction=self._breakout_direction,
+                gap_low=self._anchor_fvg.gap_low,
+                gap_high=self._anchor_fvg.gap_high,
+                started_at=self._anchor_started_at,
+                ended_at=ended_at,
+                outcome=outcome,
+            )
+        )
 
     def on_bar(self, bar: Bar) -> EntrySignal | None:
         local = bar.timestamp.astimezone(self.tz)
@@ -97,7 +139,7 @@ class OpeningRangeStrategy:
         t = local.time()
 
         if self._trading_date != trading_date:
-            self._start_new_day(trading_date)
+            self._start_new_day(trading_date, bar.timestamp)
 
         self.session_levels.add_bar(bar)
         self.box.add_bar(bar)
@@ -107,6 +149,7 @@ class OpeningRangeStrategy:
             return None
 
         if self.state is not State.IN_TRADE and t >= self.cfg.session.no_new_entries_after:
+            self._close_anchor("session_ended", bar.timestamp)
             self.state = State.DONE_FOR_DAY
             return None
 
@@ -127,8 +170,10 @@ class OpeningRangeStrategy:
             )
             if breakout_failed:
                 self.stats["breakouts_invalidated"] += 1
+                self._close_anchor("invalidated", bar.timestamp)
                 self._breakout_direction = None
                 self._anchor_fvg = None
+                self._anchor_started_at = None
                 self._pending_limit_price = None
                 self.state = State.WAIT_BREAKOUT
                 return None
@@ -164,6 +209,7 @@ class OpeningRangeStrategy:
             candidates = self.fvg_detector_15m.unmitigated_in_direction(self._breakout_direction)
             if candidates:
                 self._anchor_fvg = _nearest_then_largest(candidates, bar.close)
+                self._anchor_started_at = bar.timestamp
                 self._pending_limit_price = (self._anchor_fvg.gap_low + self._anchor_fvg.gap_high) / 2
                 self.stats["large_15m_fvgs"] += 1
                 self.state = State.WAIT_FILL
@@ -181,7 +227,9 @@ class OpeningRangeStrategy:
             if candidates:
                 best_anchor = _nearest_then_largest(candidates, bar.close)
                 if best_anchor is not self._anchor_fvg:
+                    self._close_anchor("superseded", bar.timestamp)
                     self._anchor_fvg = best_anchor
+                    self._anchor_started_at = bar.timestamp
                     self._pending_limit_price = (best_anchor.gap_low + best_anchor.gap_high) / 2
                     self.stats["large_15m_fvgs"] += 1
 
@@ -230,8 +278,10 @@ class OpeningRangeStrategy:
                     structural_levels=structural_levels,
                     timestamp=bar.timestamp,
                 )
+                self._close_anchor("filled", bar.timestamp)
                 self.state = State.IN_TRADE
                 self._anchor_fvg = None
+                self._anchor_started_at = None
                 self._pending_limit_price = None
                 self.stats["fills"] += 1
                 return signal
@@ -251,11 +301,18 @@ class OpeningRangeStrategy:
 
         self._breakout_direction = None
         self._anchor_fvg = None
+        self._anchor_started_at = None
         self._pending_limit_price = None
         self.state = State.WAIT_BREAKOUT
 
-    def _start_new_day(self, trading_date: date) -> None:
+    def _start_new_day(self, trading_date: date, bar_timestamp: datetime) -> None:
         self._trading_date = trading_date
+        # Defensive: normally an anchor is already closed out for
+        # diagnostics by the no_new_entries_after cutoff before a new
+        # day's bar ever arrives, but a gap in the fed history (e.g. a
+        # day that ends before the cutoff bar was ever reached) could
+        # otherwise leave one dangling unrecorded.
+        self._close_anchor("session_ended", bar_timestamp)
         self.box.reset_for_day(trading_date)
         # Drop any still-unmitigated FVGs from previous days -- otherwise
         # a gap that simply never got revisited could sit in the pool
@@ -271,4 +328,5 @@ class OpeningRangeStrategy:
         self._breakout_direction = None
         self._levels = None
         self._anchor_fvg = None
+        self._anchor_started_at = None
         self._pending_limit_price = None

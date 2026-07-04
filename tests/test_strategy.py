@@ -136,6 +136,11 @@ def test_full_breakout_then_fill_at_the_anchors_own_midpoint():
     assert strategy.state is State.IN_TRADE
     assert strategy.stats["fills"] == 1
 
+    assert len(strategy.anchor_history) == 1
+    assert strategy.anchor_history[0].outcome == "filled"
+    assert strategy.anchor_history[0].gap_low == pytest.approx(anchor_low)
+    assert strategy.anchor_history[0].ended_at == fill_time
+
 
 def test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill():
     """If price never retraces to the first anchor's midpoint, but a
@@ -167,6 +172,11 @@ def test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill():
     assert strategy._anchor_fvg.gap_low == pytest.approx(second_low)
     assert strategy._pending_limit_price == pytest.approx((second_low + second_high) / 2)
     assert strategy.state is State.WAIT_FILL
+
+    # The first anchor is recorded as superseded, not lost silently.
+    assert len(strategy.anchor_history) == 1
+    assert strategy.anchor_history[0].outcome == "superseded"
+    assert strategy.anchor_history[0].gap_low == pytest.approx(first_low)
 
 
 def test_fills_the_instant_price_reaches_the_midpoint_even_if_the_bar_also_breaks_the_far_edge():
@@ -254,6 +264,35 @@ def test_breakout_invalidated_when_price_closes_back_through_opposite_box_edge()
     assert signal is None
     assert strategy.state is State.WAIT_15M_FVG
     assert strategy._breakout_direction is Direction.SHORT
+
+    assert len(strategy.anchor_history) == 1
+    assert strategy.anchor_history[0].outcome == "invalidated"
+    assert strategy.anchor_history[0].ended_at == reversal_time
+
+
+def test_anchor_recorded_as_session_ended_when_cutoff_hits_before_it_fills():
+    """An anchor that's still live (never filled, never superseded, never
+    invalidated) when the no-new-entries cutoff arrives shows up in the
+    history as "session_ended" -- ran out of real time to retrace, not
+    abandoned for any other reason."""
+    cfg = load_test_config()
+    cfg.session.no_new_entries_after = dtime(13, 30)
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)
+    anchor_low, anchor_high = feed_large_15m_fvg(strategy, DAY + timedelta(minutes=45))
+    assert strategy.state is State.WAIT_FILL
+
+    # Price never comes back down to the midpoint; the cutoff arrives first.
+    late_bar = bar_at(DAY.replace(hour=13, minute=35), anchor_high, anchor_high + 0.5, anchor_high - 0.1, anchor_high)
+    signal = strategy.on_bar(late_bar)
+
+    assert signal is None
+    assert strategy.state is State.DONE_FOR_DAY
+    assert len(strategy.anchor_history) == 1
+    assert strategy.anchor_history[0].outcome == "session_ended"
+    assert strategy.anchor_history[0].gap_low == pytest.approx(anchor_low)
 
 
 def test_stale_fvg_from_a_previous_day_is_not_available_as_todays_anchor():

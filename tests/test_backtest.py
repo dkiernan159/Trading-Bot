@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from src.backtest import _pnl_points, export_chart_html, export_chart_json, run_backtest
+from src.backtest import _pnl_points, export_chart_html, export_chart_json, print_near_miss_anchors, run_backtest
 from src.config import load_config
 from src.models import Bar
 
@@ -138,11 +138,12 @@ def test_funnel_stats_track_each_gate():
     }
 
 
-def test_funnel_stats_show_anchor_but_no_fill_afterward():
-    """A breakout that anchors on a large 15m FVG but where price never
-    retraces back to the anchor's own midpoint should show up as a
-    near-miss: breakout + anchor counted, zero fills."""
-    cfg = load_test_config()
+def breakout_15m_anchor_no_fill_bars() -> list[Bar]:
+    """Same breakout + 15m anchor as breakout_15m_anchor_bars(), but price
+    stays well above the anchor's midpoint (107.2) for the rest of the
+    session instead of ever retracing down to it -- the anchor forms and
+    then just sits there, unfilled, until whatever cutoff the caller's
+    config sets kicks in."""
     bars = [
         bar_at(PREV_DAY_BASE, 100.0, 101.0, 99.0, 100.0),
         bar_at(PREV_DAY_BASE + timedelta(minutes=15), 100.0, 105.0, 100.0, 104.0),
@@ -162,11 +163,18 @@ def test_funnel_stats_show_anchor_but_no_fill_afterward():
     bars += smooth_walk_1m(pattern_start + timedelta(minutes=30), 15, 109.3, 109.5)
     bars.append(flat_bar(pattern_start + timedelta(minutes=45), 109.5))  # flush -- detects the 15m anchor
 
-    # Price stays well above the anchor's midpoint (107.2) for the rest of
-    # the session -- it never retraces back down to fill.
     flat_after = pattern_start + timedelta(minutes=46)
     for i in range(20):
         bars.append(flat_bar(flat_after + timedelta(minutes=i), 109.5, spread=0.3))
+    return bars
+
+
+def test_funnel_stats_show_anchor_but_no_fill_afterward():
+    """A breakout that anchors on a large 15m FVG but where price never
+    retraces back to the anchor's own midpoint should show up as a
+    near-miss: breakout + anchor counted, zero fills."""
+    cfg = load_test_config()
+    bars = breakout_15m_anchor_no_fill_bars()
 
     stats: dict = {}
     results = run_backtest(cfg, bars, stats_out=stats)
@@ -175,6 +183,59 @@ def test_funnel_stats_show_anchor_but_no_fill_afterward():
     assert stats["breakouts"] == 1
     assert stats["large_15m_fvgs"] == 1
     assert stats["fills"] == 0
+
+
+def test_anchor_history_records_a_fill():
+    cfg = load_test_config()
+    bars = breakout_15m_anchor_bars()
+
+    history: list = []
+    run_backtest(cfg, bars, anchor_history_out=history)
+
+    assert len(history) == 1
+    assert history[0].outcome == "filled"
+    assert history[0].gap_low == pytest.approx(105.3)
+    assert history[0].gap_high == pytest.approx(109.1)
+
+
+def test_anchor_history_records_session_ended_when_cutoff_hits_before_a_fill():
+    cfg = load_test_config()
+    cfg.session.no_new_entries_after = dtime(13, 10)  # inside the no-fill fixture's flat tail
+    bars = breakout_15m_anchor_no_fill_bars()
+
+    history: list = []
+    results = run_backtest(cfg, bars, anchor_history_out=history)
+
+    assert results == []
+    assert len(history) == 1
+    assert history[0].outcome == "session_ended"
+
+
+def test_print_near_miss_anchors_reports_unfilled_anchors(capsys):
+    cfg = load_test_config()
+    cfg.session.no_new_entries_after = dtime(13, 10)
+    bars = breakout_15m_anchor_no_fill_bars()
+
+    history: list = []
+    run_backtest(cfg, bars, anchor_history_out=history)
+    print_near_miss_anchors(history)
+
+    out = capsys.readouterr().out
+    assert "Near-miss anchors (1 formed but never filled)" in out
+    assert "session_ended" in out
+    assert "Breakdown: session_ended=1" in out
+
+
+def test_print_near_miss_anchors_reports_nothing_when_every_anchor_filled(capsys):
+    cfg = load_test_config()
+    bars = breakout_15m_anchor_bars()
+
+    history: list = []
+    run_backtest(cfg, bars, anchor_history_out=history)
+    print_near_miss_anchors(history)
+
+    out = capsys.readouterr().out
+    assert "No near-miss anchors" in out
 
 
 def test_pnl_points_is_negative_for_a_long_loss():
