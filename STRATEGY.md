@@ -104,14 +104,15 @@ review these and adjust `config.yaml` before running live.
    condition in the whole sequence regardless of what timeframe or
    thresholds it used.)
 6. Reward:risk is 2:1.
-7. Stop-loss is placed intelligently at a real structural level -- below
-   the bottom of the 15m anchor FVG, or below the next break of structure
-   beyond it, whichever makes sense on the chart (mirrored for shorts:
-   above the top of the anchor / above the next break of structure) --
-   **capped at $200 of risk per trade** (`config.yaml:
-   strategy.max_stop_dollars`) at the current `position_sizing.contract_size`,
-   so the stop is never wider than that regardless of how far away the
-   nearest structural level is.
+7. Stop-loss is placed intelligently at a real structural level -- the
+   nearest marked previous-day/Asia/London high-low or opening-range box
+   edge beyond entry, whichever makes sense on the chart -- **capped at
+   $200 of risk per trade** (`config.yaml: strategy.max_stop_dollars`) at
+   the current `position_sizing.contract_size`, so the stop is never
+   wider than that regardless of how far away the nearest structural
+   level is (see "How ambiguous points were resolved" below for why the
+   15m anchor's own boundary is deliberately *not* one of these
+   candidates now that entry sits at its midpoint).
 8. Reference size is 5 MNQ contracts, targeting ~$300/trade. The bot starts
    at a smaller size (`config.yaml: position_sizing.contract_size`) until a
    consistent win rate is shown; scaling back up to 5 is **manual only** --
@@ -124,19 +125,17 @@ review these and adjust `config.yaml` before running live.
 - **Stop-loss placement** (`src/risk.py`): the "large formed area of
   resistance/support" is interpreted as the nearest already-marked level
   beyond entry in the stop direction -- previous day high/low, Asia
-  high/low, London high/low, the opening range box edge, **or either
-  boundary of the 15m anchor FVG** (`strategy.py`'s `structural_levels`,
-  built when the trade signal fires). The 15m anchor's far edge is a
-  structural level in its own right -- a break of it invalidates the
-  whole setup -- so it's included alongside the marked levels; whichever
-  of all of these ends up nearest beyond entry becomes the stop
-  ("whatever makes sense based on the chart": the anchor's own bottom/top
-  if that's nearest, otherwise the next further-out break of structure).
-  The distance to that nearest level is **capped** at `max_stop_dollars`
-  (`config.yaml`, $200) converted to points at signal time
-  (`max_stop_dollars / (instrument.point_value * position_sizing.contract_size)`)
-  -- so the dollar risk per trade never exceeds $200 regardless of
-  contract size, even if the nearest structural level is farther out.
+  high/low, London high/low, or the opening range box edge
+  (`strategy.py`'s `structural_levels`, built when the trade signal
+  fires). Whichever of these ends up nearest beyond entry becomes the
+  stop. The distance to that nearest level is **capped** at
+  `max_stop_dollars` (`config.yaml`, $200) converted to points at signal
+  time (`max_stop_dollars / (instrument.point_value *
+  position_sizing.contract_size)`) -- so the dollar risk per trade never
+  exceeds $200 regardless of contract size, even if the nearest
+  structural level is farther out; if *no* marked level exists below
+  (long) or above (short) entry at all, the cap itself is used as the
+  stop distance outright.
   - Take-profit is always `2 x actual_stop_distance` (so smaller structural
     stops give a smaller, still-2:1, target -- this is why the target
     varies per trade rather than always chasing the reference $300).
@@ -146,13 +145,24 @@ review these and adjust `config.yaml` before running live.
     removed, see rule 5's revision history), the nearest structural level
     was often extremely close to entry, producing very shallow,
     easily-noise-triggered stops. Corrected 2026-07-04 to a
-    dollar-denominated cap and added the 15m anchor's own boundary as a
-    stop candidate, so the bot can use a wider, more sensible structural
-    stop -- the anchor's bottom/top, or the next break of structure
-    beyond it -- as long as it stays within $200. This stop logic was
-    unaffected by later removing the nested-entry stage: the anchor's own
-    boundary was already a stop candidate regardless of where inside it
-    the entry price landed.)
+    dollar-denominated cap and added the 15m anchor's own boundary
+    (`gap_low`/`gap_high`) as a stop candidate alongside the marked
+    levels, so the bot could use a wider, more sensible structural stop
+    -- the anchor's bottom/top, or the next break of structure beyond it
+    -- as long as it stayed within $200. Removed the anchor's own
+    boundary from the candidate list again 2026-07-04, the same day
+    entry was changed to the anchor's own midpoint (rule 5): once entry
+    sits exactly at the anchor's center, its near/far edges are always
+    exactly *half the anchor's own gap width* from entry -- pure
+    arithmetic, not a real break of structure -- and because that
+    distance is essentially guaranteed to be small, it silently
+    dominated the "nearest" comparison over the real, externally-marked
+    levels every time. Confirmed against 3 real losing trades from a
+    7-day backtest: stop distances of $55.75, $56.25, and $27.00 each
+    matched exactly half of that trade's own anchor gap width, while the
+    bot had up to $200 available and real structural levels sat farther
+    out unused. The anchor's own boundary is no longer a stop candidate;
+    only the marked previous-day/Asia/London/box levels are.)
 - **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on
   `FvgConfig.timeframe_minutes` where (a) the gap size is >=
   `min_gap_points` and (b) the middle (displacement) candle's body is >=

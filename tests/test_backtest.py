@@ -82,11 +82,13 @@ def breakout_15m_anchor_bars() -> list[Bar]:
 def test_backtest_records_a_win():
     cfg = load_test_config()
     bars = breakout_15m_anchor_bars()
-    # Stop is the 15m anchor's own bottom (105.3), the nearest structural
-    # level below entry (107.2) -- nearer than the previous-day high (105.0)
-    # -- so target is 107.2 + 2*(107.2-105.3) = 111.0.
-    # Runs up to the target (111.0) without dipping to the stop (105.3) first.
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.3, 107.1, 111.1))
+    # Stop candidates are only the marked previous-day/box levels now (the
+    # anchor's own edges are deliberately excluded -- see strategy.py: at
+    # entry=midpoint, they're always exactly half the anchor's own width
+    # away, not real structure). Nearest below entry (107.2) is the
+    # previous-day high (105.0), so target is 107.2 + 2*(107.2-105.0) = 111.6.
+    # Runs up to the target (111.6) without dipping to the stop (105.0) first.
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
 
     results = run_backtest(cfg, bars)
 
@@ -94,15 +96,15 @@ def test_backtest_records_a_win():
     assert results[0]["won"] is True
     assert results[0]["date"] == DAY.date()
     assert results[0]["entry_price"] == pytest.approx(107.2)
-    assert results[0]["stop_price"] == pytest.approx(105.3)
-    assert results[0]["target_price"] == pytest.approx(111.0)
+    assert results[0]["stop_price"] == pytest.approx(105.0)
+    assert results[0]["target_price"] == pytest.approx(111.6)
 
 
 def test_backtest_records_a_loss():
     cfg = load_test_config()
     bars = breakout_15m_anchor_bars()
-    # Drops to the stop (105.3, the 15m anchor's bottom) without reaching
-    # the target (111.0) first.
+    # Drops to the stop (105.0, the previous-day high) without reaching
+    # the target (111.6) first.
     bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.0, 107.2, 104.5, 105.0))
 
     results = run_backtest(cfg, bars)
@@ -123,7 +125,7 @@ def test_backtest_reports_no_trades_when_nothing_triggers():
 def test_funnel_stats_track_each_gate():
     cfg = load_test_config()
     bars = breakout_15m_anchor_bars()
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.3, 107.1, 111.1))
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
 
     stats: dict = {}
     run_backtest(cfg, bars, stats_out=stats)
@@ -198,7 +200,7 @@ def test_pnl_points_is_positive_for_a_short_win():
 def test_export_chart_json_writes_candles_and_levels(tmp_path):
     cfg = load_test_config()
     bars = breakout_15m_anchor_bars()
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.3, 107.1, 111.1))
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.json"
@@ -228,7 +230,7 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
 def test_export_chart_html_embeds_trade_data(tmp_path):
     cfg = load_test_config()
     bars = breakout_15m_anchor_bars()
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.3, 107.1, 111.1))
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.html"

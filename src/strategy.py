@@ -203,20 +203,25 @@ class OpeningRangeStrategy:
                 else bar.high >= self._pending_limit_price
             )
             if filled:
+                # Deliberately does NOT include the anchor FVG's own
+                # boundaries: now that entry sits exactly at the anchor's
+                # midpoint, its near/far edges are always exactly half the
+                # anchor's own gap width from entry -- a pure arithmetic
+                # consequence of where entry was defined, not a real break
+                # of structure. Left in, that half-gap distance was
+                # provably always the nearest candidate (checked against 3
+                # real losing trades: stop distances of $55.75/$56.25/$27
+                # matched exactly half the anchor's width in every case),
+                # so it silently overrode the marked previous-day/Asia/
+                # London/box levels even when those were legitimately
+                # closer to representing an actual invalidation and would
+                # have used much more of the $200 budget. Only the marked
+                # session levels and the box edges are real structure here.
                 structural_levels = list(self._levels.all_levels()) if self._levels else []
                 if self.box.high is not None:
                     structural_levels.append(self.box.high)
                 if self.box.low is not None:
                     structural_levels.append(self.box.low)
-                # The 15m anchor FVG's far boundary is itself a structural
-                # level -- a break of it invalidates the whole setup, so
-                # it's a sensible stop candidate alongside the marked
-                # previous-day/Asia/London/box levels ("the next break of
-                # structure" beyond it). Both edges are added; risk.py's
-                # nearest-beyond-entry filter picks whichever side (if
-                # either) actually applies for this trade's direction.
-                structural_levels.append(self._anchor_fvg.gap_low)
-                structural_levels.append(self._anchor_fvg.gap_high)
 
                 signal = EntrySignal(
                     direction=self._breakout_direction,
