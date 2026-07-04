@@ -73,7 +73,10 @@ def fetch_recent_bars(broker: ProjectXGatewayBroker, symbol: str, tz: ZoneInfo, 
     return all_bars
 
 
-def run_backtest(cfg: BotConfig, bars: list[Bar]) -> list[dict]:
+def run_backtest(cfg: BotConfig, bars: list[Bar], stats_out: dict | None = None) -> list[dict]:
+    """stats_out, if given, is populated with the strategy's funnel counters
+    (breakouts / strong_fvgs_in_direction / fvgs_at_key_level / fills) --
+    lets a zero-trade window be diagnosed instead of just reported."""
     strategy = OpeningRangeStrategy(cfg)
     tz = ZoneInfo(cfg.session.timezone)
     open_trade: dict | None = None
@@ -133,6 +136,8 @@ def run_backtest(cfg: BotConfig, bars: list[Bar]) -> list[dict]:
                 "fvg_gap_high": signal.fvg.gap_high,
             }
 
+    if stats_out is not None:
+        stats_out.update(strategy.stats)
     return results
 
 
@@ -175,6 +180,19 @@ def print_report(cfg: BotConfig, results: list[dict]) -> None:
     print("-" * len(header))
     overall_pct = 100 * total_wins / total_trades if total_trades else 0
     print(f"{'TOTAL':<12}{total_trades:<8}{total_wins:<6}{overall_pct:<8.0f}{total_pnl:<18.2f}")
+
+
+def print_funnel(stats: dict) -> None:
+    """Shows how many setups made it past each gate, so a zero-trade (or
+    low-trade) window can be diagnosed instead of just reported -- e.g.
+    "12 breakouts, 9 strong FVGs in the right direction, but only 1 ever
+    overlapped a marked key level, and it never retraced to fill" tells you
+    exactly which requirement is doing the filtering."""
+    print("\nFunnel (how many setups made it past each gate):")
+    print(f"  Breakouts (box broken, direction set):        {stats.get('breakouts', 0)}")
+    print(f"  Strong FVGs in the breakout direction:         {stats.get('strong_fvgs_in_direction', 0)}")
+    print(f"  ...of those, overlapping a marked key level:   {stats.get('fvgs_at_key_level', 0)}")
+    print(f"  ...of those, price retraced to fill the limit: {stats.get('fills', 0)}")
 
 
 def print_trade_detail(results: list[dict]) -> None:
@@ -289,8 +307,10 @@ def main() -> None:
     bars = fetch_recent_bars(broker, cfg.instrument.symbol, tz, args.days)
     print(f"Fetched {len(bars)} bars. Running backtest...\n")
 
-    results = run_backtest(cfg, bars)
+    stats: dict = {}
+    results = run_backtest(cfg, bars, stats_out=stats)
     print_report(cfg, results)
+    print_funnel(stats)
     if args.verbose:
         print_trade_detail(results)
     if args.chart_json:

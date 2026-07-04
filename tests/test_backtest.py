@@ -84,6 +84,52 @@ def test_backtest_reports_no_trades_when_nothing_triggers():
     assert results == []
 
 
+def test_funnel_stats_track_each_gate():
+    cfg = load_test_config()
+    bars = breakout_key_level_fvg_bars()
+    bars.append(bar(41, 103.0, 107.0, 102.8, 106.5))
+
+    stats: dict = {}
+    run_backtest(cfg, bars, stats_out=stats)
+
+    assert stats == {
+        "breakouts": 1,
+        "strong_fvgs_in_direction": 1,
+        "fvgs_at_key_level": 1,
+        "fills": 1,
+    }
+
+
+def test_funnel_stats_show_fvg_found_but_no_key_level_match():
+    """A breakout with a strong, correctly-directed FVG that never overlaps
+    a key level should show up as a near-miss: breakout + FVG counted, but
+    zero at fvgs_at_key_level and zero fills."""
+    cfg = load_test_config()
+    bars = [
+        Bar(timestamp=PREV_DAY_BASE, open=100.0, high=101.0, low=99.0, close=100.0),
+        Bar(timestamp=PREV_DAY_BASE + timedelta(minutes=15), open=100.0, high=105.0, low=100.0, close=104.0),
+        Bar(timestamp=PREV_DAY_BASE + timedelta(minutes=30), open=100.0, high=101.0, low=95.0, close=98.0),
+    ]
+    for i in range(15):
+        bars.append(bar(i, 100.0, 101.0, 99.5, 100.5))
+    bars.append(bar(15, 100.5, 101.2, 100.0, 100.8))
+    bars.append(bar(16, 100.8, 103.0, 100.7, 102.5))
+    for i in range(17, 37):
+        bars.append(bar(i, 103.0, 103.5, 102.5, 103.0))
+    bars.append(bar(37, 109.5, 110.0, 109.3, 109.8))
+    bars.append(bar(38, 109.8, 114.2, 109.7, 114.0))
+    bars.append(bar(39, 114.0, 114.5, 113.0, 114.2))
+
+    stats: dict = {}
+    results = run_backtest(cfg, bars, stats_out=stats)
+
+    assert results == []
+    assert stats["breakouts"] == 1
+    assert stats["strong_fvgs_in_direction"] == 1
+    assert stats["fvgs_at_key_level"] == 0
+    assert stats["fills"] == 0
+
+
 def test_pnl_points_is_negative_for_a_long_loss():
     trade = {"direction": "long", "entry_price": 104.6, "stop_price": 101.0, "target_price": 111.8, "won": False}
     assert _pnl_points(trade) == pytest.approx(-3.6)

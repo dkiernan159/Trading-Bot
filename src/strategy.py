@@ -57,6 +57,16 @@ class OpeningRangeStrategy:
         self._pending_fvg: FairValueGap | None = None
         self._pending_limit_price: float | None = None
 
+        # Funnel counters -- how many setups made it past each gate. Lets
+        # you tell "nothing happened" apart from "something almost
+        # happened" when a backtest window produces zero trades.
+        self.stats = {
+            "breakouts": 0,
+            "strong_fvgs_in_direction": 0,
+            "fvgs_at_key_level": 0,
+            "fills": 0,
+        }
+
     @property
     def current_session_levels(self) -> SessionLevelSet | None:
         """Previous-day/Asia/London levels marked for the trading day in
@@ -97,16 +107,21 @@ class OpeningRangeStrategy:
             if self.box.high is not None and bar.close > self.box.high:
                 self._breakout_direction = Direction.LONG
                 self.state = State.WAIT_KEY_LEVEL_FVG
+                self.stats["breakouts"] += 1
             elif self.box.low is not None and bar.close < self.box.low:
                 self._breakout_direction = Direction.SHORT
                 self.state = State.WAIT_KEY_LEVEL_FVG
+                self.stats["breakouts"] += 1
             return None
 
         if self.state is State.WAIT_KEY_LEVEL_FVG:
-            if fvg is not None and fvg.direction is self._breakout_direction and self._fvg_contains_key_level(fvg):
-                self._pending_fvg = fvg
-                self._pending_limit_price = (fvg.gap_low + fvg.gap_high) / 2
-                self.state = State.WAIT_FILL
+            if fvg is not None and fvg.direction is self._breakout_direction:
+                self.stats["strong_fvgs_in_direction"] += 1
+                if self._fvg_contains_key_level(fvg):
+                    self.stats["fvgs_at_key_level"] += 1
+                    self._pending_fvg = fvg
+                    self._pending_limit_price = (fvg.gap_low + fvg.gap_high) / 2
+                    self.state = State.WAIT_FILL
             return None
 
         if self.state is State.WAIT_FILL:
@@ -132,6 +147,7 @@ class OpeningRangeStrategy:
                 self.state = State.IN_TRADE
                 self._pending_fvg = None
                 self._pending_limit_price = None
+                self.stats["fills"] += 1
                 return signal
             return None
 
