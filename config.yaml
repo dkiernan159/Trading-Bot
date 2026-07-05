@@ -127,10 +127,12 @@ broker:
   provider: projectx_gateway
   base_url: https://api.topstepx.com
   realtime_base_url: https://rtc.topstepx.com
-  # SAFETY: keep this true until you've verified order placement against a
-  # paper/sim account -- see the module docstring in
-  # src/broker/projectx_gateway.py for exactly what's unverified.
-  dry_run: true
+  # Flipped to false 2026-07-05 with explicit user go-ahead, to place real
+  # orders on their TopstepX combine (evaluation) account -- see the
+  # module docstring in src/broker/projectx_gateway.py for what's still
+  # unverified against the live API (watch the terminal's [LIVE] lines on
+  # first run) and STRATEGY.md's "Before going live" section.
+  dry_run: false
 
 dashboard:
   # Binds to localhost only -- view it via an SSH local port-forward
