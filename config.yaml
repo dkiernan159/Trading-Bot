@@ -144,4 +144,7 @@ dashboard:
   # read and always served fresh on every request -- only the backtest
   # section is throttled, since it costs real API calls.
   refresh_interval_seconds: 1800  # 30 minutes
-  backtest_days: 7
+  backtest_days: 30  # widened from 7 2026-07-05 -- a 7-day window has repeatedly shown as few as 2-6 trades
+                      # throughout this project's tuning (sometimes all wins by chance), which read as "the
+                      # dashboard is hiding losses" but was really just a small, currently-lucky sample. 30
+                      # days matches the window most of this project's real backtests were tuned against.
