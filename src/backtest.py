@@ -22,6 +22,7 @@ Caveats:
 
 import argparse
 import json
+import time as time_module
 from collections import defaultdict
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -72,7 +73,17 @@ def fetch_recent_bars(broker: ProjectXGatewayBroker, symbol: str, tz: ZoneInfo, 
     # previous-day high/low to use as a structural stop level.
     day = (now - timedelta(days=days + 2)).replace(hour=0, minute=0, second=0, microsecond=0)
     all_bars: list[Bar] = []
+    first = True
     while day.date() <= now.date():
+        # A small proactive gap between requests -- one /History/retrieveBars
+        # call per calendar day in the window, so a wide `days` value means
+        # many requests fired in a row. Added 2026-07-05 after widening
+        # dashboard.backtest_days from 7 to 30 (9 -> 32 requests) tripped
+        # TopstepX's rate limit; _post also retries with backoff on a 429
+        # that gets through anyway.
+        if not first:
+            time_module.sleep(0.25)
+        first = False
         day_end = min(day + timedelta(days=1), now)
         all_bars.extend(broker.fetch_historical_bars(symbol, day, day_end))
         day += timedelta(days=1)

@@ -148,3 +148,7 @@ dashboard:
                       # throughout this project's tuning (sometimes all wins by chance), which read as "the
                       # dashboard is hiding losses" but was really just a small, currently-lucky sample. 30
                       # days matches the window most of this project's real backtests were tuned against.
+                      # NOTE: fetch_recent_bars makes one /History/retrieveBars call per calendar day in this
+                      # window (32 requests at 30 days, incl. the 2-day buffer) -- this real widening tripped
+                      # TopstepX's rate limit (429) the same day, fixed via retry-with-backoff in
+                      # ProjectXGatewayBroker._post plus a small proactive delay between requests.

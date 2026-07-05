@@ -125,15 +125,26 @@ class ProjectXGatewayBroker(Broker):
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
 
-    def _post(self, path: str, body: dict) -> dict:
-        response = requests.post(
-            f"{self.base_url}{API_PATH}{path}", json=body, headers=self._headers(), timeout=10
-        )
-        response.raise_for_status()
-        data = response.json()
-        if data.get("success") is False:
-            raise RuntimeError(f"{path} failed: {data.get('errorMessage') or data}")
-        return data
+    def _post(self, path: str, body: dict, max_retries: int = 4) -> dict:
+        # Retries on 429 (rate limited) with exponential backoff (1s, 2s,
+        # 4s, 8s) -- added 2026-07-05 after widening dashboard.backtest_days
+        # from 7 to 30 tripped TopstepX's rate limit: fetch_recent_bars
+        # makes one /History/retrieveBars call per calendar day in the
+        # window with no delay between them, so 9 quick requests (7+2
+        # buffer days) became 32 (30+2), which is enough to get throttled.
+        # Any other error status still raises immediately, unretried.
+        for attempt in range(max_retries + 1):
+            response = requests.post(
+                f"{self.base_url}{API_PATH}{path}", json=body, headers=self._headers(), timeout=10
+            )
+            if response.status_code == 429 and attempt < max_retries:
+                time_module.sleep(2**attempt)
+                continue
+            response.raise_for_status()
+            data = response.json()
+            if data.get("success") is False:
+                raise RuntimeError(f"{path} failed: {data.get('errorMessage') or data}")
+            return data
 
     def _resolve_contract(self, symbol: str) -> str:
         if self._contract_id is not None:
