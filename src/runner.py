@@ -69,6 +69,18 @@ class Runner:
             stop_price=bracket.stop_price,
             target_price=bracket.target_price,
         )
+        if order_id is None:
+            # The signal fired (backtest-equivalent: the bar-level check
+            # says price touched entry_price), but the live broker's
+            # resting entry order never actually got filled -- e.g. price
+            # had already moved on by the time the order reached the
+            # exchange, given the ~60s lag between a bar closing and the
+            # order being placed. strategy.py already moved to IN_TRADE
+            # internally the moment it returned this signal; tell it
+            # nothing was actually taken so it goes back to hunting
+            # instead of sitting stuck in a phantom trade all day.
+            self.strategy.notify_entry_not_filled()
+            return
         self.current_order_id = order_id
         self.current_trade = Trade(
             direction=signal.direction,

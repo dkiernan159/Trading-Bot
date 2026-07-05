@@ -416,6 +416,26 @@ class OpeningRangeStrategy:
         self._pending_limit_price = None
         self.state = State.WAIT_BREAKOUT
 
+    def notify_entry_not_filled(self) -> None:
+        """Live trading only: on_bar transitions to IN_TRADE the instant it
+        returns a signal, since in backtest a signal always means a real
+        fill (the bar-level check IS the fill). Live, a resting limit order
+        placed off that same signal can still fail to actually fill at the
+        broker -- price may have moved on in the ~60s it takes to detect a
+        closed bar and place the order. Runner calls this when that
+        happens, so the state machine doesn't get stuck believing it's in a
+        trade that was never actually taken.
+
+        Deliberately not the same as notify_trade_closed(won=False): no
+        win/loss occurred, so the stand-down-after-loss / stand-down-after-
+        win flags don't apply, and the breakout thesis itself is still
+        intact -- this goes back to WAIT_5M_FVG to keep hunting within the
+        same breakout, not all the way back to WAIT_BREAKOUT."""
+        self._anchor_fvg = None
+        self._anchor_started_at = None
+        self._pending_limit_price = None
+        self.state = State.WAIT_5M_FVG
+
     def _start_new_day(self, trading_date: date, bar_timestamp: datetime) -> None:
         self._trading_date = trading_date
         # Defensive: normally an anchor is already closed out for

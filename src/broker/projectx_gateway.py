@@ -7,10 +7,15 @@ public ProjectX API docs (https://gateway.docs.projectx.com/) and the
 open-source project-x-py SDK (https://github.com/TexasCoding/project-x-py),
 which wraps this same API -- see STRATEGY.md for the full source list.
 Still UNVERIFIED (the docs portal itself 403's an unauthenticated fetch, so
-these need a live check tomorrow once you're logged in with API access):
+these need a live check once you're logged in with API access) -- the
+first few real-time trades and every /Order/searchOpen call print their
+raw payload for exactly this reason; watch the terminal on first run:
 
   - The exact field names inside a `GatewayTrade` real-time event (price /
     volume / timestamp keys are guessed defensively in _on_trade_event).
+    If every event logs the "no price/lastPrice key" warning, no bars are
+    being built at all -- fix the field names before trusting anything
+    else here.
   - The exact response envelope key for `/Order/searchOpen` (assumed here
     to be "orders").
   - Whether `linkedOrderId` alone makes the gateway auto-cancel the sibling
@@ -18,6 +23,20 @@ these need a live check tomorrow once you're logged in with API access):
     Because this is unverified, poll_order_status() does NOT rely on it --
     it explicitly cancels the sibling leg itself once one leg disappears
     from the open-orders list.
+
+The entry leg is a real LIMIT order at the strategy's own entry_price, not
+a MARKET order -- every stop/target/R:R calculation in this bot assumes
+entry happens at that exact price. Since the strategy only reacts once a
+full 1-minute bar has closed (up to ~60s after the actual touch), the
+resting limit order can simply fail to fill if price already moved on --
+place_bracket_order returns None in that case (not an exception), and
+Runner.notify_entry_not_filled() tells the strategy to keep hunting rather
+than getting stuck believing it's in a trade that was never taken. This
+is a stopgap for a known limitation, not a complete fix: a fully correct
+implementation would place the resting order the moment an anchor is
+picked (before any bar confirms a touch) and react to the exchange's own
+fill notification, removing the detection lag entirely -- not done here,
+flagged as a follow-up in STRATEGY.md.
 
 `dry_run` defaults to True: orders are logged, never sent, until you flip
 it off in config.yaml after verifying the above against a paper/sim
@@ -40,7 +59,7 @@ API_PATH = "/api"
 REALTIME_MARKET_HUB = "/hubs/market"
 
 ORDER_TYPE_LIMIT = 1
-ORDER_TYPE_MARKET = 2
+ORDER_TYPE_MARKET = 2  # unused -- entry is a real LIMIT order, not MARKET; see place_bracket_order
 ORDER_TYPE_STOP = 4
 
 ORDER_SIDE_BUY = 0
@@ -71,6 +90,12 @@ class ProjectXGatewayBroker(Broker):
         self._current_bar: dict | None = None
         self._brackets: dict[str, dict] = {}
         self._next_bracket_id = 1
+        # Print the raw payload the first few times these unverified,
+        # live-only paths are hit, so a wrong field-name/envelope guess is
+        # immediately visible in the terminal instead of silently no-op'ing
+        # (see _on_trade_event / _fetch_open_order_ids).
+        self._trade_event_log_count = 0
+        self._order_search_log_count = 0
 
     # -- auth / setup ------------------------------------------------------
 
@@ -175,6 +200,9 @@ class ProjectXGatewayBroker(Broker):
     def _on_trade_event(self, args) -> None:
         events = args if isinstance(args, list) else [args]
         for event in events:
+            if self._trade_event_log_count < 5:
+                self._trade_event_log_count += 1
+                print(f"[LIVE] raw GatewayTrade event #{self._trade_event_log_count} (verify field names): {event}")
             if not isinstance(event, dict):
                 continue
             # TODO: verify these field names against a real GatewayTrade payload.
@@ -182,6 +210,12 @@ class ProjectXGatewayBroker(Broker):
             volume = event.get("volume", event.get("size", 0))
             ts_raw = event.get("timestamp", event.get("time"))
             if price is None:
+                if self._trade_event_log_count <= 5:
+                    print(
+                        "[LIVE] WARNING: no 'price'/'lastPrice' key found on the event above -- "
+                        "this tick is being silently dropped. No bars will be built if every "
+                        "event looks like this; fix the field names in _on_trade_event."
+                    )
                 continue
             if isinstance(ts_raw, str):
                 ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
@@ -220,15 +254,15 @@ class ProjectXGatewayBroker(Broker):
         entry_price: float,
         stop_price: float,
         target_price: float,
-    ) -> str:
+    ) -> str | None:
         bracket_id = str(self._next_bracket_id)
         self._next_bracket_id += 1
 
         if self.dry_run:
             self._brackets[bracket_id] = {"status": "open", "dry_run": True}
             print(
-                f"[DRY RUN] would enter {direction.value} x{contracts} @ market "
-                f"(ref {entry_price}), stop={stop_price}, target={target_price}"
+                f"[DRY RUN] would enter {direction.value} x{contracts} @ limit "
+                f"{entry_price}, stop={stop_price}, target={target_price}"
             )
             return bracket_id
 
@@ -236,18 +270,38 @@ class ProjectXGatewayBroker(Broker):
         entry_side = ORDER_SIDE_BUY if direction is Direction.LONG else ORDER_SIDE_SELL
         protective_side = ORDER_SIDE_SELL if direction is Direction.LONG else ORDER_SIDE_BUY
 
+        # A real resting LIMIT order at entry_price, not a MARKET order --
+        # every stop/target/R:R calculation in this bot assumes entry
+        # happens at that exact price (the "always fills before it could
+        # be mitigated" proof depends on it). A market order would instead
+        # pay whatever price is current when it executes, which can be
+        # meaningfully away from entry_price given the strategy only
+        # reacts once a full 1-minute bar has closed (up to ~60s after
+        # the actual touch). Fixed 2026-07-04 before the first live
+        # session, at the user's direction, after finding this mismatch.
+        print(f"[LIVE] placing entry LIMIT {direction.value} x{contracts} @ {entry_price}")
         entry_resp = self._post(
             "/Order/place",
             {
                 "accountId": self.account_id,
                 "contractId": contract_id,
-                "type": ORDER_TYPE_MARKET,
+                "type": ORDER_TYPE_LIMIT,
                 "side": entry_side,
                 "size": contracts,
+                "limitPrice": entry_price,
                 "customTag": f"entry-{bracket_id}",
             },
         )
-        self._wait_for_fill(entry_resp["orderId"])
+        entry_order_id = entry_resp["orderId"]
+        print(f"[LIVE] entry order placed: id={entry_order_id}, response={entry_resp}")
+
+        if not self._wait_for_fill(entry_order_id):
+            print(
+                f"[LIVE] entry order {entry_order_id} did not fill within the timeout -- "
+                "cancelling, no trade taken this signal."
+            )
+            self._cancel_order(entry_order_id)
+            return None
 
         stop_resp = self._post(
             "/Order/place",
@@ -283,16 +337,29 @@ class ProjectXGatewayBroker(Broker):
         }
         return bracket_id
 
-    def _wait_for_fill(self, order_id, timeout_seconds: float = 10.0, poll_interval: float = 0.5) -> None:
+    def _wait_for_fill(self, order_id, timeout_seconds: float = 20.0, poll_interval: float = 0.5) -> bool:
+        """Blocks (synchronously, on the real-time callback thread) waiting
+        for a resting entry order to fill. Bounded well under the ~60s bar
+        interval so it doesn't badly delay processing of the next bar --
+        this is a stopgap, not a proper async design; a fully correct
+        implementation would place the resting order the moment an anchor
+        is picked (before any bar confirms a touch) and react to the
+        exchange's own fill notification, removing this block and the
+        detection lag entirely. Returns False (not an exception) on
+        timeout -- a miss here is a normal, expected outcome (price may
+        simply have moved on), not an error."""
         deadline = time_module.monotonic() + timeout_seconds
         while time_module.monotonic() < deadline:
             if order_id not in self._fetch_open_order_ids():
-                return
+                return True
             time_module.sleep(poll_interval)
-        raise RuntimeError(f"Entry order {order_id} did not fill within {timeout_seconds}s")
+        return False
 
     def _fetch_open_order_ids(self) -> set:
         data = self._post("/Order/searchOpen", {"accountId": self.account_id})
+        if self._order_search_log_count < 3:
+            self._order_search_log_count += 1
+            print(f"[LIVE] /Order/searchOpen raw response (verify envelope key): {data}")
         # TODO: confirm the response envelope key -- assumed "orders".
         return {o["id"] for o in data.get("orders", [])}
 

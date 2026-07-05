@@ -353,6 +353,48 @@ def test_reenters_after_stop_out_when_setup_reforms():
     assert strategy.state is State.WAIT_5M_FVG
 
 
+def test_notify_entry_not_filled_keeps_hunting_within_the_same_breakout():
+    """Live trading only: a resting limit order can fail to actually fill
+    even after on_bar already committed to IN_TRADE (see
+    notify_entry_not_filled's own docstring). Unlike a real stop-out, this
+    must not reset all the way back to WAIT_BREAKOUT -- the breakout
+    thesis itself was never invalidated, only this one entry attempt
+    didn't happen -- and a fresh anchor must still be found and filled
+    afterward within that same breakout."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
+    midpoint = (anchor_low + anchor_high) / 2
+
+    fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    signal = strategy.on_bar(bar_at(fill_time, anchor_high, anchor_high + 0.1, anchor_low, anchor_low + 0.1))
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(midpoint)
+    assert strategy.state is State.IN_TRADE
+
+    strategy.notify_entry_not_filled()
+    assert strategy.state is State.WAIT_5M_FVG
+    assert strategy._breakout_direction is Direction.LONG  # not reset -- same breakout thesis
+
+    # A second, distinct anchor further along the same LONG move -- no new
+    # breakout needed -- still gets found and can still fill normally.
+    second_start = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=20)
+    second_low, second_high = feed_large_5m_fvg(strategy, second_start, quiet_price=109.6, c1_end=113.3)
+    second_midpoint = (second_low + second_high) / 2
+
+    second_fill_time = second_start + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    signal = strategy.on_bar(
+        bar_at(second_fill_time, second_high, second_high + 0.1, second_low, second_low + 0.1)
+    )
+
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(second_midpoint)
+    assert strategy.state is State.IN_TRADE
+
+
 def test_breakout_invalidated_when_price_closes_back_through_opposite_box_edge():
     """If price fully reverses -- closing back through the box's *opposite*
     edge -- while still waiting on an anchor/entry, the original breakout

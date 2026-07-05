@@ -27,9 +27,13 @@ class Broker(ABC):
         entry_price: float,
         stop_price: float,
         target_price: float,
-    ) -> str:
+    ) -> str | None:
         """Submit an entry + protective stop + take-profit as one bracket.
-        Returns a broker-assigned order/trade id."""
+        Returns a broker-assigned order/trade id, or None if the entry
+        itself never actually filled (e.g. a resting limit order that
+        never got touched before timing out) -- no stop/target legs are
+        placed in that case, since there's no position to protect. Callers
+        must treat None as "no trade was taken," not an error."""
 
     @abstractmethod
     def poll_order_status(self, order_id: str) -> str:

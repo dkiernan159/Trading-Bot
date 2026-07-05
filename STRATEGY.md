@@ -509,13 +509,41 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
     always uses `live: false`.
 
   Still **unverified** -- the docs portal 403's an unauthenticated fetch,
-  so these need a live check once you're logged in:
+  so these need a live check once you're logged in. The first few
+  real-time trade events and every `/Order/searchOpen` call print their
+  raw payload for exactly this reason (`src/broker/projectx_gateway.py`)
+  -- watch the terminal on first run:
   - Exact field names inside a `GatewayTrade` payload (guessed defensively).
   - The exact response envelope key for `/Order/searchOpen` (assumed
     `"orders"`).
   - Whether `linkedOrderId` makes the gateway auto-cancel the sibling
     bracket leg. Not relied upon either way -- `poll_order_status()`
     explicitly cancels the sibling leg itself once one fills.
+
+  **Entry order type (fixed 2026-07-04, before the first live session):**
+  the entry leg was originally a MARKET order, placed once `Runner.on_bar`
+  detected (from a closed bar) that price had touched `entry_price` --
+  but every stop/target/R:R calculation in this bot assumes entry happens
+  at that *exact* price, and a market order pays whatever price is
+  current when it executes, which can be meaningfully different given
+  the strategy only reacts once a full 1-minute bar has closed (up to
+  ~60s after the actual touch). Found and fixed at the user's explicit
+  direction before allowing real orders on their account -- the entry leg
+  is now a real LIMIT order at `entry_price`. This can still simply fail
+  to fill if price already moved on by the time the order reaches the
+  exchange; `place_bracket_order` returns `None` in that case (not an
+  exception) rather than chasing with a worse-priced market order, and
+  `Runner._enter_trade` calls `strategy.notify_entry_not_filled()` so the
+  state machine goes back to hunting instead of getting stuck believing
+  it's in a trade that doesn't exist (see that method's docstring --
+  `on_bar` moves to `IN_TRADE` the instant it returns a signal, since in
+  backtest a signal always means a real fill; live, it doesn't
+  necessarily). This is a stopgap for a real, known limitation, not a
+  complete fix: a fully correct implementation would place the resting
+  order the moment an anchor is picked (before any bar confirms a touch)
+  and react to the exchange's own fill notification, removing the ~60s
+  detection lag entirely -- not done here, a real follow-up once the
+  current fix has been watched run for a while.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover
