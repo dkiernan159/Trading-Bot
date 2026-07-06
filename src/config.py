@@ -48,6 +48,15 @@ class ReentryConfig:
 
 
 @dataclass
+class OvernightConfig:
+    enabled: bool
+    anchor_15m: FvgConfig
+    anchor_30m: FvgConfig
+    entry_5m: FvgConfig
+    entry_1m: FvgConfig
+
+
+@dataclass
 class StrategyConfig:
     reward_risk_ratio: float
     target_dollars_at_reference_size: float
@@ -58,6 +67,7 @@ class StrategyConfig:
     fvg: FvgConfig
     entry_fvg: FvgConfig
     reentry: ReentryConfig
+    overnight: OvernightConfig
 
 
 @dataclass
@@ -130,6 +140,13 @@ def load_config(path: str | Path = "config.yaml") -> BotConfig:
         fvg=FvgConfig(**strat["fvg"]),
         entry_fvg=FvgConfig(**strat["entry_fvg"]),
         reentry=ReentryConfig(**strat["reentry"]),
+        overnight=OvernightConfig(
+            enabled=strat["overnight"]["enabled"],
+            anchor_15m=FvgConfig(**strat["overnight"]["anchor_15m"]),
+            anchor_30m=FvgConfig(**strat["overnight"]["anchor_30m"]),
+            entry_5m=FvgConfig(**strat["overnight"]["entry_5m"]),
+            entry_1m=FvgConfig(**strat["overnight"]["entry_1m"]),
+        ),
     )
 
     position_sizing = PositionSizingConfig(**raw["position_sizing"])

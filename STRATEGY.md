@@ -466,6 +466,78 @@ review these and adjust `config.yaml` before running live.
   funded/evaluation account where breaching a drawdown rule can end the
   account. Disable/adjust freely in `config.yaml`.
 
+## Overnight momentum strategy (Asia/London, added 2026-07-05)
+
+A second, parallel strategy (`src/overnight_strategy.py`, `OvernightMomentumStrategy`)
+runs during Asia (19:00-23:59 ET, the evening before the trading date) and
+London (02:00-05:00 ET) hours, at your explicit request to let the bot trade
+overnight while you sleep, on top of -- not instead of -- the 9:30 ORB
+strategy above. The two run as independent instances fed the same bars;
+neither knows the other exists.
+
+Unlike the day strategy, there is no box or breakout here -- there's nothing
+at 19:00 or 02:00 to form a box against. Instead:
+
+1. **Anchor (sets direction directly):** a large, unmitigated fair value gap
+   on a 15-minute or 30-minute candle (pooled -- whichever qualifies first,
+   same "whichever detector qualifies" pattern as the day strategy's 5m/1m
+   anchor pooling) is watched for in *either* direction. Whichever one forms
+   first sets the trade direction on the spot -- there's no separate
+   confirmation step, since (per your explicit answer) the anchor FVG *is*
+   the momentum signal here, playing the same role the 9:30 breakout plays
+   in the day strategy.
+2. **Nested entry (the precise trigger):** once the anchor locks in, the bot
+   waits for a *smaller* fair value gap -- 5-minute or 1-minute, pooled --
+   whose own midpoint falls inside the anchor's gap, and which forms
+   strictly *after* the anchor locked in (per your explicit answer: a
+   coincidentally-overlapping gap that was already sitting there when the
+   anchor confirmed doesn't count as a genuine retest). That nested gap's
+   own midpoint (or a shallower retracement, same `entry_retracement_pct`
+   as the day strategy) is where a limit order rests.
+3. Same 2:1 reward:risk and the same $40-$200 stop band as the day strategy
+   (`compute_stop_target`, shared code) -- the anchor's own gap edges count
+   as real structural stop candidates here (unlike the day strategy, where
+   entry price is a fixed fraction of the anchor's own width, making the
+   anchor's edges a deterministic, not-really-structural distance from
+   entry; here entry is the *nested* FVG's midpoint, so the large anchor's
+   edges are genuine independent structure).
+4. Both the anchor and the nested entry are kept "live" while waiting --
+   a nearer/fresher candidate supersedes an older one, mirroring the day
+   strategy's WAIT_FILL behavior, rather than freezing on the first pick.
+   If the anchor itself becomes mitigated with nothing in the same
+   direction to replace it, the whole thesis is invalidated and the hunt
+   restarts from scratch, direction included.
+
+This resurrects a nested-FVG design tried and removed earlier in this
+project (see git history, commits `94270f2`..`d1e1bd4`) -- it was removed
+there for being the tightest bottleneck in the *day* funnel (box breakout +
+large 15m anchor + nested 5m entry, stacked, left almost nothing surviving
+to a fill). It's revived here re-scoped to hours where there's no box to
+stack on top of in the first place, and where you explicitly want fewer,
+higher-conviction overnight trades rather than the day strategy's frequency
+target -- but this is a real, structural risk carried over from that
+history, and this design is genuinely untested against real Asia/London
+data.
+
+**Status: backtest-only.** Run it via:
+
+```
+python -m src.backtest --overnight --days 30 --verbose --near-miss
+```
+
+This is **not** wired into `runner.py`/live trading -- per your explicit
+choice ("backtest first, review, then go live"), it stays backtest-only
+until you've reviewed real results. `config.yaml`'s
+`strategy.overnight.enabled` flag only gates the `--overnight` backtest CLI
+mode; it has no effect on live trading either way.
+
+The FVG thresholds in `strategy.overnight` (`anchor_15m`, `anchor_30m`,
+`entry_5m`, `entry_1m`) are fresh ASSUMPTIONS with no real-data backing yet
+-- `entry_1m.min_gap_points` borrows the day strategy's own real-data-tuned
+value (12) as a starting point since it's the same instrument/timeframe,
+but Asia/London's volatility profile may not match NY hours at all. Retune
+all of these from a real backtest before trusting the results.
+
 ## Architecture
 
 ```
@@ -555,6 +627,9 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
 - `src/session_levels.py`, `src/opening_range.py`, `src/fvg.py` -- level
   marking, box tracking, and FVG detection respectively.
 - `src/runner.py` -- wires it all together into a run loop.
+- `src/overnight_strategy.py` -- the Asia/London overnight momentum
+  strategy described above. Backtest-only for now (`src/backtest.py
+  --overnight`); not wired into `runner.py`.
 
 ## Before going live
 

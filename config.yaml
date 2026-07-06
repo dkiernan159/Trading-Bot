@@ -114,6 +114,54 @@ strategy:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
     allow_new_setup_after_win: false    # ASSUMPTION: stand down for the day after a winner (change if wrong)
 
+  overnight:                       # ASSUMPTION (added 2026-07-05): a second, parallel strategy for the
+                                    # Asia (19:00-23:59 ET prior evening) / London (02:00-05:00 ET) hours,
+                                    # per your explicit request to trade overnight while you sleep. Unlike
+                                    # the 9:30 ORB strategy, there's no box/breakout here -- direction is
+                                    # set directly by whichever large (15m or 30m, pooled) FVG forms first
+                                    # (your confirmed answer), then a smaller (5m or 1m, pooled) FVG nested
+                                    # inside that anchor's own gap, forming only *after* the anchor locks in
+                                    # (your confirmed answer), is the precise entry. Same 2:1 reward:risk
+                                    # and the same $40-$200 stop band as the day strategy (strategy.
+                                    # max_stop_dollars / min_stop_dollars above) -- this section only adds
+                                    # the FVG thresholds specific to the overnight anchor/entry stages.
+                                    # This resurrects the project's own earlier nested-FVG design (removed
+                                    # 2026-07-04 for being the tightest bottleneck in the *day* funnel) but
+                                    # re-scoped to hours where there's no box to anchor against anyway, so
+                                    # the failure mode that got it removed doesn't directly apply here --
+                                    # still genuinely untested against real Asia/London data.
+                                    # NOTE: backtest-only for now (see src/overnight_strategy.py and
+                                    # `python -m src.backtest --overnight`) -- per your explicit choice to
+                                    # review real backtest evidence first, this is NOT wired into
+                                    # runner.py/live trading yet regardless of the flag below.
+    enabled: true                  # gates src/backtest.py's --overnight mode only; no effect on live trading
+    anchor_15m:                    # large-timeframe anchor, stage 1: sets direction, no box/breakout needed
+      timeframe_minutes: 15
+      min_gap_points: 2.0          # ASSUMPTION: same as the old (removed) 15m anchor threshold used in the
+                                    # day strategy's own earlier nested design -- retune from a real backtest.
+      displacement_multiplier: 1.0
+      lookback_bars: 8
+    anchor_30m:                    # alternative, coarser-timeframe anchor -- pooled alongside anchor_15m,
+                                    # same "whichever qualifies" pattern as the day strategy's 5m/1m pooling.
+      timeframe_minutes: 30
+      min_gap_points: 4.0          # ASSUMPTION: roughly double anchor_15m's, scaled for the coarser candle
+      displacement_multiplier: 1.0
+      lookback_bars: 8
+    entry_5m:                      # nested nested entry, stage 2: must form after the anchor locks in, its
+                                    # own midpoint contained within the anchor's gap (see overnight_strategy.py)
+      timeframe_minutes: 5
+      min_gap_points: 1.5          # ASSUMPTION: same as the day strategy's fvg.min_gap_points
+      displacement_multiplier: 1.0
+      lookback_bars: 8
+    entry_1m:                      # alternative, finer-timeframe nested entry -- pooled alongside entry_5m
+      timeframe_minutes: 1
+      min_gap_points: 12           # ASSUMPTION: reuses the day strategy's real-data-tuned entry_fvg
+                                    # threshold (see entry_fvg.min_gap_points above) as a starting point,
+                                    # since it's the same instrument/timeframe -- retune once real Asia/
+                                    # London backtests exist; this window's volatility profile may differ.
+      displacement_multiplier: 1.0
+      lookback_bars: 8
+
 position_sizing:
   contract_size: 1        # START SMALL per your instructions. Bot never changes this itself.
   scaling: manual_only     # you bump this to 5 yourself once win rate is proven

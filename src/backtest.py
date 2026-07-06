@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 from src.broker.projectx_gateway import ProjectXGatewayBroker
 from src.config import BotConfig, load_config
 from src.models import Bar, Direction
+from src.overnight_strategy import OvernightMomentumStrategy
 from src.risk import compute_stop_target
 from src.strategy import AnchorRecord, OpeningRangeStrategy
 
@@ -52,6 +53,12 @@ def parse_args() -> argparse.Namespace:
         help="Print every anchor that formed but never filled, with why it ended (superseded by a "
         "fresher anchor, the breakout thesis was invalidated, or the session ran out of time) -- "
         "diagnoses what's actually happening to the anchors that don't become trades.",
+    )
+    parser.add_argument(
+        "--overnight",
+        action="store_true",
+        help="Backtest the Asia/London overnight momentum strategy (src/overnight_strategy.py) instead "
+        "of the 9:30 ORB strategy -- a separate, parallel strategy, not wired into live trading yet.",
     )
     parser.add_argument(
         "--chart-json",
@@ -172,6 +179,90 @@ def run_backtest(
     return results
 
 
+def run_overnight_backtest(
+    cfg: BotConfig,
+    bars: list[Bar],
+    stats_out: dict | None = None,
+    anchor_history_out: list[AnchorRecord] | None = None,
+) -> list[dict]:
+    """Same harness as run_backtest, but for the Asia/London overnight
+    momentum strategy (src/overnight_strategy.py) -- a separate, parallel
+    strategy, not a replacement for the 9:30 ORB one above. Backtest-only:
+    not wired into runner.py/live trading yet (see config.yaml's
+    strategy.overnight comment)."""
+    strategy = OvernightMomentumStrategy(cfg)
+    tz = ZoneInfo(cfg.session.timezone)
+    open_trade: dict | None = None
+    results: list[dict] = []
+
+    for bar in bars:
+        if open_trade is not None:
+            direction = open_trade["direction"]
+            if direction is Direction.LONG:
+                hit_stop = bar.low <= open_trade["stop_price"]
+                hit_target = bar.high >= open_trade["target_price"]
+            else:
+                hit_stop = bar.high >= open_trade["stop_price"]
+                hit_target = bar.low <= open_trade["target_price"]
+
+            if hit_stop or hit_target:
+                won = hit_target and not hit_stop  # both hit same bar -> assume stop first
+                results.append(
+                    {
+                        **open_trade,
+                        "date": open_trade["entry_time"].astimezone(tz).date(),
+                        "direction": direction.value,
+                        "won": won,
+                        "exit_time": bar.timestamp,
+                    }
+                )
+                strategy.notify_trade_closed(won=won)
+                open_trade = None
+
+        signal = strategy.on_bar(bar)
+        if open_trade is None and signal is not None:
+            bracket = compute_stop_target(
+                direction=signal.direction,
+                entry_price=signal.entry_price,
+                structural_levels=signal.structural_levels,
+                max_stop_dollars=cfg.strategy.max_stop_dollars,
+                min_stop_dollars=cfg.strategy.min_stop_dollars,
+                point_value=cfg.instrument.point_value,
+                contracts=cfg.position_sizing.contract_size,
+                reward_risk_ratio=cfg.strategy.reward_risk_ratio,
+            )
+            levels = strategy.current_session_levels
+            open_trade = {
+                "direction": signal.direction,
+                "entry_time": signal.timestamp,
+                "entry_price": signal.entry_price,
+                "stop_price": bracket.stop_price,
+                "target_price": bracket.target_price,
+                "previous_day_high": levels.previous_day_high if levels else None,
+                "previous_day_low": levels.previous_day_low if levels else None,
+                "previous_day_high_zone": levels.previous_day_high_zone if levels else None,
+                "previous_day_low_zone": levels.previous_day_low_zone if levels else None,
+                "asia_high": levels.asia_high if levels else None,
+                "asia_low": levels.asia_low if levels else None,
+                "london_high": levels.london_high if levels else None,
+                "london_low": levels.london_low if levels else None,
+                "box_high": None,   # no box in this design -- kept for print_trade_detail's shared shape
+                "box_low": None,
+                "anchor_gap_low": signal.anchor_fvg.gap_low,
+                "anchor_gap_high": signal.anchor_fvg.gap_high,
+                "anchor_timeframe_minutes": signal.anchor_fvg.timeframe_minutes,
+                "entry_gap_low": signal.entry_fvg.gap_low,
+                "entry_gap_high": signal.entry_fvg.gap_high,
+                "entry_timeframe_minutes": signal.entry_fvg.timeframe_minutes,
+            }
+
+    if stats_out is not None:
+        stats_out.update(strategy.stats)
+    if anchor_history_out is not None:
+        anchor_history_out.extend(strategy.anchor_history)
+    return results
+
+
 def _pnl_points(trade: dict) -> float:
     """Signed point P&L: positive on a win, negative on a loss, for either direction."""
     exit_price = trade["target_price"] if trade["won"] else trade["stop_price"]
@@ -211,6 +302,43 @@ def print_report(cfg: BotConfig, results: list[dict]) -> None:
     print("-" * len(header))
     overall_pct = 100 * total_wins / total_trades if total_trades else 0
     print(f"{'TOTAL':<12}{total_trades:<8}{total_wins:<6}{overall_pct:<8.0f}{total_pnl:<18.2f}")
+
+
+def print_overnight_trade_detail(results: list[dict]) -> None:
+    """Same idea as print_trade_detail, but shows both FVG stages: the large
+    (15m/30m) anchor that set direction, and the smaller (5m/1m) nested FVG
+    whose own midpoint was the actual entry."""
+    if not results:
+        return
+
+    print("\nTrade detail:")
+    for i, t in enumerate(results, start=1):
+        print(f"\n#{i}  {t['date']}  {t['direction'].upper()}  {'WIN' if t['won'] else 'LOSS'}")
+        print(
+            f"    Previous day: high={_fmt(t['previous_day_high'])}  low={_fmt(t['previous_day_low'])}"
+        )
+        print(f"    Asia session: high={_fmt(t['asia_high'])}  low={_fmt(t['asia_low'])}")
+        print(f"    London session: high={_fmt(t['london_high'])}  low={_fmt(t['london_low'])}")
+        print(
+            f"    {t['anchor_timeframe_minutes']}m anchor FVG (sets direction): "
+            f"{_fmt(t['anchor_gap_low'])} - {_fmt(t['anchor_gap_high'])}"
+        )
+        print(
+            f"    {t['entry_timeframe_minutes']}m nested entry FVG: "
+            f"{_fmt(t['entry_gap_low'])} - {_fmt(t['entry_gap_high'])}"
+        )
+        print(
+            f"    Entry={_fmt(t['entry_price'])}  Stop={_fmt(t['stop_price'])}  Target={_fmt(t['target_price'])}"
+        )
+
+
+def print_funnel_overnight(stats: dict) -> None:
+    """Overnight-strategy equivalent of print_funnel."""
+    print("\nFunnel (how many setups made it past each gate):")
+    print(f"  Anchors (large 15m/30m FVG set direction):              {stats.get('anchors', 0)}")
+    print(f"  ...of those, later invalidated (mitigated, no replacement): {stats.get('anchors_invalidated', 0)}")
+    print(f"  ...of those, a nested 5m/1m FVG formed inside it:       {stats.get('nested_entries', 0)}")
+    print(f"  ...of those, price retraced to fill the limit:          {stats.get('fills', 0)}")
 
 
 def print_funnel(stats: dict) -> None:
@@ -374,6 +502,15 @@ def main() -> None:
 
     stats: dict = {}
     anchor_history: list = []
+    if args.overnight:
+        results = run_overnight_backtest(cfg, bars, stats_out=stats, anchor_history_out=anchor_history)
+        print_report(cfg, results)
+        print_funnel_overnight(stats)
+        if args.verbose:
+            print_overnight_trade_detail(results)
+        if args.near_miss:
+            print_near_miss_anchors(anchor_history)
+        return
     results = run_backtest(cfg, bars, stats_out=stats, anchor_history_out=anchor_history)
     print_report(cfg, results)
     print_funnel(stats)
