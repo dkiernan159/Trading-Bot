@@ -91,6 +91,11 @@ class OvernightMomentumStrategy:
         # budget -- tracked by identity, same rationale as the day
         # strategy's _rejected_anchor_ids (see strategy.py).
         self._rejected_anchor_ids: set[int] = set()
+        # Real 30-day evidence (see config.yaml's overnight.max_trades_per_night
+        # comment) showed nights with 2+ trades performing far worse than
+        # single-trade nights -- capped independently of the day strategy's
+        # own reentry.allow_reentry_after_stop.
+        self._trades_tonight = 0
 
         self.stats = {
             "large_fvgs": 0,
@@ -156,6 +161,7 @@ class OvernightMomentumStrategy:
         self.fvg_detector_5m.clear_active_gaps()
         self.fvg_detector_1m.clear_active_gaps()
         self._rejected_anchor_ids = set()
+        self._trades_tonight = 0
         self._reset_hunt_state()
         self.state = State.WAIT_FVG
 
@@ -258,6 +264,7 @@ class OvernightMomentumStrategy:
                 self._close_anchor("filled", bar.timestamp)
                 self.state = State.IN_TRADE
                 self._reset_hunt_state()
+                self._trades_tonight += 1
                 self.stats["fills"] += 1
                 return signal
             return None
@@ -267,11 +274,17 @@ class OvernightMomentumStrategy:
     def notify_trade_closed(self, won: bool) -> None:
         """Runner/backtest harness calls this once the open trade hits its
         stop or target. Reentry flags are shared with the day strategy
-        (cfg.strategy.reentry)."""
+        (cfg.strategy.reentry), but max_trades_per_night is this strategy's
+        own, separate cap (see config.yaml's comment) -- checked regardless
+        of allow_reentry_after_stop, since real data showed nights with 2+
+        trades performing far worse than single-trade nights."""
         if won and not self.cfg.strategy.reentry.allow_new_setup_after_win:
             self.state = State.DONE_FOR_NIGHT
             return
         if not won and not self.cfg.strategy.reentry.allow_reentry_after_stop:
+            self.state = State.DONE_FOR_NIGHT
+            return
+        if self._trades_tonight >= self.cfg.strategy.overnight.max_trades_per_night:
             self.state = State.DONE_FOR_NIGHT
             return
 

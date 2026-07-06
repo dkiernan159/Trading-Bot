@@ -516,6 +516,23 @@ the day strategy's own already-proven-against-real-NY-data logic, just
 without the box gate, rather than a second attempt at the design that had
 already failed twice.
 
+A real 30-day `--overnight` backtest of *this* single-stage design (38
+trades, 37% WR, +$291.25 net) showed a much healthier funnel (149 FVGs
+found, 39 filled -- 26%, versus the two-stage design's 7%), but a sharp
+split by how many trades happened on the same night: nights with exactly 1
+trade went 4-2 (67% WR), nights with 2+ trades (reentries after a stop,
+since a win already stands down for the night --
+`reentry.allow_new_setup_after_win`) went 10-24 (29% WR), with one
+particularly bad night (2026-06-09, 4 trades, all losses, -$508.50) on an
+unusually wide-range night. Added `strategy.overnight.max_trades_per_night`
+(2) so the strategy stands down for the rest of the night once its own
+trade count hits the cap, regardless of `reentry.allow_reentry_after_stop`
+-- deliberately a separate cap from the day strategy's own reentry
+settings (shared config, not touched), since that's tuned against real
+NY-session data and this is a different, still-developing window. Retune
+(or remove) once a fresh backtest with the cap in place shows whether it
+actually helps or was just reacting to one bad night in a 38-trade sample.
+
 **Status: backtest-only.** Run it via:
 
 ```

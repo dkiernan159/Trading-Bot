@@ -50,6 +50,7 @@ class ReentryConfig:
 @dataclass
 class OvernightConfig:
     enabled: bool
+    max_trades_per_night: int
 
 
 @dataclass
@@ -136,7 +137,10 @@ def load_config(path: str | Path = "config.yaml") -> BotConfig:
         fvg=FvgConfig(**strat["fvg"]),
         entry_fvg=FvgConfig(**strat["entry_fvg"]),
         reentry=ReentryConfig(**strat["reentry"]),
-        overnight=OvernightConfig(enabled=strat["overnight"]["enabled"]),
+        overnight=OvernightConfig(
+            enabled=strat["overnight"]["enabled"],
+            max_trades_per_night=strat["overnight"]["max_trades_per_night"],
+        ),
     )
 
     position_sizing = PositionSizingConfig(**raw["position_sizing"])

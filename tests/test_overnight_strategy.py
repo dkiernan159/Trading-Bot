@@ -293,3 +293,45 @@ def test_notify_trade_closed_reenters_the_hunt_after_a_stop_when_allowed():
     strategy.notify_trade_closed(won=False)
     assert strategy.state is State.WAIT_FVG
     assert strategy._direction is None
+
+
+def test_max_trades_per_night_stands_down_once_the_cap_is_reached():
+    """Regression test for the max_trades_per_night cap (config.yaml):
+    a real 30-day --overnight backtest showed nights with 2+ trades
+    (reentries after a stop) performing far worse (29% WR) than
+    single-trade nights (67% WR). Even though allow_reentry_after_stop is
+    true, the strategy must stand down for the rest of the night once its
+    own trade count for that night hits the cap."""
+    cfg = load_test_config()
+    cfg.strategy.overnight.max_trades_per_night = 2
+    assert cfg.strategy.reentry.allow_reentry_after_stop is True
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+
+    strategy.state = State.IN_TRADE
+    strategy._trades_tonight = 1
+    strategy.notify_trade_closed(won=False)
+    assert strategy.state is State.WAIT_FVG  # first reentry still allowed (1 < cap of 2)
+
+    strategy.state = State.IN_TRADE
+    strategy._trades_tonight = 2
+    strategy.notify_trade_closed(won=False)
+    assert strategy.state is State.DONE_FOR_NIGHT  # cap reached -- no further reentry
+
+    signal = strategy.on_bar(flat_bar(NIGHT_START + timedelta(hours=1), 107.0))
+    assert signal is None
+    assert strategy.state is State.DONE_FOR_NIGHT
+
+
+def test_max_trades_per_night_resets_for_a_fresh_night():
+    cfg = load_test_config()
+    cfg.strategy.overnight.max_trades_per_night = 1
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+    strategy._trades_tonight = 1
+
+    next_night = NIGHT_START + timedelta(days=1)
+    signal = strategy.on_bar(flat_bar(next_night, 100.0))
+    assert signal is None
+    assert strategy.state is State.WAIT_FVG
+    assert strategy._trades_tonight == 0

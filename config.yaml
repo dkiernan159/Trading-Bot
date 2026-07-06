@@ -147,6 +147,24 @@ strategy:
                                     # review real backtest evidence first, this is NOT wired into
                                     # runner.py/live trading yet regardless of the flag below.
     enabled: true                  # gates src/backtest.py's --overnight mode only; no effect on live trading
+    max_trades_per_night: 2        # ASSUMPTION (added 2026-07-06): a real 30-day --overnight backtest of
+                                    # the single-stage design (38 trades, 37% WR, +$291.25 net) split
+                                    # sharply by how many trades happened on the same night: nights with
+                                    # exactly 1 trade went 4-2 (67% WR), nights with 2+ trades (reentries
+                                    # after a stop, since a win already stands down for the night --
+                                    # see reentry.allow_new_setup_after_win) went 10-24 (29% WR). The worst
+                                    # single night (2026-06-09, 4 trades, all losses, -$508.50) came on an
+                                    # unusually wide-range night, suggesting the reentry logic kept
+                                    # re-engaging through chop/trend rather than standing down after the
+                                    # first loss said something was off -- the same shape as this project's
+                                    # other real findings (a rule doing exactly what it's supposed to can
+                                    # still be net-negative if what it recovers is lower quality). Capped at
+                                    # 2 (one reentry after the first loss, then stand down) rather than 1,
+                                    # to still test whether *some* reentry helps without the unbounded
+                                    # chase -- retune once a fresh backtest with this cap exists. Deliberately
+                                    # separate from the day strategy's own reentry.allow_reentry_after_stop
+                                    # (shared config, not touched) since that's already tuned against real
+                                    # NY-session data and this is a different, untested window.
 
 position_sizing:
   contract_size: 1        # START SMALL per your instructions. Bot never changes this itself.
