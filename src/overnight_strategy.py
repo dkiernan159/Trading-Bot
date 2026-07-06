@@ -14,20 +14,18 @@ from src.strategy import AnchorRecord
 
 
 class State(Enum):
-    IDLE = auto()            # outside the Asia/London window entirely
-    WAIT_ANCHOR = auto()     # in-window; hunting a large, unmitigated pooled 15m/30m FVG (either direction)
-    WAIT_ENTRY = auto()      # anchor locked (direction set); hunting a pooled 5m/1m FVG nested inside it
-    WAIT_FILL = auto()       # nested entry chosen; limit order resting at its own retracement point
-    IN_TRADE = auto()        # limit order filled, waiting on the runner/broker to close it
+    IDLE = auto()          # outside the Asia/London window entirely
+    WAIT_FVG = auto()      # in-window; hunting a large, unmitigated pooled 5m/1m FVG in either direction
+    WAIT_FILL = auto()     # a qualifying FVG was found; limit order resting at its own retracement point
+    IN_TRADE = auto()      # limit order filled, waiting on the runner/broker to close it
     DONE_FOR_NIGHT = auto()
 
 
 @dataclass
-class OvernightEntrySignal:
+class EntrySignal:
     direction: Direction
     entry_price: float
     anchor_fvg: FairValueGap
-    entry_fvg: FairValueGap
     structural_levels: list[float]
     timestamp: datetime
 
@@ -41,8 +39,8 @@ def _nearest_then_largest(fvgs: list[FairValueGap], current_price: float) -> Fai
 def _in_overnight_window(t: dtime, cfg: SessionConfig) -> bool:
     """Asia (19:00-23:59) -> gap (00:00-02:00) -> London (02:00-05:00) is
     treated as one continuous window rather than resetting in the gap, so
-    an anchor/entry hunt in progress isn't abandoned just because there's
-    no session label active at that exact moment."""
+    a hunt in progress isn't abandoned just because there's no session
+    label active at that exact moment."""
     return t >= cfg.asia_start or t <= cfg.london_end
 
 
@@ -56,50 +54,46 @@ def _night_date(local_dt: datetime, cfg: SessionConfig) -> date:
 
 
 class OvernightMomentumStrategy:
-    """State machine for the Asia/London overnight momentum layer described
-    in STRATEGY.md: a large (15m or 30m, pooled) FVG sets direction directly
-    -- no box or breakout, since there isn't one outside NY hours -- then a
-    smaller (5m or 1m, pooled) FVG that forms *after* the anchor locks in,
-    with its own midpoint inside the anchor's gap, is the precise entry.
-    Runs in parallel with, and entirely independently of, OpeningRangeStrategy
-    (src/strategy.py) -- a separate instance of each is fed the same bars.
+    """Asia/London overnight momentum layer described in STRATEGY.md: the
+    exact same FVG-detection-and-entry logic the 9:30 ORB strategy uses
+    (src/strategy.py's pooled 5m/1m fvg/entry_fvg detectors, entry at a
+    configurable retracement into the FVG's own gap), just without that
+    strategy's box/breakout gate -- there's no box to form outside NY
+    hours, so whichever pooled FVG qualifies first (in *either* direction)
+    sets the trade direction directly. Runs in parallel with, and entirely
+    independently of, OpeningRangeStrategy -- a separate instance of each is
+    fed the same bars.
 
-    Mirrors the day strategy's "keep live" pattern: while hunting for (or
-    resting a limit inside) an entry, a nearer/fresher anchor or nested FVG
-    supersedes the current one rather than freezing on the first found. If
-    the current anchor itself becomes mitigated with nothing in the same
-    direction to replace it, the whole thesis is invalidated and the hunt
-    restarts from scratch (direction included) -- earlier versions of this
-    design (see git history) left a mitigated anchor sitting there stale
-    instead of explicitly invalidating it.
+    Originally built as a two-stage large-anchor (15m/30m) + nested-entry
+    (5m/1m) design (see git history) -- resurrecting an even older design
+    this project had already tried and removed once for being a funnel
+    bottleneck. A real 30-day backtest of that two-stage version reproduced
+    the exact same failure shape (110 anchors, only 8 nested entries, all 4
+    fills lost), so it was replaced with this single-stage design at the
+    user's direct instruction: reuse the day strategy's own proven
+    FVG-finding logic, just without its ORB confluence layer.
     """
 
     def __init__(self, cfg: BotConfig):
         self.cfg = cfg
         self.tz = ZoneInfo(cfg.session.timezone)
         self.session_levels = SessionLevels(cfg.session)
-        ov = cfg.strategy.overnight
-        self.anchor_detector_15m = FvgDetector(ov.anchor_15m, self.tz)
-        self.anchor_detector_30m = FvgDetector(ov.anchor_30m, self.tz)
-        self.entry_detector_5m = FvgDetector(ov.entry_5m, self.tz)
-        self.entry_detector_1m = FvgDetector(ov.entry_1m, self.tz)
+        self.fvg_detector_5m = FvgDetector(cfg.strategy.fvg, self.tz)
+        self.fvg_detector_1m = FvgDetector(cfg.strategy.entry_fvg, self.tz)
 
         self.state = State.IDLE
         self._night_date: date | None = None
         self._direction: Direction | None = None
         self._anchor_fvg: FairValueGap | None = None
-        self._anchor_locked_in_at: datetime | None = None
-        self._nested_fvg: FairValueGap | None = None
+        self._anchor_started_at: datetime | None = None
         self._pending_limit_price: float | None = None
-        # Nested candidates rejected for having no real structural stop
-        # within budget -- tracked by identity, same rationale as the day
+        # Anchors rejected for having no real structural stop within
+        # budget -- tracked by identity, same rationale as the day
         # strategy's _rejected_anchor_ids (see strategy.py).
-        self._rejected_nested_ids: set[int] = set()
+        self._rejected_anchor_ids: set[int] = set()
 
         self.stats = {
-            "anchors": 0,
-            "anchors_invalidated": 0,
-            "nested_entries": 0,
+            "large_fvgs": 0,
             "fills": 0,
         }
         self.anchor_history: list[AnchorRecord] = []
@@ -115,35 +109,26 @@ class OvernightMomentumStrategy:
         return self.session_levels.levels_for(self._night_date)
 
     def _entry_price(self, gap: FairValueGap) -> float:
+        """Same retracement rule as the day strategy (strategy.py's
+        _entry_price) -- see there for why any fraction strictly between 0
+        and 1 stays provably safe from "mitigated before it could fill"."""
         pct = self.cfg.strategy.entry_retracement_pct
         width = gap.gap_high - gap.gap_low
         if gap.direction is Direction.LONG:
             return gap.gap_high - pct * width
         return gap.gap_low + pct * width
 
-    def _candidate_anchors(self, direction: Direction) -> list[FairValueGap]:
-        return self.anchor_detector_15m.unmitigated_in_direction(
+    def _candidate_fvgs(self, direction: Direction) -> list[FairValueGap]:
+        candidates = self.fvg_detector_5m.unmitigated_in_direction(
             direction
-        ) + self.anchor_detector_30m.unmitigated_in_direction(direction)
+        ) + self.fvg_detector_1m.unmitigated_in_direction(direction)
+        return [g for g in candidates if id(g) not in self._rejected_anchor_ids]
 
-    def _all_anchor_candidates(self) -> list[FairValueGap]:
-        return self._candidate_anchors(Direction.LONG) + self._candidate_anchors(Direction.SHORT)
-
-    def _candidate_nested(self) -> list[FairValueGap]:
-        """Pooled 5m/1m FVGs in the anchor's direction whose own midpoint
-        falls inside the anchor's gap and that formed strictly after the
-        anchor locked in -- a coincidentally-overlapping gap that was
-        already sitting there doesn't count as a genuine retest."""
-        pooled = self.entry_detector_5m.unmitigated_in_direction(
-            self._direction
-        ) + self.entry_detector_1m.unmitigated_in_direction(self._direction)
-        return [
-            g
-            for g in pooled
-            if self._anchor_fvg.gap_low <= (g.gap_low + g.gap_high) / 2 <= self._anchor_fvg.gap_high
-            and g.formed_at > self._anchor_locked_in_at
-            and id(g) not in self._rejected_nested_ids
-        ]
+    def _all_candidate_fvgs(self) -> list[FairValueGap]:
+        """Both directions pooled -- there's no breakout to fix a direction
+        ahead of time here, so whichever qualifying FVG appears first (in
+        either direction) is the one that sets it."""
+        return self._candidate_fvgs(Direction.LONG) + self._candidate_fvgs(Direction.SHORT)
 
     def _close_anchor(self, outcome: str, ended_at: datetime) -> None:
         if self._anchor_fvg is None:
@@ -153,7 +138,7 @@ class OvernightMomentumStrategy:
                 direction=self._direction,
                 gap_low=self._anchor_fvg.gap_low,
                 gap_high=self._anchor_fvg.gap_high,
-                started_at=self._anchor_locked_in_at,
+                started_at=self._anchor_started_at,
                 ended_at=ended_at,
                 outcome=outcome,
             )
@@ -162,38 +147,32 @@ class OvernightMomentumStrategy:
     def _reset_hunt_state(self) -> None:
         self._direction = None
         self._anchor_fvg = None
-        self._anchor_locked_in_at = None
-        self._nested_fvg = None
+        self._anchor_started_at = None
         self._pending_limit_price = None
 
     def _start_new_night(self, night_date: date, bar_timestamp: datetime) -> None:
         self._night_date = night_date
         self._close_anchor("session_ended", bar_timestamp)
-        self.anchor_detector_15m.clear_active_gaps()
-        self.anchor_detector_30m.clear_active_gaps()
-        self.entry_detector_5m.clear_active_gaps()
-        self.entry_detector_1m.clear_active_gaps()
-        self._rejected_nested_ids = set()
+        self.fvg_detector_5m.clear_active_gaps()
+        self.fvg_detector_1m.clear_active_gaps()
+        self._rejected_anchor_ids = set()
         self._reset_hunt_state()
-        self.state = State.WAIT_ANCHOR
+        self.state = State.WAIT_FVG
 
-    def on_bar(self, bar: Bar) -> OvernightEntrySignal | None:
+    def on_bar(self, bar: Bar) -> EntrySignal | None:
         local = bar.timestamp.astimezone(self.tz)
         t = local.time()
         in_window = _in_overnight_window(t, self.cfg.session)
 
         self.session_levels.add_bar(bar)
-        self.anchor_detector_15m.add_bar(bar)
-        self.anchor_detector_30m.add_bar(bar)
-        self.entry_detector_5m.add_bar(bar)
-        self.entry_detector_1m.add_bar(bar)
+        self.fvg_detector_5m.add_bar(bar)
+        self.fvg_detector_1m.add_bar(bar)
 
         if self.state is State.IN_TRADE:
             # Nothing to do until the runner/backtest harness calls
             # notify_trade_closed -- deliberately not re-evaluated against
-            # in_window/night_date so an overnight trade still open when the
-            # window ends (e.g. still running into the 9:30 day session) is
-            # left alone rather than having its bookkeeping reset mid-trade.
+            # in_window/night_date so an overnight trade still open when
+            # the window ends isn't reset mid-trade.
             return None
 
         if not in_window:
@@ -210,65 +189,39 @@ class OvernightMomentumStrategy:
         if self.state is State.DONE_FOR_NIGHT:
             return None
 
-        if self.state in (State.WAIT_ENTRY, State.WAIT_FILL):
-            # The anchor itself can be invalidated (mitigated with nothing
-            # in the same direction to replace it), same idea as the day
-            # strategy's breakout-invalidation check -- except here there's
-            # no box to fall back to, so invalidation means restarting the
-            # whole hunt (direction included) rather than reverting to a
-            # single well-known "wait for breakout" state.
-            candidates = self._candidate_anchors(self._direction)
-            if not candidates:
-                self.stats["anchors_invalidated"] += 1
-                self._close_anchor("invalidated", bar.timestamp)
-                self._reset_hunt_state()
-                self.state = State.WAIT_ANCHOR
-                return None
-
-            best_anchor = _nearest_then_largest(candidates, bar.close)
-            if best_anchor is not self._anchor_fvg:
-                self._close_anchor("superseded", bar.timestamp)
-                self._anchor_fvg = best_anchor
-                self._anchor_locked_in_at = bar.timestamp
-                self._nested_fvg = None
-                self._pending_limit_price = None
-                self.stats["anchors"] += 1
-                self.state = State.WAIT_ENTRY
-
-        if self.state is State.WAIT_ANCHOR:
-            candidates = self._all_anchor_candidates()
+        if self.state is State.WAIT_FVG:
+            # Any large, unmitigated 5m or 1m FVG -- in *either* direction,
+            # since there's no breakout to fix one ahead of time -- both
+            # sets direction and anchors the move, same as the day
+            # strategy's WAIT_5M_FVG once its own breakout has set
+            # direction.
+            candidates = self._all_candidate_fvgs()
             if candidates:
                 self._anchor_fvg = _nearest_then_largest(candidates, bar.close)
                 self._direction = self._anchor_fvg.direction
-                self._anchor_locked_in_at = bar.timestamp
-                self.stats["anchors"] += 1
-                self.state = State.WAIT_ENTRY
-            return None
-
-        if self.state is State.WAIT_ENTRY:
-            nested = self._candidate_nested()
-            if nested:
-                self._nested_fvg = _nearest_then_largest(nested, bar.close)
-                self._pending_limit_price = self._entry_price(self._nested_fvg)
-                self.stats["nested_entries"] += 1
+                self._anchor_started_at = bar.timestamp
+                self._pending_limit_price = self._entry_price(self._anchor_fvg)
+                self.stats["large_fvgs"] += 1
                 self.state = State.WAIT_FILL
             return None
 
         if self.state is State.WAIT_FILL:
-            nested = self._candidate_nested()
-            if nested:
-                best_nested = _nearest_then_largest(nested, bar.close)
-                if best_nested is not self._nested_fvg:
-                    self._nested_fvg = best_nested
-                    self._pending_limit_price = self._entry_price(best_nested)
-                    self.stats["nested_entries"] += 1
+            # Keep the anchor current: a nearer/fresher unmitigated FVG in
+            # the same direction supersedes it, exactly like the day
+            # strategy's WAIT_FILL. No separate "mitigated before fill"
+            # check is needed -- the resting limit sits strictly between
+            # the gap's own edges (see _entry_price), so it always fills
+            # before price could reach far enough to mitigate it.
+            candidates = self._candidate_fvgs(self._direction)
+            if candidates:
+                best = _nearest_then_largest(candidates, bar.close)
+                if best is not self._anchor_fvg:
+                    self._close_anchor("superseded", bar.timestamp)
+                    self._anchor_fvg = best
+                    self._anchor_started_at = bar.timestamp
+                    self._pending_limit_price = self._entry_price(best)
+                    self.stats["large_fvgs"] += 1
 
-            # No separate mitigation check on the resting nested FVG itself:
-            # the same proof the day strategy relies on (see strategy.py's
-            # WAIT_FILL) holds here too -- a retracement price strictly
-            # between a gap's two edges always fills before price can reach
-            # far enough to break the far edge, so it can't be mitigated out
-            # from under a resting limit order.
             filled = (
                 bar.low <= self._pending_limit_price
                 if self._direction is Direction.LONG
@@ -277,14 +230,6 @@ class OvernightMomentumStrategy:
             if filled:
                 levels = self.current_session_levels
                 structural_levels = list(levels.all_levels()) if levels else []
-                # The anchor's own edges are real structure here (unlike the
-                # day strategy): entry sits at the *nested* FVG's own
-                # retracement point, not at a fixed fraction of the anchor's
-                # own width, so the anchor's edges aren't just a pre-known
-                # arithmetic distance from entry -- a break of either is a
-                # genuine invalidation of the anchor thesis.
-                structural_levels.append(self._anchor_fvg.gap_low)
-                structural_levels.append(self._anchor_fvg.gap_high)
 
                 bracket = compute_stop_target(
                     direction=self._direction,
@@ -297,17 +242,16 @@ class OvernightMomentumStrategy:
                     reward_risk_ratio=self.cfg.strategy.reward_risk_ratio,
                 )
                 if bracket is None:
-                    self._rejected_nested_ids.add(id(self._nested_fvg))
-                    self._nested_fvg = None
-                    self._pending_limit_price = None
-                    self.state = State.WAIT_ENTRY
+                    self._close_anchor("no_valid_stop", bar.timestamp)
+                    self._rejected_anchor_ids.add(id(self._anchor_fvg))
+                    self._reset_hunt_state()
+                    self.state = State.WAIT_FVG
                     return None
 
-                signal = OvernightEntrySignal(
+                signal = EntrySignal(
                     direction=self._direction,
                     entry_price=self._pending_limit_price,
                     anchor_fvg=self._anchor_fvg,
-                    entry_fvg=self._nested_fvg,
                     structural_levels=structural_levels,
                     timestamp=bar.timestamp,
                 )
@@ -323,8 +267,7 @@ class OvernightMomentumStrategy:
     def notify_trade_closed(self, won: bool) -> None:
         """Runner/backtest harness calls this once the open trade hits its
         stop or target. Reentry flags are shared with the day strategy
-        (cfg.strategy.reentry) -- "keep TP/SL ratio the same as the usual
-        strategy" extends naturally to reusing its reentry behavior too."""
+        (cfg.strategy.reentry)."""
         if won and not self.cfg.strategy.reentry.allow_new_setup_after_win:
             self.state = State.DONE_FOR_NIGHT
             return
@@ -333,4 +276,4 @@ class OvernightMomentumStrategy:
             return
 
         self._reset_hunt_state()
-        self.state = State.WAIT_ANCHOR
+        self.state = State.WAIT_FVG

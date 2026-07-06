@@ -251,9 +251,6 @@ def run_overnight_backtest(
                 "anchor_gap_low": signal.anchor_fvg.gap_low,
                 "anchor_gap_high": signal.anchor_fvg.gap_high,
                 "anchor_timeframe_minutes": signal.anchor_fvg.timeframe_minutes,
-                "entry_gap_low": signal.entry_fvg.gap_low,
-                "entry_gap_high": signal.entry_fvg.gap_high,
-                "entry_timeframe_minutes": signal.entry_fvg.timeframe_minutes,
             }
 
     if stats_out is not None:
@@ -304,40 +301,12 @@ def print_report(cfg: BotConfig, results: list[dict]) -> None:
     print(f"{'TOTAL':<12}{total_trades:<8}{total_wins:<6}{overall_pct:<8.0f}{total_pnl:<18.2f}")
 
 
-def print_overnight_trade_detail(results: list[dict]) -> None:
-    """Same idea as print_trade_detail, but shows both FVG stages: the large
-    (15m/30m) anchor that set direction, and the smaller (5m/1m) nested FVG
-    whose own midpoint was the actual entry."""
-    if not results:
-        return
-
-    print("\nTrade detail:")
-    for i, t in enumerate(results, start=1):
-        print(f"\n#{i}  {t['date']}  {t['direction'].upper()}  {'WIN' if t['won'] else 'LOSS'}")
-        print(
-            f"    Previous day: high={_fmt(t['previous_day_high'])}  low={_fmt(t['previous_day_low'])}"
-        )
-        print(f"    Asia session: high={_fmt(t['asia_high'])}  low={_fmt(t['asia_low'])}")
-        print(f"    London session: high={_fmt(t['london_high'])}  low={_fmt(t['london_low'])}")
-        print(
-            f"    {t['anchor_timeframe_minutes']}m anchor FVG (sets direction): "
-            f"{_fmt(t['anchor_gap_low'])} - {_fmt(t['anchor_gap_high'])}"
-        )
-        print(
-            f"    {t['entry_timeframe_minutes']}m nested entry FVG: "
-            f"{_fmt(t['entry_gap_low'])} - {_fmt(t['entry_gap_high'])}"
-        )
-        print(
-            f"    Entry={_fmt(t['entry_price'])}  Stop={_fmt(t['stop_price'])}  Target={_fmt(t['target_price'])}"
-        )
-
-
 def print_funnel_overnight(stats: dict) -> None:
-    """Overnight-strategy equivalent of print_funnel."""
+    """Overnight-strategy equivalent of print_funnel. print_trade_detail is
+    reused as-is for --overnight (its dict shape now matches run_backtest's
+    exactly, box_high/box_low always None -- see run_overnight_backtest)."""
     print("\nFunnel (how many setups made it past each gate):")
-    print(f"  Anchors (large 15m/30m FVG set direction):              {stats.get('anchors', 0)}")
-    print(f"  ...of those, later invalidated (mitigated, no replacement): {stats.get('anchors_invalidated', 0)}")
-    print(f"  ...of those, a nested 5m/1m FVG formed inside it:       {stats.get('nested_entries', 0)}")
+    print(f"  Large 5m or 1m FVGs found (either direction sets it):   {stats.get('large_fvgs', 0)}")
     print(f"  ...of those, price retraced to fill the limit:          {stats.get('fills', 0)}")
 
 
@@ -507,7 +476,7 @@ def main() -> None:
         print_report(cfg, results)
         print_funnel_overnight(stats)
         if args.verbose:
-            print_overnight_trade_detail(results)
+            print_trade_detail(results)
         if args.near_miss:
             print_near_miss_anchors(anchor_history)
         return

@@ -476,48 +476,45 @@ strategy above. The two run as independent instances fed the same bars;
 neither knows the other exists.
 
 Unlike the day strategy, there is no box or breakout here -- there's nothing
-at 19:00 or 02:00 to form a box against. Instead:
+at 19:00 or 02:00 to form a box against. Instead, it reuses the day
+strategy's own FVG-finding logic directly (same pooled 5m/1m detectors,
+`strategy.fvg` / `strategy.entry_fvg` -- no separate config section of its
+own), just without the box/breakout gate in front of it:
 
-1. **Anchor (sets direction directly):** a large, unmitigated fair value gap
-   on a 15-minute or 30-minute candle (pooled -- whichever qualifies first,
-   same "whichever detector qualifies" pattern as the day strategy's 5m/1m
-   anchor pooling) is watched for in *either* direction. Whichever one forms
-   first sets the trade direction on the spot -- there's no separate
-   confirmation step, since (per your explicit answer) the anchor FVG *is*
-   the momentum signal here, playing the same role the 9:30 breakout plays
-   in the day strategy.
-2. **Nested entry (the precise trigger):** once the anchor locks in, the bot
-   waits for a *smaller* fair value gap -- 5-minute or 1-minute, pooled --
-   whose own midpoint falls inside the anchor's gap, and which forms
-   strictly *after* the anchor locked in (per your explicit answer: a
-   coincidentally-overlapping gap that was already sitting there when the
-   anchor confirmed doesn't count as a genuine retest). That nested gap's
-   own midpoint (or a shallower retracement, same `entry_retracement_pct`
-   as the day strategy) is where a limit order rests.
-3. Same 2:1 reward:risk and the same $40-$200 stop band as the day strategy
-   (`compute_stop_target`, shared code) -- the anchor's own gap edges count
-   as real structural stop candidates here (unlike the day strategy, where
-   entry price is a fixed fraction of the anchor's own width, making the
-   anchor's edges a deterministic, not-really-structural distance from
-   entry; here entry is the *nested* FVG's midpoint, so the large anchor's
-   edges are genuine independent structure).
-4. Both the anchor and the nested entry are kept "live" while waiting --
-   a nearer/fresher candidate supersedes an older one, mirroring the day
+1. Whichever large, unmitigated fair value gap -- 5-minute or 1-minute,
+   pooled, same "whichever detector qualifies" pattern as the day
+   strategy's own 5m/1m pooling -- forms first, in *either* direction, both
+   sets the trade direction and anchors the move on the spot. There's no
+   separate confirmation step; the FVG itself plays the role the 9:30
+   breakout plays in the day strategy.
+2. That FVG's own midpoint (or a shallower retracement,
+   `entry_retracement_pct`, same as the day strategy) is where a limit
+   order rests -- the anchor *is* the entry, exactly as in the day
+   strategy once its own breakout has set direction.
+3. Same 2:1 reward:risk and the same $40-$200 stop band
+   (`compute_stop_target`, shared code) -- and the same reasoning for
+   *not* including the anchor's own gap edges as stop candidates: entry
+   sits at a fixed fraction of the anchor's own width, so its edges are a
+   deterministic, not-really-structural distance from entry.
+4. The anchor is kept "live" while waiting to fill -- a nearer/fresher
+   unmitigated FVG in the same direction supersedes it, mirroring the day
    strategy's WAIT_FILL behavior, rather than freezing on the first pick.
-   If the anchor itself becomes mitigated with nothing in the same
-   direction to replace it, the whole thesis is invalidated and the hunt
-   restarts from scratch, direction included.
 
-This resurrects a nested-FVG design tried and removed earlier in this
-project (see git history, commits `94270f2`..`d1e1bd4`) -- it was removed
-there for being the tightest bottleneck in the *day* funnel (box breakout +
-large 15m anchor + nested 5m entry, stacked, left almost nothing surviving
-to a fill). It's revived here re-scoped to hours where there's no box to
-stack on top of in the first place, and where you explicitly want fewer,
-higher-conviction overnight trades rather than the day strategy's frequency
-target -- but this is a real, structural risk carried over from that
-history, and this design is genuinely untested against real Asia/London
-data.
+**Revision history:** originally built 2026-07-05 as a two-stage
+large-anchor (15m/30m) + nested-entry (5m/1m) design, resurrecting a
+nested-FVG design this project had already tried and removed once (see git
+history, commits `94270f2`..`d1e1bd4`, removed there for being the tightest
+bottleneck in the *day* funnel: box breakout + large 15m anchor + nested 5m
+entry, stacked, left almost nothing surviving to a fill). A real 30-day
+`--overnight` backtest of that two-stage version reproduced the exact same
+failure shape: 110 anchors formed, but only 8 ever got a nested entry (the
+same funnel-bottleneck pattern), and the 4 that did fill went 0-4
+(-$448.25). Replaced the same day with this single-stage design instead, at
+your direct instruction ("use the same strategy for finding strong FVGs as
+the 15 minute ORB strat, just without the ORB confluence layer") -- it's
+the day strategy's own already-proven-against-real-NY-data logic, just
+without the box gate, rather than a second attempt at the design that had
+already failed twice.
 
 **Status: backtest-only.** Run it via:
 
@@ -531,12 +528,11 @@ until you've reviewed real results. `config.yaml`'s
 `strategy.overnight.enabled` flag only gates the `--overnight` backtest CLI
 mode; it has no effect on live trading either way.
 
-The FVG thresholds in `strategy.overnight` (`anchor_15m`, `anchor_30m`,
-`entry_5m`, `entry_1m`) are fresh ASSUMPTIONS with no real-data backing yet
--- `entry_1m.min_gap_points` borrows the day strategy's own real-data-tuned
-value (12) as a starting point since it's the same instrument/timeframe,
-but Asia/London's volatility profile may not match NY hours at all. Retune
-all of these from a real backtest before trusting the results.
+`strategy.fvg` / `strategy.entry_fvg`'s thresholds are tuned against real NY
+Opening Range data, not Asia/London -- Asia/London's own volatility/gap
+profile may not match NY hours at all, so a real `--overnight` backtest
+result should be judged (and these thresholds retuned) on its own terms,
+not assumed to transfer just because the code is shared.
 
 ## Architecture
 
