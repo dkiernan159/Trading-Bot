@@ -210,9 +210,22 @@ class ProjectXGatewayBroker(Broker):
         hub_url = f"{self.realtime_base_url}{REALTIME_MARKET_HUB}?access_token={self._token}"
         self._hub = HubConnectionBuilder().with_url(hub_url, options={"verify_ssl": True}).build()
         self._hub.on("GatewayTrade", self._on_trade_event)
-        self._hub.on_open(lambda: self._hub.send("SubscribeContractTrades", [self._realtime_contract_id]))
+        self._hub.on_open(self._on_hub_open)
         self._hub.on_close(self._on_hub_closed)
+        self._hub.on_error(self._on_hub_error)
         self._hub.start()
+
+    def _on_hub_open(self) -> None:
+        # Confirms the handshake actually completed and a subscribe request
+        # was sent -- without this, "no output at all" is ambiguous between
+        # "connected fine, just no ticks yet" and "never actually opened"
+        # (a failure at the initial handshake, before any connection has
+        # ever been open, doesn't go through _on_hub_closed).
+        print(f"[LIVE] realtime hub connected -- subscribing to contract {self._realtime_contract_id}")
+        self._hub.send("SubscribeContractTrades", [self._realtime_contract_id])
+
+    def _on_hub_error(self, error) -> None:
+        print(f"[LIVE] WARNING: realtime hub error: {error}")
 
     def _on_hub_closed(self) -> None:
         print("[LIVE] realtime hub closed -- re-authenticating and reconnecting with a fresh token")
