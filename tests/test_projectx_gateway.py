@@ -54,6 +54,71 @@ def test_post_gives_up_after_max_retries_and_raises():
             broker._post("/History/retrieveBars", {}, max_retries=4)
 
 
+def test_on_hub_closed_reauthenticates_and_rebuilds_the_hub_with_a_fresh_token():
+    """A real bot running over a day straight logged an unbroken stream of
+    signalrcore's own reconnect-failure message -- automatic reconnect
+    reuses the exact same URL (and therefore the same access_token) on
+    every retry, so once the token itself expires, no retry can ever
+    succeed. _on_hub_closed must call connect() (refreshing self._token)
+    and rebuild the hub against a URL carrying the *new* token, not just
+    retry the old one."""
+    broker = make_broker()
+    broker._realtime_contract_id = "CON.F.US.MNQ.U26"
+    broker._on_bar = lambda bar: None
+
+    hub_mocks = [MagicMock(), MagicMock()]
+    builder_mock = MagicMock()
+    builder_mock.with_url.return_value = builder_mock
+    urls_used = []
+
+    def fake_with_url(url, **kwargs):
+        urls_used.append(url)
+        return builder_mock
+
+    builder_mock.with_url.side_effect = fake_with_url
+    builder_mock.build.side_effect = hub_mocks
+
+    def fake_connect():
+        broker._token = "fresh-token"
+
+    with patch("src.broker.projectx_gateway.HubConnectionBuilder", return_value=builder_mock), patch.object(
+        broker, "connect", side_effect=fake_connect
+    ) as mock_connect, patch("src.broker.projectx_gateway.time_module.sleep"):
+        broker._token = "stale-token"
+        broker._start_hub()
+        assert "stale-token" in urls_used[0]
+
+        broker._on_hub_closed()
+
+    mock_connect.assert_called_once()
+    assert "fresh-token" in urls_used[1]
+    assert hub_mocks[1].start.called
+
+
+def test_on_hub_closed_retries_reauth_on_failure_until_it_succeeds():
+    broker = make_broker()
+    broker._realtime_contract_id = "CON.F.US.MNQ.U26"
+    broker._on_bar = lambda bar: None
+
+    builder_mock = MagicMock()
+    builder_mock.with_url.return_value = builder_mock
+
+    connect_attempts = [Exception("still down"), Exception("still down"), None]
+
+    def fake_connect():
+        result = connect_attempts.pop(0)
+        if isinstance(result, Exception):
+            raise result
+
+    with patch("src.broker.projectx_gateway.HubConnectionBuilder", return_value=builder_mock), patch.object(
+        broker, "connect", side_effect=fake_connect
+    ) as mock_connect, patch("src.broker.projectx_gateway.time_module.sleep") as mock_sleep:
+        broker._on_hub_closed()
+
+    assert mock_connect.call_count == 3
+    assert mock_sleep.call_count == 3
+
+
 def test_post_does_not_retry_on_other_error_statuses():
     """A 500 (or any non-429 error) should still fail immediately -- only
     429 (rate limited) is worth retrying."""

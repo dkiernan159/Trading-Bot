@@ -86,6 +86,7 @@ class ProjectXGatewayBroker(Broker):
         self._token: str | None = None
         self._contract_id: str | None = None
         self._hub = None
+        self._realtime_contract_id: str | None = None
         self._on_bar: Callable[[Bar], None] | None = None
         self._current_bar: dict | None = None
         self._brackets: dict[str, dict] = {}
@@ -192,21 +193,38 @@ class ProjectXGatewayBroker(Broker):
         if self._token is None:
             raise RuntimeError("connect() must succeed before subscribing to market data")
 
-        contract_id = self._resolve_contract(symbol)
         self._on_bar = on_bar
+        self._realtime_contract_id = self._resolve_contract(symbol)
+        self._start_hub()
 
+    def _start_hub(self) -> None:
+        # Deliberately no with_automatic_reconnect: that reuses the exact
+        # same URL (and therefore the same access_token) on every retry, so
+        # if the connection drops because the auth token itself expired --
+        # confirmed live: a bot running over a day straight logged an
+        # unbroken stream of signalrcore's own "Socket closed by the the
+        # server" reconnect-failure message -- it can never succeed, since
+        # every retry is rejected by the same expired token. _on_hub_closed
+        # re-authenticates (refreshing self._token) and rebuilds the hub
+        # with a fresh URL instead, so a reconnect can actually succeed.
         hub_url = f"{self.realtime_base_url}{REALTIME_MARKET_HUB}?access_token={self._token}"
-        self._hub = (
-            HubConnectionBuilder()
-            .with_url(hub_url, options={"verify_ssl": True})
-            .with_automatic_reconnect(
-                {"type": "raw", "keep_alive_interval": 10, "reconnect_interval": 5}
-            )
-            .build()
-        )
+        self._hub = HubConnectionBuilder().with_url(hub_url, options={"verify_ssl": True}).build()
         self._hub.on("GatewayTrade", self._on_trade_event)
-        self._hub.on_open(lambda: self._hub.send("SubscribeContractTrades", [contract_id]))
+        self._hub.on_open(lambda: self._hub.send("SubscribeContractTrades", [self._realtime_contract_id]))
+        self._hub.on_close(self._on_hub_closed)
         self._hub.start()
+
+    def _on_hub_closed(self) -> None:
+        print("[LIVE] realtime hub closed -- re-authenticating and reconnecting with a fresh token")
+        while True:
+            time_module.sleep(5)
+            try:
+                self.connect()
+            except Exception as e:
+                print(f"[LIVE] WARNING: re-auth after hub close failed ({e}); retrying in 5s")
+                continue
+            break
+        self._start_hub()
 
     def _on_trade_event(self, args) -> None:
         events = args if isinstance(args, list) else [args]

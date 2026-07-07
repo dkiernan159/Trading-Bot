@@ -629,6 +629,31 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   and react to the exchange's own fill notification, removing the ~60s
   detection lag entirely -- not done here, a real follow-up once the
   current fix has been watched run for a while.
+
+  **Realtime hub reconnect used a stale auth token (fixed 2026-07-07):**
+  found while walking the user through checking `logs/bot.log` after the
+  first live session -- a bot that had been running continuously for over
+  a day (per `journalctl`'s own uptime accounting) had logged an unbroken
+  stream of signalrcore's own reconnect-failure message ("Socket closed by
+  the the server" -- a real typo baked into that library itself, not ours).
+  Root cause: `subscribe_bars` built the SignalR hub URL with
+  `access_token={self._token}` baked in once, then relied on
+  `with_automatic_reconnect`, which retries against that *exact same URL*
+  forever -- so once the auth token itself expires, every retry is
+  rejected by the server and reconnect can never succeed again, no matter
+  how long it keeps trying. The process itself never crashes (systemd
+  reports it as `active (running)` throughout), so this fails silently:
+  the bot goes permanently deaf to real-time market data mid-session with
+  no visible error apart from a repeating log line easy to mistake for
+  harmless reconnect chatter. Fixed by removing `with_automatic_reconnect`
+  entirely and registering `_on_hub_closed` (`src/broker/
+  projectx_gateway.py`) instead, which calls `connect()` again (refreshing
+  `self._token` via a fresh `/Auth/loginKey` call) and rebuilds the hub
+  against a URL carrying the *new* token, retrying every 5s until
+  re-auth succeeds. Verified via revert-and-confirm: reverting back to
+  the original `with_automatic_reconnect`-only path caused
+  `test_on_hub_closed_reauthenticates_and_rebuilds_the_hub_with_a_fresh_token`
+  to fail (see `tests/test_projectx_gateway.py`).
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover
