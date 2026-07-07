@@ -44,6 +44,7 @@ account. Do not flip it off against a live funded account without testing
 end to end first.
 """
 
+import logging
 import os
 import threading
 import time as time_module
@@ -213,6 +214,21 @@ class ProjectXGatewayBroker(Broker):
             .with_automatic_reconnect(
                 {"type": "raw", "keep_alive_interval": 10, "reconnect_interval": 5}
             )
+            # TEMPORARY diagnostic (added 2026-07-07): a live bot only ever
+            # logged signalrcore's generic "Socket closed by the the
+            # server" with none of this class's own on_open/on_close/
+            # on_error prints ever firing -- traced into signalrcore's
+            # source and found that when with_automatic_reconnect is
+            # configured (as above), a handshake that never even succeeds
+            # in the first place takes an internal path
+            # (on_socket_close -> handle_reconnect) that never reaches
+            # _set_state(disconnected), so neither on_open nor on_close
+            # fires either way. DEBUG-level logging surfaces signalrcore's
+            # own internal negotiate/handshake detail (HTTP status, close
+            # codes) needed to tell "never connected at all" apart from
+            # "connected fine, then dropped" -- remove once the actual
+            # cause is confirmed, this is too verbose for normal operation.
+            .configure_logging(logging.DEBUG)
             .build()
         )
         self._hub.on("GatewayTrade", self._on_trade_event)

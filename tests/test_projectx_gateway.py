@@ -55,12 +55,13 @@ def test_post_gives_up_after_max_retries_and_raises():
 
 
 def _make_builder_mock() -> MagicMock:
-    """A HubConnectionBuilder mock whose chained with_url/with_automatic_reconnect
-    calls all return itself, so .build() at the end of the chain is reachable --
-    matches the real builder's fluent-interface shape."""
+    """A HubConnectionBuilder mock whose chained with_url/with_automatic_reconnect/
+    configure_logging calls all return itself, so .build() at the end of the
+    chain is reachable -- matches the real builder's fluent-interface shape."""
     builder_mock = MagicMock()
     builder_mock.with_url.return_value = builder_mock
     builder_mock.with_automatic_reconnect.return_value = builder_mock
+    builder_mock.configure_logging.return_value = builder_mock
     return builder_mock
 
 
