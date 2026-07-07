@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=tradingbot
 WorkingDirectory=/home/tradingbot/trading-bot
+Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/home/tradingbot/trading-bot/.env
 ExecStart=/home/tradingbot/trading-bot/.venv/bin/python -m src.runner
 Restart=on-failure
