@@ -140,31 +140,35 @@ strategy:
                                     # instruction -- since it's proven against real NY-session data already.
                                     # Still genuinely untested against real Asia/London data itself (the
                                     # volatility/gap profile outside NY hours may not match), so retune
-                                    # fvg/entry_fvg specifically for this window once a real backtest exists,
-                                    # rather than assuming the NY-tuned values transfer directly.
-                                    # NOTE: backtest-only for now (see src/overnight_strategy.py and
-                                    # `python -m src.backtest --overnight`) -- per your explicit choice to
-                                    # review real backtest evidence first, this is NOT wired into
-                                    # runner.py/live trading yet regardless of the flag below.
-    enabled: true                  # gates src/backtest.py's --overnight mode only; no effect on live trading
-    max_trades_per_night: 2        # ASSUMPTION (added 2026-07-06): a real 30-day --overnight backtest of
-                                    # the single-stage design (38 trades, 37% WR, +$291.25 net) split
-                                    # sharply by how many trades happened on the same night: nights with
-                                    # exactly 1 trade went 4-2 (67% WR), nights with 2+ trades (reentries
-                                    # after a stop, since a win already stands down for the night --
-                                    # see reentry.allow_new_setup_after_win) went 10-24 (29% WR). The worst
-                                    # single night (2026-06-09, 4 trades, all losses, -$508.50) came on an
-                                    # unusually wide-range night, suggesting the reentry logic kept
-                                    # re-engaging through chop/trend rather than standing down after the
-                                    # first loss said something was off -- the same shape as this project's
-                                    # other real findings (a rule doing exactly what it's supposed to can
-                                    # still be net-negative if what it recovers is lower quality). Capped at
-                                    # 2 (one reentry after the first loss, then stand down) rather than 1,
-                                    # to still test whether *some* reentry helps without the unbounded
-                                    # chase -- retune once a fresh backtest with this cap exists. Deliberately
-                                    # separate from the day strategy's own reentry.allow_reentry_after_stop
-                                    # (shared config, not touched) since that's already tuned against real
-                                    # NY-session data and this is a different, untested window.
+                                    # fvg/entry_fvg specifically for this window once more real data comes
+                                    # in, rather than assuming the NY-tuned values transfer directly.
+                                    #
+                                    # WENT LIVE 2026-07-07: at your explicit instruction ("I want the
+                                    # overnight piece to go live now... this account is a combine so it
+                                    # isn't real money -- this a perfect live testing ground" / "I want to
+                                    # constantly iterate as we trade"), wired into src/runner.py alongside
+                                    # the day strategy (see Runner._StrategySlot -- each strategy manages
+                                    # its own in-flight trade independently; risk_limits below is a single
+                                    # shared account-wide cap across both, since they trade the same
+                                    # account and budget). Enabled here is no longer backtest-CLI-only --
+                                    # it now gates the live overnight slot too. Expect this to keep changing
+                                    # as real overnight trades come in; retune fvg/entry_fvg/max_trades_per_night
+                                    # against real results the same way every other threshold in this file
+                                    # has been tuned.
+    enabled: true                  # gates BOTH src/backtest.py's --overnight mode AND the live overnight
+                                    # slot in src/runner.py (see above)
+    max_trades_per_night: 4        # Raised 2026-07-07 from 2 to 4 at your explicit instruction when going
+                                    # live ("capped at 4 trades per night with the same risk tolerance").
+                                    # Untested at this value -- the only real backtest evidence so far
+                                    # (single-stage design, no cap: 38 trades, 37% WR, +$291.25 net) showed
+                                    # nights with 2+ trades performing far worse (29% WR) than single-trade
+                                    # nights (67% WR); a cap of 2 was chosen and tested for exactly that
+                                    # reason before this change, but a fresh backtest at cap=4 was never
+                                    # run before going live -- watch real results closely and be ready to
+                                    # lower this back down if multi-trade nights keep underperforming.
+                                    # Same $40-$200 stop band / 2:1 R:R as the day strategy either way
+                                    # ("same risk tolerance" -- strategy.max_stop_dollars/min_stop_dollars/
+                                    # reward_risk_ratio above, unchanged, shared with the day strategy).
 
 position_sizing:
   contract_size: 1        # START SMALL per your instructions. Bot never changes this itself.

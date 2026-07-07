@@ -533,17 +533,56 @@ NY-session data and this is a different, still-developing window. Retune
 (or remove) once a fresh backtest with the cap in place shows whether it
 actually helps or was just reacting to one bad night in a 38-trade sample.
 
-**Status: backtest-only.** Run it via:
+**Status: LIVE as of 2026-07-07**, alongside the day strategy, at your
+explicit instruction ("I want the overnight piece to go live now, capped at
+4 trades per night with the same risk tolerance" / "this account is a
+combine so it isn't real money -- this a perfect live testing ground" /
+"I want to constantly iterate as we trade"). You can still backtest it in
+isolation via:
 
 ```
 python -m src.backtest --overnight --days 30 --verbose --near-miss
 ```
 
-This is **not** wired into `runner.py`/live trading -- per your explicit
-choice ("backtest first, review, then go live"), it stays backtest-only
-until you've reviewed real results. `config.yaml`'s
-`strategy.overnight.enabled` flag only gates the `--overnight` backtest CLI
-mode; it has no effect on live trading either way.
+`config.yaml`'s `strategy.overnight.enabled` now gates **both** the
+`--overnight` backtest CLI mode and the live overnight slot in
+`src/runner.py` -- flip it to `false` to pull the overnight strategy out of
+live trading without touching anything else.
+
+**How it runs alongside the day strategy:** `Runner` now manages both
+strategies in parallel, each in its own `_StrategySlot` (`src/runner.py`)
+with independent in-flight-trade bookkeeping -- entering, checking, or
+closing a trade on one slot never touches the other's. The day slot force-
+flattens at `session.flatten_by` (13:45 ET) same as always; the overnight
+slot has no flatten deadline (`flatten_by=None`) -- an overnight trade that
+outlives its own hunting window is left open and simply monitored until it
+hits its own stop/target, matching `OvernightMomentumStrategy`'s own
+documented design (see its `on_bar`'s `IN_TRADE` handling).
+
+`risk_limits` (`max_trades_per_day`, `max_daily_loss_dollars`, `kill_switch`)
+is a **single account-wide cap shared across both strategies** via one
+`DailyRiskState` instance, not a separate budget per strategy -- they trade
+the same funded account, so a trade or a dollar of loss from either one
+counts against the same daily limit. One known, accepted wrinkle: this
+shared state resets at midnight ET (`local.date()`), which falls in the
+*middle* of a single continuous overnight window (Asia, pre-midnight, into
+London, post-midnight) -- so an overnight session's own trade/loss count,
+from the account-wide risk state's perspective, can reset partway through
+a night even though `OvernightMomentumStrategy`'s own `max_trades_per_night`
+cap (see below) does not. Not fixed here since it wasn't the ask and the
+existing day-strategy-tuned risk state is the real funded-account safety
+net; revisit if real overnight data shows this actually matters.
+
+`strategy.overnight.max_trades_per_night` was raised from 2 to 4 at your
+explicit instruction when going live -- **untested at this value.** The
+only real backtest evidence (uncapped single-stage design: 38 trades, 37%
+WR, +$291.25 net) showed nights with 2+ trades performing far worse (29%
+WR) than single-trade nights (67% WR), which is exactly why a cap of 2 was
+chosen and tested in the first place -- a fresh backtest at 4 was never run
+before this went live. Watch real results closely; per your own "constantly
+iterate" instruction, be ready to lower this back down (or retune
+fvg/entry_fvg for this window specifically) if multi-trade nights keep
+underperforming in practice.
 
 `strategy.fvg` / `strategy.entry_fvg`'s thresholds are tuned against real NY
 Opening Range data, not Asia/London -- Asia/London's own volatility/gap
@@ -732,10 +771,14 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
 - `src/risk.py` -- stop/target/size calculation described above.
 - `src/session_levels.py`, `src/opening_range.py`, `src/fvg.py` -- level
   marking, box tracking, and FVG detection respectively.
-- `src/runner.py` -- wires it all together into a run loop.
+- `src/runner.py` -- wires it all together into a run loop. Runs the day
+  strategy and the Asia/London overnight strategy in parallel (see
+  `_StrategySlot`), each with its own independent trade bookkeeping, sharing
+  one broker connection and one account-wide `DailyRiskState`.
 - `src/overnight_strategy.py` -- the Asia/London overnight momentum
-  strategy described above. Backtest-only for now (`src/backtest.py
-  --overnight`); not wired into `runner.py`.
+  strategy described above. Live in `runner.py` alongside the day strategy
+  as of 2026-07-07; also independently backtestable via `src/backtest.py
+  --overnight`.
 
 ## Before going live
 

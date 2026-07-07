@@ -67,15 +67,15 @@ def test_enter_trade_records_a_trade_when_the_broker_fills_it(tmp_path):
     cfg = load_test_config()
     broker = FakeBroker(order_id_to_return="1")
     runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
-    runner.strategy.state = State.IN_TRADE  # as if on_bar just fired this signal
+    runner.day_slot.strategy.state = State.IN_TRADE  # as if on_bar just fired this signal
 
-    runner._enter_trade(make_signal())
+    runner.day_slot._enter_trade(make_signal())
 
-    assert runner.current_order_id == "1"
-    assert runner.current_trade is not None
-    assert runner.current_trade.entry_price == 100.0
+    assert runner.day_slot.current_order_id == "1"
+    assert runner.day_slot.current_trade is not None
+    assert runner.day_slot.current_trade.entry_price == 100.0
     # Untouched -- a real fill doesn't need the not-filled reset.
-    assert runner.strategy.state is State.IN_TRADE
+    assert runner.day_slot.strategy.state is State.IN_TRADE
 
 
 def test_enter_trade_resets_strategy_when_the_broker_never_fills_the_entry(tmp_path):
@@ -89,17 +89,68 @@ def test_enter_trade_resets_strategy_when_the_broker_never_fills_the_entry(tmp_p
     cfg = load_test_config()
     broker = FakeBroker(order_id_to_return=None)
     runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
-    runner.strategy._breakout_direction = Direction.LONG
-    runner.strategy.state = State.IN_TRADE  # as if on_bar just fired this signal
+    runner.day_slot.strategy._breakout_direction = Direction.LONG
+    runner.day_slot.strategy.state = State.IN_TRADE  # as if on_bar just fired this signal
 
-    runner._enter_trade(make_signal())
+    runner.day_slot._enter_trade(make_signal())
 
-    assert runner.current_order_id is None
-    assert runner.current_trade is None
+    assert runner.day_slot.current_order_id is None
+    assert runner.day_slot.current_trade is None
     # Back to hunting within the same breakout, not stuck in IN_TRADE and
     # not reset all the way back to WAIT_BREAKOUT (no real loss occurred).
-    assert runner.strategy.state is State.WAIT_5M_FVG
-    assert runner.strategy._breakout_direction is Direction.LONG
+    assert runner.day_slot.strategy.state is State.WAIT_5M_FVG
+    assert runner.day_slot.strategy._breakout_direction is Direction.LONG
     # The broker was actually asked to place the order -- this isn't
     # skipping the attempt, just handling its failure to fill.
     assert len(broker.placed_orders) == 1
+
+
+def test_overnight_slot_is_created_when_enabled():
+    cfg = load_test_config()
+    assert cfg.strategy.overnight.enabled is True
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker)
+
+    assert runner.overnight_slot is not None
+    assert runner.overnight_slot.flatten_by is None  # never force-flattened, unlike the day slot
+
+
+def test_overnight_slot_is_absent_when_disabled():
+    cfg = load_test_config()
+    cfg.strategy.overnight.enabled = False
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker)
+
+    assert runner.overnight_slot is None
+
+
+def test_day_and_overnight_trades_are_tracked_independently(tmp_path):
+    """The two strategies must not share trade bookkeeping -- entering a
+    trade on one slot must not touch the other's current_trade/
+    current_order_id."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="day-order")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    assert runner.overnight_slot is not None
+
+    runner.day_slot._enter_trade(make_signal(entry_price=100.0))
+
+    assert runner.day_slot.current_order_id == "day-order"
+    assert runner.overnight_slot.current_order_id is None
+    assert runner.overnight_slot.current_trade is None
+
+
+def test_risk_state_is_shared_across_both_slots(tmp_path):
+    """A single account-wide daily trade-count/loss cap applies across both
+    strategies combined, since they trade the same account and budget --
+    not a separate cap per strategy."""
+    cfg = load_test_config()
+    cfg.risk_limits.max_trades_per_day = 1
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    assert runner.overnight_slot is not None
+
+    runner.risk_state.reset_if_new_day(DAY.date())
+    runner.risk_state.record_trade_result(50.0)  # counts as this account's 1st trade today
+
+    assert runner.risk_state.can_take_new_trade() is False

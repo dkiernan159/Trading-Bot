@@ -1,68 +1,71 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 from src.broker.base import Broker
 from src.config import BotConfig, load_config
 from src.logger import TradeLogger
 from src.models import Bar, Trade
+from src.overnight_strategy import EntrySignal as OvernightEntrySignal, OvernightMomentumStrategy
 from src.risk import DailyRiskState, compute_stop_target
 from src.strategy import EntrySignal, OpeningRangeStrategy
 
 
-class Runner:
-    """Wires broker -> strategy -> risk -> broker (orders) -> logger into a
-    single bar-driven loop. Works against any Broker implementation (mock or
-    real), so the same runner is used for testing and for live trading."""
+class _StrategySlot:
+    """Wraps one strategy instance with its own independent in-flight-trade
+    bookkeeping, so multiple strategies (the 9:30 ORB day strategy and the
+    Asia/London overnight strategy) can run in parallel against the same
+    broker/account without one's open trade interfering with the other's.
+    risk_state (trade count / daily P&L cap) is shared across both slots --
+    they trade the same account and the same daily risk budget, so a single
+    account-wide cap is what actually protects a funded/eval account,
+    regardless of which strategy is placing the trade.
 
-    def __init__(self, cfg: BotConfig, broker: Broker, logger: TradeLogger | None = None):
-        self.cfg = cfg
-        self.broker = broker
-        self.tz = ZoneInfo(cfg.session.timezone)
-        self.strategy = OpeningRangeStrategy(cfg)
-        self.risk_state = DailyRiskState(cfg.risk_limits)
-        self.logger = logger or TradeLogger()
+    flatten_by is a hard end-of-window flatten time (the day strategy's
+    13:45 ET), or None to never force-flatten (the overnight strategy: an
+    open trade that outlives its own hunting window is left alone rather
+    than flattened, matching that strategy's own documented design)."""
+
+    def __init__(self, strategy, flatten_by: dtime | None, runner: "Runner"):
+        self.strategy = strategy
+        self.flatten_by = flatten_by
+        self.runner = runner
         self.current_order_id: str | None = None
         self.current_trade: Trade | None = None
 
-    def start(self) -> None:
-        self.broker.connect()
-        self.broker.subscribe_bars(self.cfg.instrument.symbol, 1, self.on_bar)
-
-    def on_bar(self, bar: Bar) -> None:
-        local = bar.timestamp.astimezone(self.tz)
-        self.risk_state.reset_if_new_day(local.date())
-
+    def on_bar(self, bar: Bar, local_time: dtime) -> None:
         if self.current_trade is not None:
-            if local.time() >= self.cfg.session.flatten_by:
+            if self.flatten_by is not None and local_time >= self.flatten_by:
                 self._flatten_current_trade(bar)
             else:
                 self._check_open_trade(bar)
             return
 
-        if not self.risk_state.can_take_new_trade():
+        if not self.runner.risk_state.can_take_new_trade():
             return
 
         signal = self.strategy.on_bar(bar)
         if signal is not None:
             self._enter_trade(signal)
 
-    def _enter_trade(self, signal: EntrySignal) -> None:
+    def _enter_trade(self, signal: EntrySignal | OvernightEntrySignal) -> None:
+        cfg = self.runner.cfg
         bracket = compute_stop_target(
             direction=signal.direction,
             entry_price=signal.entry_price,
             structural_levels=signal.structural_levels,
-            max_stop_dollars=self.cfg.strategy.max_stop_dollars,
-            min_stop_dollars=self.cfg.strategy.min_stop_dollars,
-            point_value=self.cfg.instrument.point_value,
-            contracts=self.cfg.position_sizing.contract_size,
-            reward_risk_ratio=self.cfg.strategy.reward_risk_ratio,
+            max_stop_dollars=cfg.strategy.max_stop_dollars,
+            min_stop_dollars=cfg.strategy.min_stop_dollars,
+            point_value=cfg.instrument.point_value,
+            contracts=cfg.position_sizing.contract_size,
+            reward_risk_ratio=cfg.strategy.reward_risk_ratio,
         )
-        contracts = self.cfg.position_sizing.contract_size
+        contracts = cfg.position_sizing.contract_size
 
-        order_id = self.broker.place_bracket_order(
-            symbol=self.cfg.instrument.symbol,
+        order_id = self.runner.broker.place_bracket_order(
+            symbol=cfg.instrument.symbol,
             direction=signal.direction,
             contracts=contracts,
             entry_price=signal.entry_price,
@@ -75,10 +78,10 @@ class Runner:
             # resting entry order never actually got filled -- e.g. price
             # had already moved on by the time the order reached the
             # exchange, given the ~60s lag between a bar closing and the
-            # order being placed. strategy.py already moved to IN_TRADE
+            # order being placed. The strategy already moved to IN_TRADE
             # internally the moment it returned this signal; tell it
             # nothing was actually taken so it goes back to hunting
-            # instead of sitting stuck in a phantom trade all day.
+            # instead of sitting stuck in a phantom trade.
             self.strategy.notify_entry_not_filled()
             return
         self.current_order_id = order_id
@@ -93,7 +96,7 @@ class Runner:
 
     def _check_open_trade(self, bar: Bar) -> None:
         assert self.current_trade is not None and self.current_order_id is not None
-        status = self.broker.poll_order_status(self.current_order_id)
+        status = self.runner.broker.poll_order_status(self.current_order_id)
         if status == "open":
             return
 
@@ -105,24 +108,60 @@ class Runner:
         )
 
     def _flatten_current_trade(self, bar: Bar) -> None:
-        self.broker.flatten_all(self.cfg.instrument.symbol)
+        self.runner.broker.flatten_all(self.runner.cfg.instrument.symbol)
         self._close_current_trade(exit_price=bar.close, exit_time=bar.timestamp, exit_reason="flatten")
 
-    def _close_current_trade(self, exit_price: float, exit_time, exit_reason: str) -> None:
+    def _close_current_trade(self, exit_price: float, exit_time: datetime, exit_reason: str) -> None:
         trade = self.current_trade
         assert trade is not None
         trade.exit_price = exit_price
         trade.exit_time = exit_time
         trade.exit_reason = exit_reason
 
-        pnl = trade.pnl_dollars(self.cfg.instrument.point_value) or 0.0
-        self.risk_state.record_trade_result(pnl)
-        self.logger.log_trade(trade, self.cfg.instrument.point_value)
+        pnl = trade.pnl_dollars(self.runner.cfg.instrument.point_value) or 0.0
+        self.runner.risk_state.record_trade_result(pnl)
+        self.runner.logger.log_trade(trade, self.runner.cfg.instrument.point_value)
 
         self.strategy.notify_trade_closed(won=(exit_reason == "target"))
 
         self.current_trade = None
         self.current_order_id = None
+
+
+class Runner:
+    """Wires broker -> strategy -> risk -> broker (orders) -> logger into a
+    single bar-driven loop. Works against any Broker implementation (mock or
+    real), so the same runner is used for testing and for live trading.
+
+    Runs the 9:30 ORB day strategy and the Asia/London overnight strategy in
+    parallel, each in its own _StrategySlot -- both see every bar, neither
+    knows the other exists, and each manages its own trade independently.
+    The overnight slot is only created when cfg.strategy.overnight.enabled
+    is true."""
+
+    def __init__(self, cfg: BotConfig, broker: Broker, logger: TradeLogger | None = None):
+        self.cfg = cfg
+        self.broker = broker
+        self.tz = ZoneInfo(cfg.session.timezone)
+        self.risk_state = DailyRiskState(cfg.risk_limits)
+        self.logger = logger or TradeLogger()
+
+        self.day_slot = _StrategySlot(OpeningRangeStrategy(cfg), cfg.session.flatten_by, self)
+        self.overnight_slot: _StrategySlot | None = None
+        if cfg.strategy.overnight.enabled:
+            self.overnight_slot = _StrategySlot(OvernightMomentumStrategy(cfg), None, self)
+
+    def start(self) -> None:
+        self.broker.connect()
+        self.broker.subscribe_bars(self.cfg.instrument.symbol, 1, self.on_bar)
+
+    def on_bar(self, bar: Bar) -> None:
+        local = bar.timestamp.astimezone(self.tz)
+        self.risk_state.reset_if_new_day(local.date())
+
+        self.day_slot.on_bar(bar, local.time())
+        if self.overnight_slot is not None:
+            self.overnight_slot.on_bar(bar, local.time())
 
 
 def main() -> None:
@@ -146,6 +185,11 @@ def main() -> None:
             "Running in DRY RUN mode (config.yaml: broker.dry_run) -- no real "
             "orders will be sent. Flip to false only after verifying the "
             "unverified items in src/broker/projectx_gateway.py."
+        )
+    if cfg.strategy.overnight.enabled:
+        print(
+            "Overnight (Asia/London) strategy is LIVE alongside the day strategy "
+            "(config.yaml: strategy.overnight.enabled)."
         )
 
     # subscribe_bars() only registers the callback and starts the SignalR
