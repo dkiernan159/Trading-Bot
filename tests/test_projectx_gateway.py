@@ -54,21 +54,27 @@ def test_post_gives_up_after_max_retries_and_raises():
             broker._post("/History/retrieveBars", {}, max_retries=4)
 
 
-def test_on_hub_closed_reauthenticates_and_rebuilds_the_hub_with_a_fresh_token():
-    """A real bot running over a day straight logged an unbroken stream of
-    signalrcore's own reconnect-failure message -- automatic reconnect
-    reuses the exact same URL (and therefore the same access_token) on
-    every retry, so once the token itself expires, no retry can ever
-    succeed. _on_hub_closed must call connect() (refreshing self._token)
-    and rebuild the hub against a URL carrying the *new* token, not just
-    retry the old one."""
+def _make_builder_mock() -> MagicMock:
+    """A HubConnectionBuilder mock whose chained with_url/with_automatic_reconnect
+    calls all return itself, so .build() at the end of the chain is reachable --
+    matches the real builder's fluent-interface shape."""
+    builder_mock = MagicMock()
+    builder_mock.with_url.return_value = builder_mock
+    builder_mock.with_automatic_reconnect.return_value = builder_mock
+    return builder_mock
+
+
+def test_on_hub_closed_reconnects_with_a_fresh_token():
+    """_on_hub_closed must call connect() (refreshing self._token) and
+    rebuild the hub against a URL carrying the *new* token, not just
+    retry the old one -- otherwise, once the token itself expires, no
+    retry can ever succeed."""
     broker = make_broker()
     broker._realtime_contract_id = "CON.F.US.MNQ.U26"
     broker._on_bar = lambda bar: None
 
     hub_mocks = [MagicMock(), MagicMock()]
-    builder_mock = MagicMock()
-    builder_mock.with_url.return_value = builder_mock
+    builder_mock = _make_builder_mock()
     urls_used = []
 
     def fake_with_url(url, **kwargs):
@@ -83,7 +89,7 @@ def test_on_hub_closed_reauthenticates_and_rebuilds_the_hub_with_a_fresh_token()
 
     with patch("src.broker.projectx_gateway.HubConnectionBuilder", return_value=builder_mock), patch.object(
         broker, "connect", side_effect=fake_connect
-    ) as mock_connect, patch("src.broker.projectx_gateway.time_module.sleep"):
+    ) as mock_connect:
         broker._token = "stale-token"
         broker._start_hub()
         assert "stale-token" in urls_used[0]
@@ -95,28 +101,61 @@ def test_on_hub_closed_reauthenticates_and_rebuilds_the_hub_with_a_fresh_token()
     assert hub_mocks[1].start.called
 
 
-def test_on_hub_closed_retries_reauth_on_failure_until_it_succeeds():
+def test_on_hub_closed_gives_up_silently_on_reauth_failure():
+    """Unlike an earlier version of this fix, _on_hub_closed is now a
+    single best-effort attempt, not a blocking retry-until-success loop --
+    confirmed live that this callback doesn't reliably fire for every real
+    failure mode in the first place (see _start_realtime_refresh_thread's
+    docstring), so a failed attempt here just waits for the next scheduled
+    refresh rather than blocking whatever thread called this indefinitely."""
     broker = make_broker()
     broker._realtime_contract_id = "CON.F.US.MNQ.U26"
     broker._on_bar = lambda bar: None
-
-    builder_mock = MagicMock()
-    builder_mock.with_url.return_value = builder_mock
-
-    connect_attempts = [Exception("still down"), Exception("still down"), None]
-
-    def fake_connect():
-        result = connect_attempts.pop(0)
-        if isinstance(result, Exception):
-            raise result
+    builder_mock = _make_builder_mock()
 
     with patch("src.broker.projectx_gateway.HubConnectionBuilder", return_value=builder_mock), patch.object(
-        broker, "connect", side_effect=fake_connect
-    ) as mock_connect, patch("src.broker.projectx_gateway.time_module.sleep") as mock_sleep:
+        broker, "connect", side_effect=Exception("still down")
+    ) as mock_connect:
         broker._on_hub_closed()
 
-    assert mock_connect.call_count == 3
-    assert mock_sleep.call_count == 3
+    mock_connect.assert_called_once()
+    builder_mock.build.assert_not_called()  # no rebuild attempted after a failed reauth
+
+
+def test_subscribe_bars_starts_the_realtime_refresh_thread():
+    """subscribe_bars must actually wire up the scheduled refresh -- the
+    periodic timer is the real fix for the stale-token bug (see
+    _start_realtime_refresh_thread's docstring); on_close/on_error alone
+    don't reliably catch every real failure mode."""
+    broker = make_broker()
+    broker._contract_id = "CON.F.US.MNQ.U26"
+    builder_mock = _make_builder_mock()
+
+    with patch("src.broker.projectx_gateway.HubConnectionBuilder", return_value=builder_mock), patch.object(
+        broker, "_start_realtime_refresh_thread"
+    ) as mock_start_thread:
+        broker.subscribe_bars("MNQ", 1, lambda bar: None)
+
+    mock_start_thread.assert_called_once()
+
+
+def test_realtime_refresh_loop_reconnects_on_a_fixed_schedule():
+    """The scheduled refresh is unconditional -- it doesn't wait for any
+    close/error callback to fire, since confirmed live those don't always
+    fire for every real failure mode."""
+    broker = make_broker()
+
+    class _StopLoop(Exception):
+        pass
+
+    with patch("src.broker.projectx_gateway.time_module.sleep") as mock_sleep, patch.object(
+        broker, "_reconnect_hub", side_effect=[None, _StopLoop]
+    ) as mock_reconnect:
+        with pytest.raises(_StopLoop):
+            broker._realtime_refresh_loop()
+
+    assert mock_sleep.call_count == 2
+    assert mock_reconnect.call_count == 2
 
 
 def test_post_does_not_retry_on_other_error_statuses():

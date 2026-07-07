@@ -45,6 +45,7 @@ end to end first.
 """
 
 import os
+import threading
 import time as time_module
 from datetime import datetime, timezone
 from typing import Callable
@@ -57,6 +58,12 @@ from src.models import Bar, Direction
 
 API_PATH = "/api"
 REALTIME_MARKET_HUB = "/hubs/market"
+# ASSUMPTION: the real ProjectX Gateway token lifetime is unverified -- see
+# subscribe_bars/_start_realtime_refresh_thread. An hour is a conservative
+# guess at "comfortably under whatever the real expiry turns out to be";
+# watch logs/bot.log for how long a hub actually survives and shorten this
+# if it expires faster in practice.
+REALTIME_REFRESH_INTERVAL_SECONDS = 60 * 60
 
 ORDER_TYPE_LIMIT = 1
 ORDER_TYPE_MARKET = 2  # unused -- entry is a real LIMIT order, not MARKET; see place_bracket_order
@@ -196,19 +203,18 @@ class ProjectXGatewayBroker(Broker):
         self._on_bar = on_bar
         self._realtime_contract_id = self._resolve_contract(symbol)
         self._start_hub()
+        self._start_realtime_refresh_thread()
 
     def _start_hub(self) -> None:
-        # Deliberately no with_automatic_reconnect: that reuses the exact
-        # same URL (and therefore the same access_token) on every retry, so
-        # if the connection drops because the auth token itself expired --
-        # confirmed live: a bot running over a day straight logged an
-        # unbroken stream of signalrcore's own "Socket closed by the the
-        # server" reconnect-failure message -- it can never succeed, since
-        # every retry is rejected by the same expired token. _on_hub_closed
-        # re-authenticates (refreshing self._token) and rebuilds the hub
-        # with a fresh URL instead, so a reconnect can actually succeed.
         hub_url = f"{self.realtime_base_url}{REALTIME_MARKET_HUB}?access_token={self._token}"
-        self._hub = HubConnectionBuilder().with_url(hub_url, options={"verify_ssl": True}).build()
+        self._hub = (
+            HubConnectionBuilder()
+            .with_url(hub_url, options={"verify_ssl": True})
+            .with_automatic_reconnect(
+                {"type": "raw", "keep_alive_interval": 10, "reconnect_interval": 5}
+            )
+            .build()
+        )
         self._hub.on("GatewayTrade", self._on_trade_event)
         self._hub.on_open(self._on_hub_open)
         self._hub.on_close(self._on_hub_closed)
@@ -218,9 +224,7 @@ class ProjectXGatewayBroker(Broker):
     def _on_hub_open(self) -> None:
         # Confirms the handshake actually completed and a subscribe request
         # was sent -- without this, "no output at all" is ambiguous between
-        # "connected fine, just no ticks yet" and "never actually opened"
-        # (a failure at the initial handshake, before any connection has
-        # ever been open, doesn't go through _on_hub_closed).
+        # "connected fine, just no ticks yet" and "never actually opened".
         print(f"[LIVE] realtime hub connected -- subscribing to contract {self._realtime_contract_id}")
         self._hub.send("SubscribeContractTrades", [self._realtime_contract_id])
 
@@ -228,15 +232,52 @@ class ProjectXGatewayBroker(Broker):
         print(f"[LIVE] WARNING: realtime hub error: {error}")
 
     def _on_hub_closed(self) -> None:
-        print("[LIVE] realtime hub closed -- re-authenticating and reconnecting with a fresh token")
+        # Best-effort only -- confirmed live that this callback doesn't
+        # reliably fire for every real failure mode (a keepalive ping
+        # failing mid-send goes through a different internal path in
+        # signalrcore that repeats every keep_alive_interval without ever
+        # reaching here), so _start_realtime_refresh_thread's unconditional
+        # timer is the real safety net, not this.
+        print("[LIVE] realtime hub closed -- attempting to reconnect with a fresh token")
+        self._reconnect_hub()
+
+    def _start_realtime_refresh_thread(self) -> None:
+        """Proactively tears down and rebuilds the realtime hub (with a
+        freshly re-authenticated token) on a fixed schedule, regardless of
+        whether any close/error callback ever fires. Confirmed live: a bot
+        logged an unbroken stream of signalrcore's own reconnect-failure
+        warning ("Socket closed by the the server", a real typo in that
+        library) for 20+ minutes straight with zero corresponding [LIVE]
+        output from _on_hub_closed -- that callback silently never ran for
+        however this particular failure actually happened (traced to a
+        keepalive ping's send() failing internally, which only calls
+        handle_reconnect()/raises, never reaching the hub-level on_close
+        this class hooks). Rather than keep chasing signalrcore's internal
+        reconnect state machine, this sidesteps it entirely with a dumb,
+        unconditional timer. REALTIME_REFRESH_INTERVAL_SECONDS (1 hour) is
+        an ASSUMPTION -- the real ProjectX Gateway token lifetime is
+        unverified; watch logs/bot.log for how long a hub actually survives
+        in practice and shorten this if it turns out to expire faster."""
+        thread = threading.Thread(target=self._realtime_refresh_loop, daemon=True)
+        thread.start()
+
+    def _realtime_refresh_loop(self) -> None:
         while True:
-            time_module.sleep(5)
-            try:
-                self.connect()
-            except Exception as e:
-                print(f"[LIVE] WARNING: re-auth after hub close failed ({e}); retrying in 5s")
-                continue
-            break
+            time_module.sleep(REALTIME_REFRESH_INTERVAL_SECONDS)
+            print("[LIVE] proactively refreshing the realtime connection (scheduled, not error-triggered)")
+            self._reconnect_hub()
+
+    def _reconnect_hub(self) -> None:
+        try:
+            self.connect()
+        except Exception as e:
+            print(f"[LIVE] WARNING: re-auth failed ({e}); will retry at the next scheduled refresh")
+            return
+        try:
+            if self._hub is not None:
+                self._hub.stop()
+        except Exception as e:
+            print(f"[LIVE] WARNING: failed to stop the old hub cleanly ({e}); rebuilding anyway")
         self._start_hub()
 
     def _on_trade_event(self, args) -> None:

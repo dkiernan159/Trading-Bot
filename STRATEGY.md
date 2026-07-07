@@ -645,15 +645,39 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   reports it as `active (running)` throughout), so this fails silently:
   the bot goes permanently deaf to real-time market data mid-session with
   no visible error apart from a repeating log line easy to mistake for
-  harmless reconnect chatter. Fixed by removing `with_automatic_reconnect`
-  entirely and registering `_on_hub_closed` (`src/broker/
-  projectx_gateway.py`) instead, which calls `connect()` again (refreshing
-  `self._token` via a fresh `/Auth/loginKey` call) and rebuilds the hub
-  against a URL carrying the *new* token, retrying every 5s until
-  re-auth succeeds. Verified via revert-and-confirm: reverting back to
-  the original `with_automatic_reconnect`-only path caused
-  `test_on_hub_closed_reauthenticates_and_rebuilds_the_hub_with_a_fresh_token`
-  to fail (see `tests/test_projectx_gateway.py`).
+  harmless reconnect chatter.
+
+  First fix attempt (same day) removed `with_automatic_reconnect` and
+  added an `on_close` handler (`_on_hub_closed`) that re-authenticates and
+  rebuilds the hub -- redeployed, and the *exact same* endless "Socket
+  closed" spam continued for 20+ minutes with zero corresponding output
+  from that handler, meaning it was never actually being invoked for this
+  failure. Traced into `signalrcore`'s own source: the observed failure
+  path is a periodic keepalive ping's `send()` failing on an already-dead
+  socket (`websocket_transport.py`'s `send()`), which -- when no
+  reconnection handler is configured, exactly the state my first fix put
+  it in -- logs the warning and `raise`s directly, never reaching the
+  hub-level `on_close` callback this class hooks at all. So the very
+  first attempt at "detect the failure and react to it" was defeated by
+  signalrcore's own internal state machine taking a different path than
+  expected, on a real, once-deployed, and re-tested basis.
+
+  Given that a reactive, callback-based fix had already failed once in
+  practice, the actual fix abandons trying to reliably detect *any*
+  failure mode and instead runs a plain, unconditional background timer
+  (`_start_realtime_refresh_thread`, `REALTIME_REFRESH_INTERVAL_SECONDS`,
+  currently 1 hour -- an ASSUMPTION, since the real token lifetime is
+  itself unverified) that re-authenticates and tears down/rebuilds the
+  hub on a fixed schedule regardless of whether anything ever appears to
+  go wrong. `with_automatic_reconnect` and the `on_close`/`on_error`
+  handlers are still kept (transient blips should still recover quickly
+  and their diagnostic prints are still useful), but the scheduled timer
+  -- not any callback -- is the thing actually relied upon to guarantee
+  the token never gets stale enough to cause a permanent failure.
+  Verified via revert-and-confirm on both the reconnect-with-fresh-token
+  logic and the thread actually being wired up from `subscribe_bars` (see
+  `tests/test_projectx_gateway.py`) -- both reverts caused a real test
+  failure.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover
