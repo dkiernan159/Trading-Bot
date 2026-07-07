@@ -592,13 +592,33 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
     whenever markets are closed -- it filters to contracts in an active
     trading session, not "all listed contracts" -- so contract resolution
     always uses `live: false`.
+  - **Confirmed live against a real account (2026-07-07), via a temporary
+    DEBUG-level `signalrcore` logging pass:** the realtime hub connects and
+    receives `GatewayTrade` events continuously and healthily -- the field
+    names guessed in `_on_trade_event` (`price`, `volume`, `timestamp`) are
+    exactly right, no fallback keys ever needed. But the *outer shape* of
+    the handler's `args` was wrong: it's `[contractId, [tick_dict, tick_dict,
+    ...]]` -- signalrcore calls the handler with the raw hub message
+    `arguments` list untouched, and for `GatewayTrade` that list is
+    `[contractId, ticks]`, not a flat list of tick dicts. The previous
+    "`isinstance(args, list)` else `[args]`" logic treated that whole
+    2-element list as the events list, so every real tick was silently
+    dropped forever: neither the contract-id string nor the nested ticks
+    list itself is ever a `dict`, so both elements failed the `isinstance
+    (event, dict)` check and were skipped. **No bars were ever built from
+    live ticks as a result** -- despite the connection looking completely
+    healthy, printing no errors or warnings, and (per the systemd `active
+    (running)` status) never crashing. This is exactly the kind of bug the
+    "unverified, watch the terminal" plan above was meant to catch, and it
+    didn't: `_on_trade_event`'s own missing-price warning only checks
+    individual *events* for a missing key, not whether the outer envelope
+    was ever unpacked into individual events correctly in the first place.
+    Fixed in `_on_trade_event` to unpack `args[1]` when the shape matches;
+    regression test in `tests/test_projectx_gateway.py` using the real
+    payload shape observed live, verified via revert-and-confirm.
 
   Still **unverified** -- the docs portal 403's an unauthenticated fetch,
-  so these need a live check once you're logged in. The first few
-  real-time trade events and every `/Order/searchOpen` call print their
-  raw payload for exactly this reason (`src/broker/projectx_gateway.py`)
-  -- watch the terminal on first run:
-  - Exact field names inside a `GatewayTrade` payload (guessed defensively).
+  so these need a live check once you're logged in.
   - The exact response envelope key for `/Order/searchOpen` (assumed
     `"orders"`).
   - Whether `linkedOrderId` makes the gateway auto-cancel the sibling
@@ -678,6 +698,30 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   logic and the thread actually being wired up from `subscribe_bars` (see
   `tests/test_projectx_gateway.py`) -- both reverts caused a real test
   failure.
+
+  **Postscript, same day:** the "endless reconnect-failure spam" that
+  motivated all of the above turned out to be a red herring for a
+  different reason than any of it addressed -- repeated `tail`s of
+  `logs/bot.log` kept showing the same spam even against a freshly
+  restarted process with all these fixes in place, which pointed at
+  something more fundamental. Enabling temporary DEBUG-level
+  `signalrcore` logging (see the `GatewayTrade` note above) revealed the
+  connection was actually healthy the whole time, receiving real ticks
+  continuously -- what looked like fresh evidence of the bug across
+  several exchanges was, each time, stale terminal scrollback from a much
+  earlier command still visible above the actual (empty, or differently-
+  problematic) output of whatever had just been run, compounded by a
+  separate, unrelated permission issue (`bot.log` was owned by `root` from
+  being run manually before the `tradingbot` systemd setup existed, so
+  `tail`/`truncate` run as `tradingbot` silently failed or errored). None
+  of the reconnect work above was wasted -- the token-refresh timer is
+  still real, useful insurance for whenever the token does eventually
+  expire, and the on_open/on_error/on_close diagnostics are what actually
+  let this get untangled -- but the *original* symptom that kicked off
+  this whole chain was never actually live evidence of anything currently
+  wrong. The real, still-live bug this session was masking is the
+  `_on_trade_event` payload-shape bug documented above, which silently
+  dropped every real tick with no error at all.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover

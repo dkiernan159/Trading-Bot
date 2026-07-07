@@ -55,13 +55,12 @@ def test_post_gives_up_after_max_retries_and_raises():
 
 
 def _make_builder_mock() -> MagicMock:
-    """A HubConnectionBuilder mock whose chained with_url/with_automatic_reconnect/
-    configure_logging calls all return itself, so .build() at the end of the
-    chain is reachable -- matches the real builder's fluent-interface shape."""
+    """A HubConnectionBuilder mock whose chained with_url/with_automatic_reconnect
+    calls all return itself, so .build() at the end of the chain is reachable --
+    matches the real builder's fluent-interface shape."""
     builder_mock = MagicMock()
     builder_mock.with_url.return_value = builder_mock
     builder_mock.with_automatic_reconnect.return_value = builder_mock
-    builder_mock.configure_logging.return_value = builder_mock
     return builder_mock
 
 
@@ -121,6 +120,50 @@ def test_on_hub_closed_gives_up_silently_on_reauth_failure():
 
     mock_connect.assert_called_once()
     builder_mock.build.assert_not_called()  # no rebuild attempted after a failed reauth
+
+
+def test_on_trade_event_unpacks_the_real_contract_id_plus_ticks_shape():
+    """Confirmed live 2026-07-07 via DEBUG-level signalrcore logging: the
+    real GatewayTrade invocation arguments are [contractId, [tick_dict,
+    tick_dict, ...]], not a flat list of tick dicts. Before this fix, every
+    real tick was silently dropped forever -- neither the contract-id
+    string nor the nested ticks list itself is ever a dict -- despite the
+    connection receiving GatewayTrade messages continuously and healthily.
+    No bars were ever built from live ticks as a result."""
+    broker = make_broker()
+    received_bars = []
+    broker._on_bar = lambda bar: received_bars.append(bar)
+
+    real_shaped_args = [
+        "CON.F.US.MNQ.U26",
+        [
+            {
+                "symbolId": "F.US.MNQ",
+                "price": 29748.50,
+                "timestamp": "2026-07-07T02:33:48.604+00:00",
+                "type": 0,
+                "volume": 1,
+                "contractId": "CON.F.US.MNQ.U26",
+            },
+            {
+                "symbolId": "F.US.MNQ",
+                "price": 29749.00,
+                "timestamp": "2026-07-07T02:33:48.700+00:00",
+                "type": 0,
+                "volume": 2,
+                "contractId": "CON.F.US.MNQ.U26",
+            },
+        ],
+    ]
+
+    broker._on_trade_event(real_shaped_args)
+
+    assert broker._current_bar is not None
+    bar = broker._current_bar["bar"]
+    assert bar.close == pytest.approx(29749.00)
+    assert bar.high == pytest.approx(29749.00)
+    assert bar.low == pytest.approx(29748.50)
+    assert bar.volume == pytest.approx(3)
 
 
 def test_subscribe_bars_starts_the_realtime_refresh_thread():

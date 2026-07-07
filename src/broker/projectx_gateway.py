@@ -44,7 +44,6 @@ account. Do not flip it off against a live funded account without testing
 end to end first.
 """
 
-import logging
 import os
 import threading
 import time as time_module
@@ -214,21 +213,6 @@ class ProjectXGatewayBroker(Broker):
             .with_automatic_reconnect(
                 {"type": "raw", "keep_alive_interval": 10, "reconnect_interval": 5}
             )
-            # TEMPORARY diagnostic (added 2026-07-07): a live bot only ever
-            # logged signalrcore's generic "Socket closed by the the
-            # server" with none of this class's own on_open/on_close/
-            # on_error prints ever firing -- traced into signalrcore's
-            # source and found that when with_automatic_reconnect is
-            # configured (as above), a handshake that never even succeeds
-            # in the first place takes an internal path
-            # (on_socket_close -> handle_reconnect) that never reaches
-            # _set_state(disconnected), so neither on_open nor on_close
-            # fires either way. DEBUG-level logging surfaces signalrcore's
-            # own internal negotiate/handshake detail (HTTP status, close
-            # codes) needed to tell "never connected at all" apart from
-            # "connected fine, then dropped" -- remove once the actual
-            # cause is confirmed, this is too verbose for normal operation.
-            .configure_logging(logging.DEBUG)
             .build()
         )
         self._hub.on("GatewayTrade", self._on_trade_event)
@@ -297,7 +281,30 @@ class ProjectXGatewayBroker(Broker):
         self._start_hub()
 
     def _on_trade_event(self, args) -> None:
-        events = args if isinstance(args, list) else [args]
+        # Confirmed live 2026-07-07 (DEBUG-level signalrcore logging): the
+        # real invocation shape is [contractId, [tick_dict, tick_dict, ...]]
+        # -- signalrcore calls the handler with the hub message's raw
+        # `arguments` list untouched (see base_hub_connection.py's
+        # `handler(message.arguments)`), which for GatewayTrade is
+        # [contractId, ticks], not a flat list of tick dicts. The previous
+        # "isinstance(args, list) else [args]" logic treated that whole
+        # 2-element list as the events list, so every real tick was
+        # silently dropped forever -- neither the contract-id string nor
+        # the nested ticks list itself ever satisfies `isinstance(event,
+        # dict)` below -- despite the connection receiving GatewayTrade
+        # messages continuously and healthily. No bars were ever built
+        # from live ticks as a result, even though nothing looked broken
+        # (no errors, no warnings -- see the "unverified" note in
+        # STRATEGY.md this was meant to catch, which it didn't, since it
+        # only checks *individual* events for a missing price key, not
+        # whether the outer shape was ever unpacked correctly in the first
+        # place).
+        if len(args) == 2 and isinstance(args[1], list):
+            events = args[1]
+        elif isinstance(args, list):
+            events = args
+        else:
+            events = [args]
         for event in events:
             if self._trade_event_log_count < 5:
                 self._trade_event_log_count += 1
