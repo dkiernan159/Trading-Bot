@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import time
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from src.broker.base import Broker
@@ -139,12 +141,20 @@ class Runner:
     The overnight slot is only created when cfg.strategy.overnight.enabled
     is true."""
 
-    def __init__(self, cfg: BotConfig, broker: Broker, logger: TradeLogger | None = None):
+    def __init__(
+        self,
+        cfg: BotConfig,
+        broker: Broker,
+        logger: TradeLogger | None = None,
+        status_path: str = "trades/status.json",
+    ):
         self.cfg = cfg
         self.broker = broker
         self.tz = ZoneInfo(cfg.session.timezone)
         self.risk_state = DailyRiskState(cfg.risk_limits)
         self.logger = logger or TradeLogger()
+        self.status_path = Path(status_path)
+        self.status_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.day_slot = _StrategySlot(OpeningRangeStrategy(cfg), cfg.session.flatten_by, self)
         self.overnight_slot: _StrategySlot | None = None
@@ -162,6 +172,34 @@ class Runner:
         self.day_slot.on_bar(bar, local.time())
         if self.overnight_slot is not None:
             self.overnight_slot.on_bar(bar, local.time())
+        self._write_status(bar)
+
+    def _write_status(self, bar: Bar) -> None:
+        """Dashboard-only visibility into what each strategy is currently
+        doing (see src/dashboard.py's "Bot activity" section) -- never read
+        by the trading logic itself, so a failure to write it must never
+        take down live trading."""
+        status = {
+            "last_bar_time": bar.timestamp.isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "day": {
+                **self.day_slot.strategy.status_snapshot(),
+                "in_trade": self.day_slot.current_trade is not None,
+            },
+            "overnight": (
+                {
+                    **self.overnight_slot.strategy.status_snapshot(),
+                    "in_trade": self.overnight_slot.current_trade is not None,
+                }
+                if self.overnight_slot is not None
+                else None
+            ),
+        }
+        try:
+            with open(self.status_path, "w") as f:
+                json.dump(status, f)
+        except OSError:
+            pass
 
 
 def main() -> None:

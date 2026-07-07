@@ -779,6 +779,31 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   strategy described above. Live in `runner.py` alongside the day strategy
   as of 2026-07-07; also independently backtestable via `src/backtest.py
   --overnight`.
+- `src/dashboard.py` / `src/dashboard_template.html` -- always-on local
+  HTTP dashboard (binds `127.0.0.1` only, viewed via SSH port-forward, see
+  DEPLOY.md), with three data sources:
+  - Live trades: `trades/trades.csv` read fresh on every request (cheap,
+    local, no API cost) -- closed trades only, since a trade is only ever
+    logged once it exits.
+  - Periodic backtest: calls the real TopstepX API, so it's only refreshed
+    on a background timer (`dashboard.refresh_interval_seconds`), not per
+    request.
+  - **Bot activity (added 2026-07-07):** requested by the user after going
+    live overnight, since the dashboard otherwise only shows *closed*
+    trades and gives no sense of whether the bot is actually alive and
+    hunting between them. `Runner._write_status` writes `trades/status.json`
+    after every bar (wrapped in `try/except OSError` -- a failure to write
+    this file is dashboard-only and must never take down live trading) with
+    each strategy's `status_snapshot()` (state name, direction, anchor gap
+    bounds, pending limit price -- a plain read-only view with no effect on
+    trading decisions) plus whether that slot currently has an open trade.
+    `src/dashboard.py`'s `read_status()` tolerates a missing file (bot
+    hasn't processed its first bar yet) and a torn/mid-write read (the
+    write isn't atomic) by returning `None` in both cases, same pattern as
+    `read_live_trades()`. Served at `/api/status.json` and rendered as a
+    "Bot activity" card per strategy, polled every 10s alongside live
+    trades (both are free local file reads; only the backtest section is
+    on the slower, API-cost-aware timer).
 
 ## Before going live
 

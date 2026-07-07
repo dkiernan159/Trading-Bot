@@ -140,6 +140,20 @@ class OpeningRangeStrategy:
         progress (None before 9:30 ET marks them for the day)."""
         return self._levels
 
+    def status_snapshot(self) -> dict:
+        """Plain-dict view of what the strategy is currently doing -- for
+        the dashboard's live "bot activity" view only (src/runner.py writes
+        this out after every bar); has no effect on trading decisions."""
+        return {
+            "state": self.state.name,
+            "direction": self._breakout_direction.value if self._breakout_direction else None,
+            "box_high": self.box.high,
+            "box_low": self.box.low,
+            "anchor_gap_low": self._anchor_fvg.gap_low if self._anchor_fvg else None,
+            "anchor_gap_high": self._anchor_fvg.gap_high if self._anchor_fvg else None,
+            "pending_limit_price": self._pending_limit_price,
+        }
+
     def _entry_price(self, gap: FairValueGap) -> float:
         """The resting limit price for an anchor: how far price must
         retrace into the gap before counting as filled, as a fraction

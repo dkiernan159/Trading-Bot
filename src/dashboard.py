@@ -25,6 +25,7 @@ from src.config import BotConfig, load_config
 
 TEMPLATE_PATH = Path(__file__).with_name("dashboard_template.html")
 TRADES_CSV_PATH = "trades/trades.csv"
+STATUS_JSON_PATH = "trades/status.json"
 
 
 def read_live_trades(csv_path: str = TRADES_CSV_PATH) -> list[dict]:
@@ -55,6 +56,21 @@ def read_live_trades(csv_path: str = TRADES_CSV_PATH) -> list[dict]:
             )
     rows.sort(key=lambda r: r["entry_time"], reverse=True)
     return rows
+
+
+def read_status(path: str = STATUS_JSON_PATH) -> dict | None:
+    """Reads the live bot's current per-strategy status (src/runner.py
+    writes this out after every bar) -- None if the bot hasn't written one
+    yet (e.g. before its first bar), which the dashboard treats as "no
+    activity to show" rather than an error."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None  # tolerate reading mid-write; the next poll gets a clean copy
 
 
 class BacktestCache:
@@ -108,6 +124,8 @@ def make_handler(backtest_cache: BacktestCache) -> type[BaseHTTPRequestHandler]:
                 self._serve_html()
             elif self.path == "/api/live-trades.json":
                 self._serve_json(read_live_trades())
+            elif self.path == "/api/status.json":
+                self._serve_json(read_status())
             elif self.path == "/api/backtest.json":
                 self._serve_json(backtest_cache.snapshot())
             else:

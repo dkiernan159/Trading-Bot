@@ -615,3 +615,32 @@ def test_stands_down_for_day_after_cutoff():
 
     assert signal is None
     assert strategy.state is State.DONE_FOR_DAY
+
+
+def test_status_snapshot_reflects_current_hunt_state():
+    """Dashboard-only diagnostic (src/runner.py writes this out after every
+    bar) -- must reflect the box/anchor/pending-entry state accurately at
+    each stage, not just at rest."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    idle = strategy.status_snapshot()
+    assert idle["state"] == "MARKING_LEVELS"
+    assert idle["direction"] is None
+    assert idle["box_high"] is None
+    assert idle["anchor_gap_low"] is None
+    assert idle["pending_limit_price"] is None
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)
+    mid_hunt = strategy.status_snapshot()
+    assert mid_hunt["state"] == "WAIT_5M_FVG"
+    assert mid_hunt["direction"] == "long"
+    assert mid_hunt["box_high"] is not None
+
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
+    waiting_fill = strategy.status_snapshot()
+    assert waiting_fill["state"] == "WAIT_FILL"
+    assert waiting_fill["anchor_gap_low"] == pytest.approx(anchor_low)
+    assert waiting_fill["anchor_gap_high"] == pytest.approx(anchor_high)
+    assert waiting_fill["pending_limit_price"] == pytest.approx((anchor_low + anchor_high) / 2)

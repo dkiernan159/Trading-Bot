@@ -147,6 +147,16 @@
   .level-label { font-size: 11px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.05em; }
   .level-value { font-family: var(--font-data); font-variant-numeric: tabular-nums; font-size: 13.5px; color: var(--ink-primary); }
 
+  .status-row { display: flex; gap: 16px; flex-wrap: wrap; width: 100%; }
+  .status-card {
+    flex: 1; min-width: 260px; background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 18px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .status-card-title {
+    font-size: 11px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-muted);
+  }
+  .status-card .levels { border-top: none; margin-top: 0; padding-top: 4px; }
+
   .tooltip {
     position: absolute; pointer-events: none; background: var(--surface-raised); border: 1px solid var(--border);
     border-radius: 6px; padding: 6px 9px; font-family: var(--font-data); font-size: 11.5px; color: var(--ink-primary);
@@ -161,10 +171,19 @@
     <div class="eyebrow">MNQ &middot; Opening range breakout + key-level FVG</div>
     <h1>Trading Bot Dashboard</h1>
     <div class="sub">
-      Live trades refresh automatically every 10s (reading trades/trades.csv directly, no API cost).
-      The backtest section refreshes on a longer timer since it calls the real TopstepX API.
+      Bot activity and live trades refresh automatically every 10s (reading local files directly, no
+      API cost). The backtest section refreshes on a longer timer since it calls the real TopstepX API.
     </div>
   </div>
+
+  <section>
+    <div class="section-head">
+      <h2>Bot activity</h2>
+      <span class="spacer"></span>
+      <span class="freshness" id="status-freshness">loading&hellip;</span>
+    </div>
+    <div id="bot-status"></div>
+  </section>
 
   <section>
     <div class="section-head"><h2>Live trades</h2><span class="spacer"></span></div>
@@ -204,6 +223,56 @@ function timeAgo(isoString) {
   if (seconds < 60) return `${seconds}s ago`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
   return `${Math.round(seconds / 3600)}h ago`;
+}
+
+// ---------- Bot activity (live status) ----------
+
+function renderStrategyCard(title, s) {
+  if (!s) {
+    return `<div class="status-card"><span class="status-card-title">${title}</span><div class="empty">Not enabled.</div></div>`;
+  }
+  const rows = [
+    ["State", s.state],
+    ["Direction", s.direction ? s.direction.toUpperCase() : "—"],
+    ["Anchor gap", (s.anchor_gap_low !== null && s.anchor_gap_high !== null)
+      ? `${fmt(s.anchor_gap_low)} – ${fmt(s.anchor_gap_high)}` : "—"],
+    ["Pending entry", s.pending_limit_price !== null && s.pending_limit_price !== undefined ? fmt(s.pending_limit_price) : "—"],
+    ["In trade", s.in_trade ? "yes" : "no"],
+  ];
+  return `
+    <div class="status-card">
+      <span class="status-card-title">${title}</span>
+      <div class="levels">
+        ${rows.map(([label, value]) => `<div class="level"><span class="level-label">${label}</span><span class="level-value">${value}</span></div>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
+async function loadStatus() {
+  let status;
+  try {
+    status = await (await fetch("/api/status.json")).json();
+  } catch (e) {
+    return; // transient fetch error -- keep showing the last good render
+  }
+
+  const freshnessEl = document.getElementById("status-freshness");
+  const el = document.getElementById("bot-status");
+
+  if (!status) {
+    freshnessEl.textContent = "";
+    el.innerHTML = '<div class="empty">No activity yet -- this appears once the live bot has processed its first bar.</div>';
+    return;
+  }
+
+  freshnessEl.textContent = `last bar ${timeAgo(status.last_bar_time)}`;
+  el.innerHTML = `
+    <div class="status-row">
+      ${renderStrategyCard("Day (9:30 ORB)", status.day)}
+      ${renderStrategyCard("Overnight (Asia/London)", status.overnight)}
+    </div>
+  `;
 }
 
 // ---------- Live trades (table) ----------
@@ -588,8 +657,10 @@ function hideTooltip() {
   document.getElementById("tooltip").style.opacity = "0";
 }
 
+loadStatus();
 loadLiveTrades();
 loadBacktest();
+setInterval(loadStatus, 10000);
 setInterval(loadLiveTrades, 10000);
 setInterval(loadBacktest, 30000);
 </script>

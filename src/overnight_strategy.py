@@ -113,6 +113,18 @@ class OvernightMomentumStrategy:
             return None
         return self.session_levels.levels_for(self._night_date)
 
+    def status_snapshot(self) -> dict:
+        """Plain-dict view of what the strategy is currently doing -- for
+        the dashboard's live "bot activity" view only (src/runner.py writes
+        this out after every bar); has no effect on trading decisions."""
+        return {
+            "state": self.state.name,
+            "direction": self._direction.value if self._direction else None,
+            "anchor_gap_low": self._anchor_fvg.gap_low if self._anchor_fvg else None,
+            "anchor_gap_high": self._anchor_fvg.gap_high if self._anchor_fvg else None,
+            "pending_limit_price": self._pending_limit_price,
+        }
+
     def _entry_price(self, gap: FairValueGap) -> float:
         """Same retracement rule as the day strategy (strategy.py's
         _entry_price) -- see there for why any fraction strictly between 0

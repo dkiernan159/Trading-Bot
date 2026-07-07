@@ -335,3 +335,24 @@ def test_max_trades_per_night_resets_for_a_fresh_night():
     assert signal is None
     assert strategy.state is State.WAIT_FVG
     assert strategy._trades_tonight == 0
+
+
+def test_status_snapshot_reflects_current_hunt_state():
+    cfg = load_test_config()
+    strategy = OvernightMomentumStrategy(cfg)
+
+    idle = strategy.status_snapshot()
+    assert idle["state"] == "IDLE"
+    assert idle["direction"] is None
+    assert idle["anchor_gap_low"] is None
+    assert idle["pending_limit_price"] is None
+
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, NIGHT_START)
+
+    waiting_fill = strategy.status_snapshot()
+    assert waiting_fill["state"] == "WAIT_FILL"
+    assert waiting_fill["direction"] == "long"
+    assert waiting_fill["anchor_gap_low"] == pytest.approx(anchor_low)
+    assert waiting_fill["anchor_gap_high"] == pytest.approx(anchor_high)
+    assert waiting_fill["pending_limit_price"] == pytest.approx((anchor_low + anchor_high) / 2)
