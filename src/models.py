@@ -54,3 +54,10 @@ class Trade:
         if pts is None:
             return None
         return pts * point_value * self.contracts
+
+    def unrealized_pnl_dollars(self, current_price: float, point_value: float) -> float:
+        """P&L if the trade were closed right now at current_price -- for
+        dashboard display only, while the trade is still open (exit_price
+        is still None)."""
+        sign = 1 if self.direction is Direction.LONG else -1
+        return sign * (current_price - self.entry_price) * point_value * self.contracts

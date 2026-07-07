@@ -156,6 +156,7 @@
     font-size: 11px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-muted);
   }
   .status-card .levels { border-top: none; margin-top: 0; padding-top: 4px; }
+  .status-card .stat-row { padding-top: 4px; }
 
   .tooltip {
     position: absolute; pointer-events: none; background: var(--surface-raised); border: 1px solid var(--border);
@@ -171,8 +172,9 @@
     <div class="eyebrow">MNQ &middot; Opening range breakout + key-level FVG</div>
     <h1>Trading Bot Dashboard</h1>
     <div class="sub">
-      Bot activity and live trades refresh automatically every 10s (reading local files directly, no
-      API cost). The backtest section refreshes on a longer timer since it calls the real TopstepX API.
+      Bot activity, performance, and live trades refresh automatically every 10s (reading local files
+      directly, no API cost). The backtest section refreshes on a longer timer since it calls the real
+      TopstepX API.
     </div>
   </div>
 
@@ -183,11 +185,16 @@
       <span class="freshness" id="status-freshness">loading&hellip;</span>
     </div>
     <div id="bot-status"></div>
+    <div class="chart-wrap" id="live-chart-wrap"></div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Performance</h2><span class="spacer"></span></div>
+    <div id="performance"></div>
   </section>
 
   <section>
     <div class="section-head"><h2>Live trades</h2><span class="spacer"></span></div>
-    <div id="live-stats" class="stat-row"></div>
     <div id="live-trades"></div>
   </section>
 
@@ -201,9 +208,10 @@
   </section>
 
   <footer>
-    Live P&amp;L reflects whatever the bot has actually logged (dry-run entries print [DRY RUN] and are never
-    real fills). Backtest fills are idealized (no slippage/commissions); a bar touching both stop and target
-    in the same minute is conservatively counted as a loss.
+    Closed-trade P&amp;L reflects whatever the bot has actually logged (dry-run entries print [DRY RUN] and are
+    never real fills). Unrealized P&amp;L and the live chart are marked to the most recent 1-minute bar's
+    close, not a broker-confirmed price. Backtest fills are idealized (no slippage/commissions); a bar
+    touching both stop and target in the same minute is conservatively counted as a loss.
   </footer>
 </div>
 
@@ -239,14 +247,165 @@ function renderStrategyCard(title, s) {
     ["Pending entry", s.pending_limit_price !== null && s.pending_limit_price !== undefined ? fmt(s.pending_limit_price) : "—"],
     ["In trade", s.in_trade ? "yes" : "no"],
   ];
+  if (s.in_trade) {
+    rows.push(
+      ["Entry", fmt(s.entry_price)],
+      ["Stop", fmt(s.stop_price)],
+      ["Target", fmt(s.target_price)],
+    );
+  }
+  const pnlRow = s.in_trade
+    ? `<div class="stat-row"><div class="stat-tile"><span class="stat-label">Unrealized P&amp;L</span><span class="stat-value ${s.unrealized_pnl_dollars >= 0 ? "good" : "bad"}">${fmtMoney(s.unrealized_pnl_dollars)}</span></div></div>`
+    : "";
   return `
     <div class="status-card">
       <span class="status-card-title">${title}</span>
       <div class="levels">
         ${rows.map(([label, value]) => `<div class="level"><span class="level-label">${label}</span><span class="level-value">${value}</span></div>`).join("")}
       </div>
+      ${pnlRow}
     </div>
   `;
+}
+
+function buildLiveChart(candles, trades) {
+  const W = 820, H = 300;
+  const marginL = 62, marginR = 14, marginT = 14, marginB = 26;
+  const plotW = W - marginL - marginR;
+  const plotH = H - marginT - marginB;
+
+  const markerValues = trades.flatMap(t => [t.entry_price, t.stop_price, t.target_price]);
+  const candleValues = candles.flatMap(c => [c.h, c.l]);
+  const allValues = candleValues.concat(markerValues);
+  let yMin = Math.min(...allValues);
+  let yMax = Math.max(...allValues);
+  const pad = (yMax - yMin) * 0.06 || 1;
+  yMin -= pad; yMax += pad;
+
+  const xFor = i => marginL + (i + 0.5) * (plotW / candles.length);
+  const yFor = v => marginT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
+
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("class", "chart");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", H);
+
+  const gridSteps = 5;
+  for (let s = 0; s <= gridSteps; s++) {
+    const v = yMin + (s / gridSteps) * (yMax - yMin);
+    const y = yFor(v);
+    const line = document.createElementNS(svgNS, "line");
+    line.setAttribute("class", "gridline");
+    line.setAttribute("x1", marginL); line.setAttribute("x2", W - marginR);
+    line.setAttribute("y1", y); line.setAttribute("y2", y);
+    svg.appendChild(line);
+    const label = document.createElementNS(svgNS, "text");
+    label.setAttribute("class", "axis-label");
+    label.setAttribute("x", 4); label.setAttribute("y", y + 3);
+    label.textContent = v.toFixed(1);
+    svg.appendChild(label);
+  }
+
+  const xStep = Math.max(1, Math.round(candles.length / 9));
+  candles.forEach((c, i) => {
+    if (i % xStep === 0) {
+      const label = document.createElementNS(svgNS, "text");
+      label.setAttribute("class", "axis-label");
+      label.setAttribute("x", xFor(i));
+      label.setAttribute("y", H - 8);
+      label.setAttribute("text-anchor", "middle");
+      label.textContent = c.t.slice(11, 16); // "HH:MM" -- t is an ISO string in the bot's session tz
+      svg.appendChild(label);
+    }
+  });
+
+  const candleW = Math.max(2, (plotW / candles.length) * 0.62);
+  candles.forEach((c, i) => {
+    const up = c.c >= c.o;
+    const g = document.createElementNS(svgNS, "g");
+    g.setAttribute("class", up ? "cand-up" : "cand-down");
+
+    const wick = document.createElementNS(svgNS, "line");
+    wick.setAttribute("class", "wick");
+    wick.setAttribute("x1", xFor(i)); wick.setAttribute("x2", xFor(i));
+    wick.setAttribute("y1", yFor(c.h)); wick.setAttribute("y2", yFor(c.l));
+    wick.setAttribute("stroke-width", "1");
+    g.appendChild(wick);
+
+    const bodyTop = yFor(Math.max(c.o, c.c));
+    const bodyBottom = yFor(Math.min(c.o, c.c));
+    const rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("x", xFor(i) - candleW / 2);
+    rect.setAttribute("y", bodyTop);
+    rect.setAttribute("width", candleW);
+    rect.setAttribute("height", Math.max(1, bodyBottom - bodyTop));
+    g.appendChild(rect);
+
+    const hit = document.createElementNS(svgNS, "rect");
+    hit.setAttribute("class", "cand-hit");
+    hit.setAttribute("x", xFor(i) - (plotW / candles.length) / 2);
+    hit.setAttribute("y", marginT);
+    hit.setAttribute("width", plotW / candles.length);
+    hit.setAttribute("height", plotH);
+    hit.addEventListener("mousemove", (e) => showTooltip(e, c));
+    hit.addEventListener("mouseleave", hideTooltip);
+    g.appendChild(hit);
+
+    svg.appendChild(g);
+  });
+
+  const colorFor = { Entry: "var(--accent)", Stop: "var(--bad)", Target: "var(--good)" };
+  trades.forEach(t => {
+    [["Entry", t.entry_price], ["Stop", t.stop_price], ["Target", t.target_price]].forEach(([kind, v]) => {
+      const line = document.createElementNS(svgNS, "line");
+      line.setAttribute("class", "ref-line");
+      line.setAttribute("stroke", colorFor[kind]);
+      line.setAttribute("x1", marginL); line.setAttribute("x2", W - marginR);
+      line.setAttribute("y1", yFor(v)); line.setAttribute("y2", yFor(v));
+      svg.appendChild(line);
+    });
+  });
+
+  if (trades.length > 0) {
+    const boxW = 172, rowH = 15;
+    const boxX = W - marginR - boxW - 8, boxY = marginT + 8;
+    const boxH = trades.length * 3 * rowH + 10;
+    const boxBg = document.createElementNS(svgNS, "rect");
+    boxBg.setAttribute("x", boxX);
+    boxBg.setAttribute("y", boxY - 12);
+    boxBg.setAttribute("width", boxW);
+    boxBg.setAttribute("height", boxH);
+    boxBg.setAttribute("rx", 6);
+    boxBg.setAttribute("fill", "var(--surface-raised)");
+    boxBg.setAttribute("stroke", "var(--border)");
+    svg.appendChild(boxBg);
+
+    let row = 0;
+    trades.forEach(t => {
+      [["Entry", t.entry_price], ["Stop", t.stop_price], ["Target", t.target_price]].forEach(([label, v]) => {
+        const y = boxY + row * rowH;
+        const swatch = document.createElementNS(svgNS, "line");
+        swatch.setAttribute("x1", boxX + 8); swatch.setAttribute("x2", boxX + 20);
+        swatch.setAttribute("y1", y - 3); swatch.setAttribute("y2", y - 3);
+        swatch.setAttribute("stroke", colorFor[label]);
+        swatch.setAttribute("stroke-width", "2.5");
+        svg.appendChild(swatch);
+
+        const text = document.createElementNS(svgNS, "text");
+        text.setAttribute("class", "ref-label");
+        text.setAttribute("x", boxX + 26);
+        text.setAttribute("y", y);
+        text.setAttribute("fill", "var(--ink-primary)");
+        text.textContent = `${t.label} ${label} ${v.toFixed(2)}`;
+        svg.appendChild(text);
+        row++;
+      });
+    });
+  }
+
+  return svg;
 }
 
 async function loadStatus() {
@@ -273,6 +432,72 @@ async function loadStatus() {
       ${renderStrategyCard("Overnight (Asia/London)", status.overnight)}
     </div>
   `;
+
+  const chartWrapEl = document.getElementById("live-chart-wrap");
+  const candles = status.recent_candles || [];
+  if (candles.length < 2) {
+    chartWrapEl.innerHTML = '<div class="empty">Chart fills in once a few bars have come in.</div>';
+    return;
+  }
+  const openTrades = [];
+  if (status.day && status.day.in_trade) {
+    openTrades.push({ label: "Day", entry_price: status.day.entry_price, stop_price: status.day.stop_price, target_price: status.day.target_price });
+  }
+  if (status.overnight && status.overnight.in_trade) {
+    openTrades.push({ label: "Overnight", entry_price: status.overnight.entry_price, stop_price: status.overnight.stop_price, target_price: status.overnight.target_price });
+  }
+  chartWrapEl.innerHTML = "";
+  chartWrapEl.appendChild(buildLiveChart(candles, openTrades));
+}
+
+// ---------- Performance (aggregate stats) ----------
+
+function statTile(label, value, cls) {
+  return `<div class="stat-tile"><span class="stat-label">${label}</span><span class="stat-value ${cls || ""}">${value}</span></div>`;
+}
+function pctOrDash(x) {
+  return x === null || x === undefined ? "—" : `${Math.round(x * 100)}%`;
+}
+function moneyOrDash(x) {
+  return x === null || x === undefined ? "—" : fmtMoney(x);
+}
+
+function renderStatsBlock(title, s) {
+  if (!s || s.trades === 0) {
+    return `<div class="status-card"><span class="status-card-title">${title}</span><div class="empty">No trades yet.</div></div>`;
+  }
+  return `
+    <div class="status-card">
+      <span class="status-card-title">${title}</span>
+      <div class="stat-row">
+        ${statTile("Trades", s.trades)}
+        ${statTile("Win rate", pctOrDash(s.win_rate))}
+        ${statTile("Net P&amp;L", moneyOrDash(s.total_pnl_dollars), s.total_pnl_dollars >= 0 ? "good" : "bad")}
+        ${statTile("Profit factor", s.profit_factor === null ? "—" : s.profit_factor.toFixed(2))}
+        ${statTile("Avg win", moneyOrDash(s.avg_win_dollars), "good")}
+        ${statTile("Avg loss", s.avg_loss_dollars === null ? "—" : `-$${s.avg_loss_dollars.toFixed(2)}`, "bad")}
+        ${statTile("Best trade", moneyOrDash(s.best_trade_dollars))}
+        ${statTile("Worst trade", moneyOrDash(s.worst_trade_dollars))}
+      </div>
+    </div>
+  `;
+}
+
+async function loadStats() {
+  let stats;
+  try {
+    stats = await (await fetch("/api/stats.json")).json();
+  } catch (e) {
+    return; // transient fetch error -- keep showing the last good render
+  }
+  document.getElementById("performance").innerHTML = `
+    <div class="status-row">
+      ${renderStatsBlock("Overall", stats.overall)}
+      ${renderStatsBlock("Today", stats.today)}
+      ${renderStatsBlock("Day (9:30 ORB)", stats.day)}
+      ${renderStatsBlock("Overnight (Asia/London)", stats.overnight)}
+    </div>
+  `;
 }
 
 // ---------- Live trades (table) ----------
@@ -285,25 +510,15 @@ async function loadLiveTrades() {
     return; // transient fetch error -- keep showing the last good render
   }
 
-  const statsEl = document.getElementById("live-stats");
   const listEl = document.getElementById("live-trades");
 
   if (trades.length === 0) {
-    statsEl.innerHTML = "";
     listEl.innerHTML = '<div class="empty">No trades logged yet -- this fills in as the bot closes trades.</div>';
     return;
   }
 
   const winTrades = trades.filter(t => t.exit_reason === "target");
   const lossTrades = trades.filter(t => t.exit_reason !== "target");
-  const netDollars = trades.reduce((sum, t) => sum + t.pnl_dollars, 0);
-  const winPct = Math.round((100 * winTrades.length) / trades.length);
-
-  statsEl.innerHTML = `
-    <div class="stat-tile"><span class="stat-label">Trades</span><span class="stat-value">${trades.length}</span></div>
-    <div class="stat-tile"><span class="stat-label">Win rate</span><span class="stat-value">${winPct}%</span></div>
-    <div class="stat-tile"><span class="stat-label">Net P&amp;L</span><span class="stat-value ${netDollars >= 0 ? "good" : "bad"}">${fmtMoney(netDollars)}</span></div>
-  `;
 
   const rowsFor = list => list.map(t => `
     <tr>
@@ -658,9 +873,11 @@ function hideTooltip() {
 }
 
 loadStatus();
+loadStats();
 loadLiveTrades();
 loadBacktest();
 setInterval(loadStatus, 10000);
+setInterval(loadStats, 10000);
 setInterval(loadLiveTrades, 10000);
 setInterval(loadBacktest, 30000);
 </script>

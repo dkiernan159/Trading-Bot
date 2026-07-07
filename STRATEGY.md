@@ -804,6 +804,41 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
     "Bot activity" card per strategy, polled every 10s alongside live
     trades (both are free local file reads; only the backtest section is
     on the slower, API-cost-aware timer).
+  - **Live P&L, performance stats, and a live chart snapshot (added
+    2026-07-07):** the user asked for active P&L in the bot-activity
+    boxes, a chart snapshot, and overall profitability markers, so the
+    bot going live overnight wasn't just visible but actually legible day
+    to day.
+    - Trades are now tagged with which strategy took them:
+      `TradeLogger.log_trade` takes a `strategy` ("day"/"overnight")
+      argument (`_StrategySlot` knows its own name and passes it), and a
+      new `_migrate_header_if_needed` rewrites just the header line of any
+      `trades.csv` written before this change (including the live one
+      already deployed) in place -- old data rows are left untouched and
+      read back with `strategy=None` -> `"unknown"`, never a crash.
+    - `Trade.unrealized_pnl_dollars(current_price, point_value)` mirrors
+      `pnl_dollars` but marks to a live price instead of `exit_price`.
+      `_StrategySlot.status_for_dashboard` uses it (mark-to-last-bar-close,
+      not a broker-confirmed price) and also now exposes the open trade's
+      real `entry_price`/`stop_price`/`target_price`, not just `in_trade`.
+    - `Runner` keeps a rolling `deque` of the last `RECENT_CANDLES_MAXLEN`
+      (180, ~3 hours) 1-minute bars and writes them into `status.json` as
+      `recent_candles` -- a shared, top-level field (one price series for
+      both strategies), not per-slot.
+    - `src/dashboard.py`'s `compute_trade_stats` computes trade count, win
+      rate, net P&L, avg win/loss, profit factor, and best/worst trade --
+      overall, for "today" (in the bot's own session timezone, not the
+      server's, so it lines up with when the strategies actually reset),
+      and broken out per strategy -- fresh from `trades.csv` on every
+      request, served at `/api/stats.json`, rendered as a new
+      "Performance" section.
+    - The template's "Bot activity" section gained a candlestick chart
+      (`buildLiveChart`, a simpler sibling of the backtest's `buildChart`
+      -- no anchor-zone/previous-day-zone overlays, since those are day-
+      strategy-specific) built from `recent_candles`, overlaid with
+      entry/stop/target lines for whichever strategy slot(s) currently
+      have an open trade (labelled by strategy name, since both could be
+      open at once).
 
 ## Before going live
 

@@ -52,10 +52,62 @@ def read_live_trades(csv_path: str = TRADES_CSV_PATH) -> list[dict]:
                     "exit_reason": row["exit_reason"],
                     "pnl_points": float(row["pnl_points"]),
                     "pnl_dollars": float(row["pnl_dollars"]),
+                    "strategy": row.get("strategy") or "unknown",
                 }
             )
     rows.sort(key=lambda r: r["entry_time"], reverse=True)
     return rows
+
+
+def _stats_for(rows: list[dict]) -> dict:
+    """One strategy/slice's aggregate performance numbers -- None for
+    rate-like fields when there's no data yet, rather than a misleading 0."""
+    n = len(rows)
+    if n == 0:
+        return {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": None,
+            "total_pnl_dollars": 0.0,
+            "avg_win_dollars": None,
+            "avg_loss_dollars": None,
+            "profit_factor": None,
+            "best_trade_dollars": None,
+            "worst_trade_dollars": None,
+        }
+    wins = [r for r in rows if r["pnl_dollars"] > 0]
+    losses = [r for r in rows if r["pnl_dollars"] <= 0]
+    gross_win = sum(r["pnl_dollars"] for r in wins)
+    gross_loss = -sum(r["pnl_dollars"] for r in losses)  # a positive number
+    return {
+        "trades": n,
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": len(wins) / n,
+        "total_pnl_dollars": sum(r["pnl_dollars"] for r in rows),
+        "avg_win_dollars": (gross_win / len(wins)) if wins else None,
+        "avg_loss_dollars": (gross_loss / len(losses)) if losses else None,
+        "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
+        "best_trade_dollars": max(r["pnl_dollars"] for r in rows),
+        "worst_trade_dollars": min(r["pnl_dollars"] for r in rows),
+    }
+
+
+def compute_trade_stats(rows: list[dict], tz: ZoneInfo) -> dict:
+    """Aggregate performance -- overall, today-only, and broken out per
+    strategy (day/overnight) -- computed fresh from trades.csv rows on
+    every request (cheap for a file this size, same as read_live_trades).
+    "Today" is the bot's own session timezone, not the server's, so it
+    lines up with when the day/overnight strategies actually reset."""
+    today = datetime.now(tz).date()
+    today_rows = [r for r in rows if datetime.fromisoformat(r["entry_time"]).astimezone(tz).date() == today]
+    return {
+        "overall": _stats_for(rows),
+        "today": _stats_for(today_rows),
+        "day": _stats_for([r for r in rows if r["strategy"] == "day"]),
+        "overnight": _stats_for([r for r in rows if r["strategy"] == "overnight"]),
+    }
 
 
 def read_status(path: str = STATUS_JSON_PATH) -> dict | None:
@@ -117,7 +169,7 @@ def _refresh_loop(cache: BacktestCache, interval_seconds: int) -> None:
         time_module.sleep(interval_seconds)
 
 
-def make_handler(backtest_cache: BacktestCache) -> type[BaseHTTPRequestHandler]:
+def make_handler(backtest_cache: BacktestCache, tz: ZoneInfo) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             if self.path in ("/", "/index.html"):
@@ -126,6 +178,8 @@ def make_handler(backtest_cache: BacktestCache) -> type[BaseHTTPRequestHandler]:
                 self._serve_json(read_live_trades())
             elif self.path == "/api/status.json":
                 self._serve_json(read_status())
+            elif self.path == "/api/stats.json":
+                self._serve_json(compute_trade_stats(read_live_trades(), tz))
             elif self.path == "/api/backtest.json":
                 self._serve_json(backtest_cache.snapshot())
             else:
@@ -163,7 +217,9 @@ def main() -> None:
         daemon=True,
     ).start()
 
-    server = ThreadingHTTPServer((cfg.dashboard.host, cfg.dashboard.port), make_handler(backtest_cache))
+    server = ThreadingHTTPServer(
+        (cfg.dashboard.host, cfg.dashboard.port), make_handler(backtest_cache, ZoneInfo(cfg.session.timezone))
+    )
     print(
         f"Dashboard serving on http://{cfg.dashboard.host}:{cfg.dashboard.port} "
         f"(backtest refreshes every {cfg.dashboard.refresh_interval_seconds}s)"

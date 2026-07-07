@@ -186,6 +186,69 @@ def test_on_bar_writes_a_status_file_for_the_dashboard(tmp_path):
         assert status["overnight"] is None
 
 
+def test_status_file_includes_last_price_and_recent_candles(tmp_path):
+    """The dashboard's live chart snapshot reads recent_candles -- must
+    reflect every bar seen so far, in the shared OHLC shape."""
+    import json
+
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    status_path = tmp_path / "status.json"
+    runner = Runner(
+        cfg,
+        broker,
+        logger=TradeLogger(path=str(tmp_path / "trades.csv")),
+        status_path=str(status_path),
+    )
+
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))
+
+    status = json.loads(status_path.read_text())
+    assert status["last_price"] == 100.0
+    assert len(status["recent_candles"]) == 1
+    assert status["recent_candles"][0] == {
+        "t": DAY.isoformat(),
+        "o": 100.0,
+        "h": 100.5,
+        "l": 99.5,
+        "c": 100.0,
+    }
+
+
+def test_status_file_includes_unrealized_pnl_for_an_open_trade(tmp_path):
+    """The dashboard shows live P&L on an open trade, not just closed-trade
+    P&L -- must match Trade.unrealized_pnl_dollars against the latest bar's
+    close, and stay None while no trade is open."""
+    import json
+
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    status_path = tmp_path / "status.json"
+    runner = Runner(
+        cfg,
+        broker,
+        logger=TradeLogger(path=str(tmp_path / "trades.csv")),
+        status_path=str(status_path),
+    )
+    runner.day_slot.strategy.state = State.IN_TRADE
+    runner.day_slot._enter_trade(make_signal(entry_price=100.0))  # long
+
+    runner.on_bar(Bar(timestamp=DAY, open=104.0, high=105.0, low=103.5, close=105.0))
+
+    status = json.loads(status_path.read_text())
+    assert status["day"]["in_trade"] is True
+    expected = runner.day_slot.current_trade.unrealized_pnl_dollars(105.0, cfg.instrument.point_value)
+    assert status["day"]["unrealized_pnl_dollars"] == expected
+    assert expected > 0  # price moved in the long's favor
+    assert status["day"]["entry_price"] == 100.0
+    assert status["day"]["stop_price"] == runner.day_slot.current_trade.stop_price
+    assert status["day"]["target_price"] == runner.day_slot.current_trade.target_price
+    if runner.overnight_slot is not None:
+        assert status["overnight"]["in_trade"] is False
+        assert status["overnight"]["unrealized_pnl_dollars"] is None
+        assert status["overnight"]["entry_price"] is None
+
+
 def test_status_file_write_failure_does_not_crash_on_bar(tmp_path):
     """Writing the dashboard status file is a nice-to-have -- a failure
     here (e.g. a bad path) must never take down live trading."""

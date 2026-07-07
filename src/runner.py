@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import deque
 from datetime import datetime, time as dtime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -13,6 +14,12 @@ from src.models import Bar, Trade
 from src.overnight_strategy import EntrySignal as OvernightEntrySignal, OvernightMomentumStrategy
 from src.risk import DailyRiskState, compute_stop_target
 from src.strategy import EntrySignal, OpeningRangeStrategy
+
+# How many recent 1-minute bars Runner keeps in memory for the dashboard's
+# live chart snapshot (see _write_status) -- 3 hours, enough to see an
+# entire overnight hunting window without the status file growing without
+# bound. Purely a display window; has no effect on trading decisions.
+RECENT_CANDLES_MAXLEN = 180
 
 
 class _StrategySlot:
@@ -30,7 +37,8 @@ class _StrategySlot:
     open trade that outlives its own hunting window is left alone rather
     than flattened, matching that strategy's own documented design)."""
 
-    def __init__(self, strategy, flatten_by: dtime | None, runner: "Runner"):
+    def __init__(self, name: str, strategy, flatten_by: dtime | None, runner: "Runner"):
+        self.name = name
         self.strategy = strategy
         self.flatten_by = flatten_by
         self.runner = runner
@@ -122,12 +130,33 @@ class _StrategySlot:
 
         pnl = trade.pnl_dollars(self.runner.cfg.instrument.point_value) or 0.0
         self.runner.risk_state.record_trade_result(pnl)
-        self.runner.logger.log_trade(trade, self.runner.cfg.instrument.point_value)
+        self.runner.logger.log_trade(trade, self.runner.cfg.instrument.point_value, self.name)
 
         self.strategy.notify_trade_closed(won=(exit_reason == "target"))
 
         self.current_trade = None
         self.current_order_id = None
+
+    def status_for_dashboard(self, current_price: float) -> dict:
+        """Dashboard-only view of this slot's current state plus, if a
+        trade is open, its entry/stop/target and live unrealized P&L
+        against current_price -- never read by the trading logic itself."""
+        status = {
+            **self.strategy.status_snapshot(),
+            "in_trade": self.current_trade is not None,
+            "unrealized_pnl_dollars": None,
+            "entry_price": None,
+            "stop_price": None,
+            "target_price": None,
+        }
+        if self.current_trade is not None:
+            status["unrealized_pnl_dollars"] = self.current_trade.unrealized_pnl_dollars(
+                current_price, self.runner.cfg.instrument.point_value
+            )
+            status["entry_price"] = self.current_trade.entry_price
+            status["stop_price"] = self.current_trade.stop_price
+            status["target_price"] = self.current_trade.target_price
+        return status
 
 
 class Runner:
@@ -155,11 +184,12 @@ class Runner:
         self.logger = logger or TradeLogger()
         self.status_path = Path(status_path)
         self.status_path.parent.mkdir(parents=True, exist_ok=True)
+        self._recent_bars: deque[Bar] = deque(maxlen=RECENT_CANDLES_MAXLEN)
 
-        self.day_slot = _StrategySlot(OpeningRangeStrategy(cfg), cfg.session.flatten_by, self)
+        self.day_slot = _StrategySlot("day", OpeningRangeStrategy(cfg), cfg.session.flatten_by, self)
         self.overnight_slot: _StrategySlot | None = None
         if cfg.strategy.overnight.enabled:
-            self.overnight_slot = _StrategySlot(OvernightMomentumStrategy(cfg), None, self)
+            self.overnight_slot = _StrategySlot("overnight", OvernightMomentumStrategy(cfg), None, self)
 
     def start(self) -> None:
         self.broker.connect()
@@ -168,6 +198,7 @@ class Runner:
     def on_bar(self, bar: Bar) -> None:
         local = bar.timestamp.astimezone(self.tz)
         self.risk_state.reset_if_new_day(local.date())
+        self._recent_bars.append(bar)
 
         self.day_slot.on_bar(bar, local.time())
         if self.overnight_slot is not None:
@@ -182,17 +213,14 @@ class Runner:
         status = {
             "last_bar_time": bar.timestamp.isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "day": {
-                **self.day_slot.strategy.status_snapshot(),
-                "in_trade": self.day_slot.current_trade is not None,
-            },
+            "last_price": bar.close,
+            "recent_candles": [
+                {"t": b.timestamp.isoformat(), "o": b.open, "h": b.high, "l": b.low, "c": b.close}
+                for b in self._recent_bars
+            ],
+            "day": self.day_slot.status_for_dashboard(bar.close),
             "overnight": (
-                {
-                    **self.overnight_slot.strategy.status_snapshot(),
-                    "in_trade": self.overnight_slot.current_trade is not None,
-                }
-                if self.overnight_slot is not None
-                else None
+                self.overnight_slot.status_for_dashboard(bar.close) if self.overnight_slot is not None else None
             ),
         }
         try:

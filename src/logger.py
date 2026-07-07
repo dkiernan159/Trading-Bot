@@ -17,6 +17,7 @@ _HEADER = [
     "exit_reason",
     "pnl_points",
     "pnl_dollars",
+    "strategy",
 ]
 
 
@@ -31,8 +32,25 @@ class TradeLogger:
         if not self.path.exists():
             with open(self.path, "w", newline="") as f:
                 csv.writer(f).writerow(_HEADER)
+        else:
+            self._migrate_header_if_needed()
 
-    def log_trade(self, trade: Trade, point_value: float) -> None:
+    def _migrate_header_if_needed(self) -> None:
+        """Files created before per-strategy tagging (2026-07-07, added so
+        the dashboard can break out day vs overnight performance) have a
+        header without "strategy" -- rewrite just that header line in
+        place. Existing data rows are left untouched; DictReader fills
+        their missing trailing "strategy" value with None, which
+        src/dashboard.py's read_live_trades treats as "unknown"."""
+        with open(self.path, newline="") as f:
+            rows = list(csv.reader(f))
+        if not rows or "strategy" in rows[0]:
+            return
+        rows[0] = list(_HEADER)
+        with open(self.path, "w", newline="") as f:
+            csv.writer(f).writerows(rows)
+
+    def log_trade(self, trade: Trade, point_value: float, strategy: str) -> None:
         with open(self.path, "a", newline="") as f:
             csv.writer(f).writerow(
                 [
@@ -47,5 +65,6 @@ class TradeLogger:
                     trade.exit_reason,
                     trade.pnl_points(),
                     trade.pnl_dollars(point_value),
+                    strategy,
                 ]
             )
