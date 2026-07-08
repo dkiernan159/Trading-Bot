@@ -296,6 +296,19 @@ review these and adjust `config.yaml` before running live.
     stop. No selection logic changed -- `compute_stop_target` still just
     validates a plain `stop_price` float against the budget; the callers
     now pass `stop_candidate.price` instead of the candidate itself.
+  - **Open question, 2026-07-08** (not yet acted on -- watching for more
+    data): with `prefer_swing=False` restored, the day strategy's own
+    30-day backtest (10 trades, 30% win, -$199.75 net) split sharply by
+    direction -- LONG breakouts won only 1 of 7 (14%), SHORT won 2 of 3
+    (67%). Price rose from ~30,000 to a peak ~30,970 around 6/23 then
+    fell back to ~30,000 by 7/6-7/7 over this window, and the LONG losses
+    cluster in the declining second half -- consistent with (but not
+    proof of) the day strategy having no higher-timeframe trend filter,
+    so it fires counter-trend breakouts as readily as trend-following
+    ones. 10 trades is too thin to separate a real edge issue from this
+    particular month's regime; decided to keep the strategy as-is and
+    revisit once a larger sample (or a wider backtest window) is
+    available, rather than add a trend filter against this little data.
   - (Revision history: originally a fixed `max_stop_points: 15` derived
     from the reference $300 target at 5 contracts -- once entries moved
     to a smaller FVG nested inside the 15m anchor (a design later
