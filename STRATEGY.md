@@ -265,6 +265,19 @@ review these and adjust `config.yaml` before running live.
   - Take-profit is always `2 x actual_stop_distance` (so smaller structural
     stops give a smaller, still-2:1, target -- this is why the target
     varies per trade rather than always chasing the reference $300).
+  - **Diagnostic addition, 2026-07-08**: `find_structural_stop_price` now
+    returns a `StopCandidate` (`price`, `source` -- `"fvg"` or `"swing"` --
+    and, when `source=="fvg"`, `fvg_gap_low`/`fvg_gap_high`/`fvg_size`)
+    instead of a bare float, purely so the question "why is the stop
+    getting hit so much -- are the FVGs it's basing stops on not strong
+    enough?" can be checked against real trade-by-trade data rather than
+    guessed at. `EntrySignal` (`strategy.py`, `overnight_strategy.py`) now
+    carries `stop_source`/`stop_fvg_size` alongside the resolved
+    `stop_price`, and `backtest.py`'s `--verbose` trade detail prints
+    `source=fvg (fvg size=N.NN)` or `source=swing` next to each trade's
+    stop. No selection logic changed -- `compute_stop_target` still just
+    validates a plain `stop_price` float against the budget; the callers
+    now pass `stop_candidate.price` instead of the candidate itself.
   - (Revision history: originally a fixed `max_stop_points: 15` derived
     from the reference $300 target at 5 contracts -- once entries moved
     to a smaller FVG nested inside the 15m anchor (a design later

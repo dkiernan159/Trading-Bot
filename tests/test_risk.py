@@ -181,7 +181,9 @@ def test_long_stop_is_the_nearest_qualifying_fvgs_outer_edge_below_entry():
         swing_high=None,
         swing_low=None,
     )
-    assert stop == 98.0
+    assert stop.price == 98.0
+    assert stop.source == "fvg"
+    assert stop.fvg_size == 1.0
 
 
 def test_short_stop_is_the_nearest_qualifying_fvgs_outer_edge_above_entry():
@@ -194,7 +196,9 @@ def test_short_stop_is_the_nearest_qualifying_fvgs_outer_edge_above_entry():
         swing_high=None,
         swing_low=None,
     )
-    assert stop == 102.0
+    assert stop.price == 102.0
+    assert stop.source == "fvg"
+    assert stop.fvg_size == 1.0
 
 
 def test_fvg_candidates_on_the_wrong_side_of_entry_are_ignored():
@@ -209,7 +213,9 @@ def test_fvg_candidates_on_the_wrong_side_of_entry_are_ignored():
         swing_high=None,
         swing_low=95.0,
     )
-    assert stop == 95.0
+    assert stop.price == 95.0
+    assert stop.source == "swing"
+    assert stop.fvg_size is None
 
 
 def test_falls_back_to_the_break_of_structure_swing_point_when_no_fvg_qualifies():
@@ -220,7 +226,8 @@ def test_falls_back_to_the_break_of_structure_swing_point_when_no_fvg_qualifies(
         swing_high=None,
         swing_low=93.0,
     )
-    assert stop == 93.0
+    assert stop.price == 93.0
+    assert stop.source == "swing"
 
     stop = find_structural_stop_price(
         direction=Direction.SHORT,
@@ -229,7 +236,8 @@ def test_falls_back_to_the_break_of_structure_swing_point_when_no_fvg_qualifies(
         swing_high=107.0,
         swing_low=None,
     )
-    assert stop == 107.0
+    assert stop.price == 107.0
+    assert stop.source == "swing"
 
 
 def test_a_swing_point_on_the_wrong_side_of_entry_does_not_count():
@@ -269,4 +277,5 @@ def test_a_qualifying_fvg_takes_priority_over_a_closer_break_of_structure_point(
         swing_high=None,
         swing_low=98.0,  # closer than the FVG, but must not be used
     )
-    assert stop == 90.0
+    assert stop.price == 90.0
+    assert stop.source == "fvg"

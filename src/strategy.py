@@ -31,6 +31,8 @@ class EntrySignal:
     anchor_fvg: FairValueGap
     stop_price: float
     timestamp: datetime
+    stop_source: str = "swing"  # "fvg" | "swing" -- see risk.StopCandidate
+    stop_fvg_size: float | None = None
 
 
 @dataclass
@@ -355,7 +357,7 @@ class OpeningRangeStrategy:
                 # rule (replaced the previous-day/Asia/London/box-edge
                 # approach entirely, 2026-07-08, at the user's explicit
                 # correction).
-                stop_price = find_structural_stop_price(
+                stop_candidate = find_structural_stop_price(
                     direction=self._breakout_direction,
                     entry_price=self._pending_limit_price,
                     fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._breakout_direction),
@@ -365,7 +367,7 @@ class OpeningRangeStrategy:
                 bracket = compute_stop_target(
                     direction=self._breakout_direction,
                     entry_price=self._pending_limit_price,
-                    stop_price=stop_price,
+                    stop_price=stop_candidate.price if stop_candidate is not None else None,
                     max_stop_dollars=self.cfg.strategy.max_stop_dollars,
                     min_stop_dollars=self.cfg.strategy.min_stop_dollars,
                     point_value=self.cfg.instrument.point_value,
@@ -387,6 +389,8 @@ class OpeningRangeStrategy:
                     anchor_fvg=self._anchor_fvg,
                     stop_price=bracket.stop_price,
                     timestamp=bar.timestamp,
+                    stop_source=stop_candidate.source,
+                    stop_fvg_size=stop_candidate.fvg_size,
                 )
                 self._close_anchor("filled", bar.timestamp)
                 self.state = State.IN_TRADE

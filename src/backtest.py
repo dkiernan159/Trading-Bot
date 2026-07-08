@@ -170,6 +170,8 @@ def run_backtest(
                 "anchor_gap_low": signal.anchor_fvg.gap_low,
                 "anchor_gap_high": signal.anchor_fvg.gap_high,
                 "anchor_timeframe_minutes": signal.anchor_fvg.timeframe_minutes,
+                "stop_source": signal.stop_source,
+                "stop_fvg_size": signal.stop_fvg_size,
             }
 
     if stats_out is not None:
@@ -251,6 +253,8 @@ def run_overnight_backtest(
                 "anchor_gap_low": signal.anchor_fvg.gap_low,
                 "anchor_gap_high": signal.anchor_fvg.gap_high,
                 "anchor_timeframe_minutes": signal.anchor_fvg.timeframe_minutes,
+                "stop_source": signal.stop_source,
+                "stop_fvg_size": signal.stop_fvg_size,
             }
 
     if stats_out is not None:
@@ -378,8 +382,12 @@ def print_trade_detail(results: list[dict]) -> None:
             f"    {t['anchor_timeframe_minutes']}m anchor FVG: "
             f"{_fmt(t['anchor_gap_low'])} - {_fmt(t['anchor_gap_high'])}"
         )
+        stop_source = t.get("stop_source", "?")
+        stop_fvg_size = t.get("stop_fvg_size")
+        stop_detail = f"source={stop_source}" + (f" (fvg size={stop_fvg_size:.2f})" if stop_fvg_size is not None else "")
         print(
-            f"    Entry={_fmt(t['entry_price'])}  Stop={_fmt(t['stop_price'])}  Target={_fmt(t['target_price'])}"
+            f"    Entry={_fmt(t['entry_price'])}  Stop={_fmt(t['stop_price'])} [{stop_detail}]"
+            f"  Target={_fmt(t['target_price'])}"
         )
 
 

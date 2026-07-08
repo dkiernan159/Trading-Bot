@@ -16,13 +16,33 @@ class BracketLevels:
     target_points: float
 
 
+@dataclass
+class StopCandidate:
+    """A resolved stop price plus which rule produced it -- diagnostic
+    only (see backtest.py's --verbose trade detail), so a hypothesis like
+    "the FVGs backing these stops aren't strong enough" can actually be
+    checked against real data instead of guessed at. `fvg_size` is
+    `gap_high - gap_low` of the FVG used, None when source is "swing"."""
+
+    price: float
+    source: str  # "fvg" | "swing"
+    fvg_gap_low: float | None = None
+    fvg_gap_high: float | None = None
+
+    @property
+    def fvg_size(self) -> float | None:
+        if self.fvg_gap_low is None or self.fvg_gap_high is None:
+            return None
+        return self.fvg_gap_high - self.fvg_gap_low
+
+
 def find_structural_stop_price(
     direction: Direction,
     entry_price: float,
     fvg_candidates: list[FairValueGap],
     swing_high: float | None,
     swing_low: float | None,
-) -> float | None:
+) -> StopCandidate | None:
     """Where the stop goes, per the two-tier rule added 2026-07-08 at the
     user's explicit correction (see compute_stop_target's revision history
     for what this replaced): primarily the outer edge of the nearest
@@ -41,17 +61,21 @@ def find_structural_stop_price(
         below = [g for g in fvg_candidates if g.gap_high < entry_price]
         if below:
             nearest = max(below, key=lambda g: g.gap_high)
-            return nearest.gap_low
+            return StopCandidate(
+                price=nearest.gap_low, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
+            )
         if swing_low is not None and swing_low < entry_price:
-            return swing_low
+            return StopCandidate(price=swing_low, source="swing")
         return None
     else:
         above = [g for g in fvg_candidates if g.gap_low > entry_price]
         if above:
             nearest = min(above, key=lambda g: g.gap_low)
-            return nearest.gap_high
+            return StopCandidate(
+                price=nearest.gap_high, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
+            )
         if swing_high is not None and swing_high > entry_price:
-            return swing_high
+            return StopCandidate(price=swing_high, source="swing")
         return None
 
 
