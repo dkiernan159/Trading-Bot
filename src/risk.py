@@ -42,49 +42,70 @@ def find_structural_stop_price(
     fvg_candidates: list[FairValueGap],
     swing_high: float | None,
     swing_low: float | None,
+    prefer_swing: bool = True,
 ) -> StopCandidate | None:
-    """Where the stop goes. Originally a two-tier rule added 2026-07-08 at
-    the user's explicit correction (see compute_stop_target's revision
-    history for what that replaced) that tried the nearest strong 5m FVG
-    first and fell back to the 1-minute break-of-structure swing point
-    only when no FVG qualified. **Priority flipped 2026-07-08** after a
-    real 32-trade overnight backtest's --verbose detail (StopCandidate's
-    stop_source/stop_fvg_size fields, added the same day) showed
-    swing-based stops winning 50% (net +$665 across 12 trades, +$55/trade)
-    versus FVG-based stops winning only 35% (net +$248 across 20 trades,
-    +$12/trade) -- and FVG size didn't predict the difference (the worst
-    bucket was mid-sized 20-30pt gaps, not the smallest ones), so it's the
-    source itself, not gap size, that's the discriminator. Swing point is
-    now tried first: the most recent 1-minute break-of-structure swing
-    point on the stop side of entry (below entry for a LONG, above for a
-    SHORT; see swing_points.py). If none qualifies -- no swing point on
-    that side at all -- falls back to the outer edge of the nearest strong
-    5m FVG sitting on that same side (fvg_candidates is the caller's
+    """Where the stop goes: either the outer edge of the nearest strong 5m
+    FVG sitting on the stop side of entry (below entry for a LONG, above
+    for a SHORT -- the same "strong" 5m FVGs already used for anchor
+    selection, fvg_candidates being the caller's
     fvg_detector_5m.unmitigated_in_direction(direction) pool, same
     direction as the trade: a LONG-direction gap is a bullish/support gap,
-    which is what should sit *below* a long entry). Returns None if
-    neither exists, meaning "no real invalidation point behind this entry
-    at all" -- skip the trade (see compute_stop_target)."""
+    which is what should sit *below* a long entry), or the most recent
+    1-minute break-of-structure swing point on that same side (see
+    swing_points.py) -- whichever `prefer_swing` says to try first, with
+    the other used as a fallback if the first doesn't qualify. Returns
+    None if neither exists, meaning "no real invalidation point behind
+    this entry at all" -- skip the trade (see compute_stop_target).
+
+    Originally (2026-07-08, at the user's explicit correction replacing
+    the previous-day/Asia/London/box-level approach -- see
+    compute_stop_target's revision history) FVG was always tried first.
+    **`prefer_swing` added the same day, later**, after a real 32-trade
+    overnight backtest's --verbose detail (StopCandidate's
+    stop_source/stop_fvg_size fields, added earlier that day) showed
+    swing-based stops winning 50% (net +$665 across 12 trades, +$55/trade)
+    versus FVG-based stops winning only 35% (net +$248 across 20 trades,
+    +$12/trade) there -- and FVG size didn't predict the difference (the
+    worst bucket was mid-sized 20-30pt gaps, not the smallest ones), so
+    it's the source itself, not gap size, that discriminates. But
+    re-running the *day* (opening-range breakout) strategy's own 30-day
+    backtest with swing preferred made it measurably worse (10->25 trades,
+    30%->24% win rate, -$199.75->-$424.75 net): the FVG-first rule had
+    been usefully filtering day-strategy entries down to ones with a real
+    support/resistance gap nearby, and swing-first let in a lot of
+    marginal setups that used to get skipped as no_valid_stop. So each
+    strategy passes its own `prefer_swing` based on its own real data
+    (see strategy.py: prefer_swing=False; overnight_strategy.py:
+    prefer_swing=True) rather than sharing one global priority order."""
     if direction is Direction.LONG:
-        if swing_low is not None and swing_low < entry_price:
-            return StopCandidate(price=swing_low, source="swing")
+        swing_candidate = (
+            StopCandidate(price=swing_low, source="swing")
+            if swing_low is not None and swing_low < entry_price
+            else None
+        )
         below = [g for g in fvg_candidates if g.gap_high < entry_price]
+        fvg_candidate = None
         if below:
             nearest = max(below, key=lambda g: g.gap_high)
-            return StopCandidate(
+            fvg_candidate = StopCandidate(
                 price=nearest.gap_low, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
             )
-        return None
     else:
-        if swing_high is not None and swing_high > entry_price:
-            return StopCandidate(price=swing_high, source="swing")
+        swing_candidate = (
+            StopCandidate(price=swing_high, source="swing")
+            if swing_high is not None and swing_high > entry_price
+            else None
+        )
         above = [g for g in fvg_candidates if g.gap_low > entry_price]
+        fvg_candidate = None
         if above:
             nearest = min(above, key=lambda g: g.gap_low)
-            return StopCandidate(
+            fvg_candidate = StopCandidate(
                 price=nearest.gap_high, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
             )
-        return None
+
+    first, second = (swing_candidate, fvg_candidate) if prefer_swing else (fvg_candidate, swing_candidate)
+    return first if first is not None else second
 
 
 def compute_stop_target(

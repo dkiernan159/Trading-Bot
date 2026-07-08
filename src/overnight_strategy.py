@@ -259,16 +259,19 @@ class OvernightMomentumStrategy:
                 # Stop is the most recent 1m break-of-structure swing
                 # point on the stop side of entry, or (if none qualifies)
                 # the nearest strong 5m FVG's outer edge on that same side
-                # -- see risk.py's find_structural_stop_price / strategy.py's
-                # matching WAIT_FILL handling for the same rule and why
-                # the priority is swing-first (flipped 2026-07-08 based on
-                # real backtest win-rate data).
+                # -- see risk.py's find_structural_stop_price for the full
+                # rule. swing-first (prefer_swing=True) specifically for
+                # this (overnight) strategy: a real 32-trade backtest
+                # showed swing-based stops winning 50% (+$55/trade) versus
+                # FVG-based stops winning only 35% (+$12/trade) here --
+                # the opposite holds for the day strategy, see strategy.py.
                 stop_candidate = find_structural_stop_price(
                     direction=self._direction,
                     entry_price=self._pending_limit_price,
                     fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._direction),
                     swing_high=self.swing_tracker.most_recent_swing_high,
                     swing_low=self.swing_tracker.most_recent_swing_low,
+                    prefer_swing=True,
                 )
                 bracket = compute_stop_target(
                     direction=self._direction,

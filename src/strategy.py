@@ -105,10 +105,10 @@ class OpeningRangeStrategy:
         # redesign; this pool is searched independently and pooled
         # alongside fvg_detector_5m's, not required to sit inside it.
         self.fvg_detector_1m = FvgDetector(cfg.strategy.entry_fvg, self.tz)
-        # Break-of-structure stop -- the primary stop rule since 2026-07-08
-        # (see risk.py's find_structural_stop_price); a strong 5m FVG on
-        # the stop side is only used as a fallback when no swing point
-        # qualifies.
+        # Break-of-structure stop fallback (see risk.py's
+        # find_structural_stop_price, prefer_swing=False for this
+        # strategy) -- only consulted when no strong 5m FVG sits on the
+        # stop side of an entry.
         self.swing_tracker = SwingPointTracker()
 
         self.state = State.MARKING_LEVELS
@@ -351,18 +351,25 @@ class OpeningRangeStrategy:
                 else bar.high >= self._pending_limit_price
             )
             if filled:
-                # Stop is the most recent 1m break-of-structure swing
-                # point on the stop side of entry, or (if none qualifies)
-                # the nearest strong 5m FVG's outer edge on that same side
-                # -- see risk.py's find_structural_stop_price for the full
-                # rule and why the priority is swing-first (flipped
-                # 2026-07-08 based on real backtest win-rate data).
+                # Stop is the nearest strong 5m FVG's outer edge on the
+                # stop side of entry, or (if none qualifies) the most
+                # recent 1m break-of-structure swing point on that same
+                # side -- see risk.py's find_structural_stop_price for the
+                # full rule. FVG-first (prefer_swing=False) specifically
+                # for this (day, opening-range breakout) strategy: a real
+                # 30-day backtest showed swing-first made *this* strategy
+                # worse (30%->24% win rate, -$199.75->-$424.75 net) even
+                # though it helped the overnight strategy -- the FVG
+                # requirement filters day entries down to ones with a real
+                # support/resistance gap nearby, which swing-first let
+                # through as marginal setups instead.
                 stop_candidate = find_structural_stop_price(
                     direction=self._breakout_direction,
                     entry_price=self._pending_limit_price,
                     fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._breakout_direction),
                     swing_high=self.swing_tracker.most_recent_swing_high,
                     swing_low=self.swing_tracker.most_recent_swing_low,
+                    prefer_swing=False,
                 )
                 bracket = compute_stop_target(
                     direction=self._breakout_direction,

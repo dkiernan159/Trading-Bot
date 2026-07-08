@@ -236,39 +236,50 @@ review these and adjust `config.yaml` before running live.
 - **Stop-loss placement** (`src/risk.py`): **rewritten 2026-07-08** at the
   user's explicit correction to a two-tier rule, replacing the
   previous-day/Asia/London/box-level approach described in the revision
-  history below entirely: originally, primarily the outer edge of the
-  nearest strong 5m FVG sitting on the stop side of entry (below entry for
-  a LONG, above for a SHORT), falling back to the most recent 1-minute
-  break-of-structure swing point only when no FVG qualified.
-  **Priority flipped 2026-07-08** (same day, later): a real 32-trade
-  overnight backtest's `--verbose` detail (see the diagnostic addition
-  below) showed swing-based stops winning 50% of the time (net +$665
-  across 12 trades, +$55/trade) versus FVG-based stops winning only 35%
-  (net +$248 across 20 trades, +$12/trade) -- and FVG size didn't predict
-  the difference (the worst bucket was mid-sized 20-30pt gaps, not the
-  smallest ones), so the *source* itself, not gap size, was the
-  discriminator. The break-of-structure swing point
+  history below entirely: primarily the outer edge of the nearest strong
+  5m FVG sitting on the stop side of entry (below entry for a LONG, above
+  for a SHORT -- the same "strong" 5m FVGs already used for anchor
+  selection, `fvg_detector_5m.unmitigated_in_direction(direction)`, same
+  direction as the trade, since a LONG-direction gap is a bullish/support
+  gap, which is what should sit *below* a long entry), falling back to
+  the most recent 1-minute break-of-structure swing point
   (`src/swing_points.py`'s `SwingPointTracker`: a standard N-bar fractal
   pivot, `PIVOT_WIDTH=2` -- ASSUMPTION, tune if real data suggests
   otherwise -- fed 1-minute bars directly, reset at day/night session
-  boundaries same as the FVG detectors) is now tried **first**; the
-  nearest strong 5m FVG on the stop side (the same "strong" 5m FVGs
-  already used for anchor selection, `fvg_detector_5m.unmitigated_in_direction(direction)`
-  -- same direction as the trade, since a LONG-direction gap is a
-  bullish/support gap, which is what should sit *below* a long entry) is
-  now only a fallback when no swing point qualifies. Whichever of the two
-  applies becomes the stop, as long as that distance falls between
-  `min_stop_dollars` and `max_stop_dollars` (`config.yaml`, $40-$200)
-  converted to points at signal time (unchanged from before -- see
-  `compute_stop_target`, whose own job shrank to just validating a given
-  `stop_price` against this budget and computing the target, no longer
-  searching a candidate list itself). If neither a qualifying FVG nor a
-  swing point exists on the stop side at all, or the one that does is
-  outside the $40-$200 band, the trade is skipped entirely
+  boundaries same as the FVG detectors) only when no FVG qualified.
+  Whichever of the two applies becomes the stop, as long as that distance
+  falls between `min_stop_dollars` and `max_stop_dollars` (`config.yaml`,
+  $40-$200) converted to points at signal time (unchanged from before --
+  see `compute_stop_target`, whose own job shrank to just validating a
+  given `stop_price` against this budget and computing the target, no
+  longer searching a candidate list itself). If neither a qualifying FVG
+  nor a swing point exists on the stop side at all, or the one that does
+  is outside the $40-$200 band, the trade is skipped entirely
   (`find_structural_stop_price` returns `None`, or `compute_stop_target`
   does) rather than using the cap as a stop distance with no real level
   behind it, or taking a stop too tight to be a genuine invalidation
   point.
+  - **Priority made per-strategy, 2026-07-08** (same day, twice more):
+    first flipped to swing-first globally after a real 32-trade overnight
+    backtest's `--verbose` detail (see the diagnostic addition below)
+    showed swing-based stops winning 50% (net +$665 across 12 trades,
+    +$55/trade) versus FVG-based stops winning only 35% (net +$248 across
+    20 trades, +$12/trade) there -- and FVG size didn't predict the
+    difference (the worst bucket was mid-sized 20-30pt gaps, not the
+    smallest ones), so the *source* itself, not gap size, was the
+    discriminator. But re-running the *day* (opening-range breakout)
+    strategy's own 30-day backtest with the same global flip made it
+    measurably worse (10->25 trades, 30%->24% win rate,
+    -$199.75->-$424.75 net): the FVG-first rule had been usefully
+    filtering day-strategy entries down to ones with a real
+    support/resistance gap nearby, and swing-first let a lot of marginal
+    setups through that used to get skipped as `no_valid_stop`. So
+    `find_structural_stop_price` now takes a `prefer_swing: bool = True`
+    parameter instead of a single global order: `strategy.py` (day) calls
+    it with `prefer_swing=False` (FVG-first, its original rule),
+    `overnight_strategy.py` calls it with `prefer_swing=True`
+    (swing-first) -- each strategy keeps whichever order its own real
+    backtest data showed winning, rather than sharing one priority.
   - Take-profit is always `2 x actual_stop_distance` (so smaller structural
     stops give a smaller, still-2:1, target -- this is why the target
     varies per trade rather than always chasing the reference $300).
