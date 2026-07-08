@@ -21,9 +21,11 @@ class FakeBroker(Broker):
     value is configurable so both the normal and "entry never filled"
     paths can be tested directly."""
 
-    def __init__(self, order_id_to_return: str | None):
+    def __init__(self, order_id_to_return: str | None, raise_on_place: Exception | None = None):
         self.order_id_to_return = order_id_to_return
+        self.raise_on_place = raise_on_place
         self.placed_orders: list[dict] = []
+        self.flatten_calls: list[str] = []
 
     def connect(self) -> None:
         pass
@@ -33,13 +35,15 @@ class FakeBroker(Broker):
 
     def place_bracket_order(self, **kwargs) -> str | None:
         self.placed_orders.append(kwargs)
+        if self.raise_on_place is not None:
+            raise self.raise_on_place
         return self.order_id_to_return
 
     def poll_order_status(self, order_id: str) -> str:
         return "open"
 
     def flatten_all(self, symbol: str) -> None:
-        pass
+        self.flatten_calls.append(symbol)
 
 
 def load_test_config():
@@ -103,6 +107,26 @@ def test_enter_trade_resets_strategy_when_the_broker_never_fills_the_entry(tmp_p
     # The broker was actually asked to place the order -- this isn't
     # skipping the attempt, just handling its failure to fill.
     assert len(broker.placed_orders) == 1
+
+
+def test_enter_trade_resets_strategy_when_placing_the_order_raises(tmp_path, capsys):
+    """Confirmed live 2026-07-08: a real /Order/place 400 Bad Request
+    raised uncaught out of place_bracket_order, leaving the strategy stuck
+    at IN_TRADE forever (current_trade never set, nothing ever resets the
+    state). Any failure placing the order -- not just a clean None return
+    -- must be treated like a not-filled entry."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1", raise_on_place=RuntimeError("400 Bad Request"))
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.strategy._breakout_direction = Direction.LONG
+    runner.day_slot.strategy.state = State.IN_TRADE  # as if on_bar just fired this signal
+
+    runner.day_slot._enter_trade(make_signal())  # must not raise
+
+    assert runner.day_slot.current_order_id is None
+    assert runner.day_slot.current_trade is None
+    assert runner.day_slot.strategy.state is State.WAIT_5M_FVG
+    assert "400 Bad Request" in capsys.readouterr().out
 
 
 def test_overnight_slot_is_created_when_enabled():
@@ -266,3 +290,79 @@ def test_status_file_write_failure_does_not_crash_on_bar(tmp_path):
     runner.status_path = bad_dir
 
     runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))  # must not raise
+
+
+def test_on_bar_exception_anywhere_inside_does_not_propagate(tmp_path, capsys):
+    """Confirmed live 2026-07-08 (via signalrcore's own source): an
+    exception escaping on_bar propagates into the realtime hub's socket
+    receive loop, which silently kills that connection's thread with no
+    reconnect ever triggered -- the bot goes deaf to real-time data until
+    the next scheduled hourly refresh. A bug anywhere in the strategy
+    pipeline must never be able to take down the live data feed like
+    that."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    def _boom(bar, local_time):
+        raise RuntimeError("simulated bug in the strategy pipeline")
+
+    runner.day_slot.on_bar = _boom
+
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))  # must not raise
+
+    assert "simulated bug in the strategy pipeline" in capsys.readouterr().out
+
+
+def test_recent_bars_survive_concurrent_append_and_read(tmp_path):
+    """Confirmed live 2026-07-08: a "deque mutated during iteration"
+    RuntimeError surfaced, meaning on_bar (which appends to _recent_bars)
+    and _write_status (which iterates it) were genuinely running from more
+    than one thread at once. _recent_bars_lock must make concurrent
+    append + read safe regardless of how many threads call in -- tested
+    directly against those two operations rather than the full on_bar
+    pipeline, since the strategy state machines themselves were never
+    designed for concurrent access and aren't what this lock protects.
+    Forces a very short GIL switch interval so the two threads actually
+    interleave within the loop instead of each just happening to finish
+    before the other gets scheduled -- without this, the race is real but
+    doesn't reliably reproduce in a test this short."""
+    import sys
+    import threading
+
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    bar = Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0)
+
+    errors = []
+
+    def appender() -> None:
+        try:
+            for _ in range(800):
+                with runner._recent_bars_lock:
+                    runner._recent_bars.append(bar)
+        except Exception as e:  # pragma: no cover -- the whole point is that this must not happen
+            errors.append(e)
+
+    def writer() -> None:
+        try:
+            for _ in range(800):
+                runner._write_status(bar)
+        except Exception as e:  # pragma: no cover -- the whole point is that this must not happen
+            errors.append(e)
+
+    original_switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=appender) for _ in range(4)] + [
+            threading.Thread(target=writer) for _ in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(original_switch_interval)
+
+    assert errors == []

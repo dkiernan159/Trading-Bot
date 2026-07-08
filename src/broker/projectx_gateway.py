@@ -93,6 +93,16 @@ class ProjectXGatewayBroker(Broker):
         self._token: str | None = None
         self._contract_id: str | None = None
         self._hub = None
+        # Confirmed live 2026-07-08: a "deque mutated during iteration"
+        # error in Runner meant on_bar was being called concurrently from
+        # more than one thread -- i.e. more than one realtime hub
+        # connection was alive and delivering ticks at once, most likely
+        # because _reconnect_hub's self._hub.stop() on the old connection
+        # doesn't reliably kill its underlying receive thread. Rather than
+        # depend on that teardown actually working, each hub's message
+        # handler captures the generation it was built with and silently
+        # drops events once a newer hub has superseded it.
+        self._hub_generation = 0
         self._realtime_contract_id: str | None = None
         self._on_bar: Callable[[Bar], None] | None = None
         self._current_bar: dict | None = None
@@ -148,6 +158,13 @@ class ProjectXGatewayBroker(Broker):
             if response.status_code == 429 and attempt < max_retries:
                 time_module.sleep(2**attempt)
                 continue
+            if not response.ok:
+                # Confirmed live 2026-07-08: /Order/place returned a real
+                # 400 Bad Request, but raise_for_status() alone throws that
+                # detail away -- the exception message doesn't include the
+                # response body, so the API's own explanation of what was
+                # wrong with the request was never visible anywhere.
+                print(f"[LIVE] WARNING: {path} returned {response.status_code}: {response.text}")
             response.raise_for_status()
             data = response.json()
             if data.get("success") is False:
@@ -206,6 +223,9 @@ class ProjectXGatewayBroker(Broker):
         self._start_realtime_refresh_thread()
 
     def _start_hub(self) -> None:
+        self._hub_generation += 1
+        generation = self._hub_generation
+
         hub_url = f"{self.realtime_base_url}{REALTIME_MARKET_HUB}?access_token={self._token}"
         self._hub = (
             HubConnectionBuilder()
@@ -215,11 +235,20 @@ class ProjectXGatewayBroker(Broker):
             )
             .build()
         )
-        self._hub.on("GatewayTrade", self._on_trade_event)
+        self._hub.on("GatewayTrade", lambda args: self._on_trade_event_from_generation(generation, args))
         self._hub.on_open(self._on_hub_open)
         self._hub.on_close(self._on_hub_closed)
         self._hub.on_error(self._on_hub_error)
         self._hub.start()
+
+    def _on_trade_event_from_generation(self, generation: int, args) -> None:
+        if generation != self._hub_generation:
+            # This hub was superseded by a newer one (scheduled refresh or
+            # a reconnect) but is still alive and delivering ticks --
+            # ignore rather than double-process/race a shared aggregator
+            # with whichever hub is actually current.
+            return
+        self._on_trade_event(args)
 
     def _on_hub_open(self) -> None:
         # Confirms the handshake actually completed and a subscribe request
@@ -409,31 +438,45 @@ class ProjectXGatewayBroker(Broker):
             self._cancel_order(entry_order_id)
             return None
 
-        stop_resp = self._post(
-            "/Order/place",
-            {
-                "accountId": self.account_id,
-                "contractId": contract_id,
-                "type": ORDER_TYPE_STOP,
-                "side": protective_side,
-                "size": contracts,
-                "stopPrice": stop_price,
-                "customTag": f"stop-{bracket_id}",
-            },
-        )
-        target_resp = self._post(
-            "/Order/place",
-            {
-                "accountId": self.account_id,
-                "contractId": contract_id,
-                "type": ORDER_TYPE_LIMIT,
-                "side": protective_side,
-                "size": contracts,
-                "limitPrice": target_price,
-                "linkedOrderId": stop_resp["orderId"],
-                "customTag": f"target-{bracket_id}",
-            },
-        )
+        # The entry is now genuinely filled and real on the exchange -- if
+        # placing either protective leg below fails, the position would
+        # otherwise sit open with no stop and no target attached (a real
+        # account risk, not just a missed signal). Flatten immediately
+        # rather than leave it naked, then let the caller's own handling
+        # of the exception treat this signal as not taken.
+        try:
+            stop_resp = self._post(
+                "/Order/place",
+                {
+                    "accountId": self.account_id,
+                    "contractId": contract_id,
+                    "type": ORDER_TYPE_STOP,
+                    "side": protective_side,
+                    "size": contracts,
+                    "stopPrice": stop_price,
+                    "customTag": f"stop-{bracket_id}",
+                },
+            )
+            target_resp = self._post(
+                "/Order/place",
+                {
+                    "accountId": self.account_id,
+                    "contractId": contract_id,
+                    "type": ORDER_TYPE_LIMIT,
+                    "side": protective_side,
+                    "size": contracts,
+                    "limitPrice": target_price,
+                    "linkedOrderId": stop_resp["orderId"],
+                    "customTag": f"target-{bracket_id}",
+                },
+            )
+        except Exception:
+            print(
+                f"[LIVE] WARNING: entry {entry_order_id} filled but placing its stop/target "
+                "failed -- flattening immediately to avoid a naked position"
+            )
+            self.flatten_all(symbol)
+            raise
 
         self._brackets[bracket_id] = {
             "status": "open",

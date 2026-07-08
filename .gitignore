@@ -6,5 +6,6 @@ venv/
 *.log
 logs/
 trades/*.csv
+trades/*.json
 .pytest_cache/
 .DS_Store

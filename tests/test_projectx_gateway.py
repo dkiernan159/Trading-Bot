@@ -4,6 +4,7 @@ import pytest
 import requests
 
 from src.broker.projectx_gateway import ProjectXGatewayBroker
+from src.models import Direction
 
 
 def make_broker() -> ProjectXGatewayBroker:
@@ -12,9 +13,11 @@ def make_broker() -> ProjectXGatewayBroker:
     return broker
 
 
-def fake_response(status_code: int, json_body: dict) -> MagicMock:
+def fake_response(status_code: int, json_body: dict, text: str | None = None) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
+    resp.ok = status_code < 400
+    resp.text = text if text is not None else str(json_body)
     resp.json.return_value = json_body
     if status_code >= 400:
         resp.raise_for_status.side_effect = requests.exceptions.HTTPError(f"{status_code} error")
@@ -214,3 +217,79 @@ def test_post_does_not_retry_on_other_error_statuses():
 
     assert mock_post.call_count == 1
     mock_sleep.assert_not_called()
+
+
+def test_post_logs_the_response_body_before_raising_on_a_non_2xx(capsys):
+    """Confirmed live 2026-07-08: /Order/place returned a real 400 Bad
+    Request, but raise_for_status() alone throws away the response body --
+    the API's own explanation of what was wrong with the request was never
+    visible anywhere. Must be printed before the exception propagates."""
+    broker = make_broker()
+    bad_response = fake_response(400, {}, text='{"errorMessage": "invalid limitPrice precision"}')
+    with patch("src.broker.projectx_gateway.requests.post", return_value=bad_response):
+        with pytest.raises(requests.exceptions.HTTPError):
+            broker._post("/Order/place", {})
+
+    assert "invalid limitPrice precision" in capsys.readouterr().out
+
+
+def test_place_bracket_order_flattens_if_stop_placement_fails_after_entry_fills():
+    """Confirmed real risk: if the entry leg fills but placing the stop or
+    target leg then fails, the account would be left with a naked, real
+    position and no protective orders attached, with the runner unaware
+    any trade was ever taken (place_bracket_order never returns, so
+    current_trade never gets set). Must flatten immediately rather than
+    leave that sitting open on the exchange."""
+    broker = make_broker()
+    broker.dry_run = False
+    broker.account_id = "ACC1"
+    broker._contract_id = "CON.F.US.MNQ.U26"
+
+    responses = [{"orderId": "entry-1"}, RuntimeError("stop placement failed")]
+
+    def fake_post(path, body, **kwargs):
+        result = responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with patch.object(broker, "_post", side_effect=fake_post), patch.object(
+        broker, "_wait_for_fill", return_value=True
+    ), patch.object(broker, "flatten_all") as mock_flatten:
+        with pytest.raises(RuntimeError, match="stop placement failed"):
+            broker.place_bracket_order(
+                symbol="MNQ",
+                direction=Direction.LONG,
+                contracts=1,
+                entry_price=100.0,
+                stop_price=90.0,
+                target_price=120.0,
+            )
+
+    mock_flatten.assert_called_once_with("MNQ")
+
+
+def test_hub_generation_guard_ignores_events_from_a_superseded_hub():
+    """Confirmed live 2026-07-08: a "deque mutated during iteration" error
+    in Runner meant more than one realtime hub was alive and delivering
+    ticks concurrently -- most likely because _reconnect_hub's
+    self._hub.stop() on the old connection doesn't reliably kill its
+    receive thread. Each hub's handler must be tied to the generation it
+    was built with, so a stale hub's events get dropped once superseded,
+    regardless of whether its underlying connection actually dies."""
+    broker = make_broker()
+    broker._realtime_contract_id = "CON.F.US.MNQ.U26"
+    received_bars = []
+    broker._on_bar = lambda bar: received_bars.append(bar)
+    builder_mock = _make_builder_mock()
+
+    hub_mock = builder_mock.build.return_value
+    with patch("src.broker.projectx_gateway.HubConnectionBuilder", return_value=builder_mock):
+        broker._start_hub()  # generation 1
+        first_generation_handler = hub_mock.on.call_args_list[-1][0][1]
+        broker._start_hub()  # generation 2 -- supersedes the first
+
+    real_shaped_args = ["CON.F.US.MNQ.U26", [{"price": 100.0, "timestamp": "2026-07-07T02:00:00+00:00", "volume": 1}]]
+    first_generation_handler(real_shaped_args)  # a stale hub still delivering a tick
+
+    assert broker._current_bar is None  # dropped, not processed

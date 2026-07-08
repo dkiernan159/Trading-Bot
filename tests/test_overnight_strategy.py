@@ -356,3 +356,23 @@ def test_status_snapshot_reflects_current_hunt_state():
     assert waiting_fill["anchor_gap_low"] == pytest.approx(anchor_low)
     assert waiting_fill["anchor_gap_high"] == pytest.approx(anchor_high)
     assert waiting_fill["pending_limit_price"] == pytest.approx((anchor_low + anchor_high) / 2)
+
+
+def test_notify_entry_not_filled_goes_back_to_hunting_instead_of_staying_stuck():
+    """Confirmed live 2026-07-08: this method didn't exist at all before --
+    a real live entry-order failure left Runner._enter_trade's not-filled
+    path calling it, raising AttributeError and leaving self.state stuck at
+    IN_TRADE forever, with no trade ever recorded and no further hunting
+    for the rest of the process's life."""
+    cfg = load_test_config()
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, NIGHT_START)
+    fill_time = NIGHT_START + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    signal = strategy.on_bar(bar_at(fill_time, anchor_high, anchor_high + 0.1, anchor_low, anchor_low + 0.1))
+    assert signal is not None
+    assert strategy.state is State.IN_TRADE  # as if on_bar just fired this signal
+
+    strategy.notify_entry_not_filled()  # must not raise AttributeError
+
+    assert strategy.state is State.WAIT_FVG

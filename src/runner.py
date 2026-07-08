@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
+import traceback
 from collections import deque
 from datetime import datetime, time as dtime, timezone
 from pathlib import Path
@@ -74,14 +76,28 @@ class _StrategySlot:
         )
         contracts = cfg.position_sizing.contract_size
 
-        order_id = self.runner.broker.place_bracket_order(
-            symbol=cfg.instrument.symbol,
-            direction=signal.direction,
-            contracts=contracts,
-            entry_price=signal.entry_price,
-            stop_price=bracket.stop_price,
-            target_price=bracket.target_price,
-        )
+        try:
+            order_id = self.runner.broker.place_bracket_order(
+                symbol=cfg.instrument.symbol,
+                direction=signal.direction,
+                contracts=contracts,
+                entry_price=signal.entry_price,
+                stop_price=bracket.stop_price,
+                target_price=bracket.target_price,
+            )
+        except Exception:
+            # Confirmed live 2026-07-08: a real /Order/place 400 (Bad
+            # Request) raised here, uncaught, leaving the strategy stuck
+            # believing it was IN_TRADE forever (nothing else ever resets
+            # that state) while current_order_id/current_trade were never
+            # set -- the strategy silently never hunted again for the rest
+            # of the process's life. Any failure placing the order --
+            # rejected request, network error, whatever -- must be treated
+            # exactly like "didn't fill": nothing was actually taken, so go
+            # back to hunting instead of getting permanently stuck.
+            print(f"[LIVE] WARNING: order placement raised, treating as not filled:\n{traceback.format_exc()}")
+            self.strategy.notify_entry_not_filled()
+            return
         if order_id is None:
             # The signal fired (backtest-equivalent: the bar-level check
             # says price touched entry_price), but the live broker's
@@ -185,6 +201,14 @@ class Runner:
         self.status_path = Path(status_path)
         self.status_path.parent.mkdir(parents=True, exist_ok=True)
         self._recent_bars: deque[Bar] = deque(maxlen=RECENT_CANDLES_MAXLEN)
+        # Confirmed live 2026-07-08: a "deque mutated during iteration"
+        # RuntimeError surfaced here, meaning on_bar was genuinely being
+        # invoked concurrently from more than one thread (see
+        # ProjectXGatewayBroker's hub-generation guard for the likely
+        # cause). Guards every read/mutation of _recent_bars so that can
+        # never corrupt the dashboard snapshot again, regardless of why
+        # more than one thread ends up calling on_bar.
+        self._recent_bars_lock = threading.Lock()
 
         self.day_slot = _StrategySlot("day", OpeningRangeStrategy(cfg), cfg.session.flatten_by, self)
         self.overnight_slot: _StrategySlot | None = None
@@ -196,9 +220,24 @@ class Runner:
         self.broker.subscribe_bars(self.cfg.instrument.symbol, 1, self.on_bar)
 
     def on_bar(self, bar: Bar) -> None:
+        # Confirmed live 2026-07-08: an uncaught exception anywhere in
+        # here (e.g. a rejected /Order/place call) propagates back into
+        # signalrcore's own socket receive loop, which silently kills that
+        # connection's receive thread -- no reconnect is triggered, so the
+        # bot goes deaf to real-time data until the next scheduled hourly
+        # refresh (or forever, if the same bug fires again right after).
+        # Trading logic bugs must never be able to take down the data feed
+        # like that, so nothing from here is allowed to escape.
+        try:
+            self._on_bar(bar)
+        except Exception:
+            print(f"[LIVE] WARNING: on_bar raised, this bar's processing was aborted:\n{traceback.format_exc()}")
+
+    def _on_bar(self, bar: Bar) -> None:
         local = bar.timestamp.astimezone(self.tz)
         self.risk_state.reset_if_new_day(local.date())
-        self._recent_bars.append(bar)
+        with self._recent_bars_lock:
+            self._recent_bars.append(bar)
 
         self.day_slot.on_bar(bar, local.time())
         if self.overnight_slot is not None:
@@ -210,14 +249,16 @@ class Runner:
         doing (see src/dashboard.py's "Bot activity" section) -- never read
         by the trading logic itself, so a failure to write it must never
         take down live trading."""
+        with self._recent_bars_lock:
+            recent_candles = [
+                {"t": b.timestamp.isoformat(), "o": b.open, "h": b.high, "l": b.low, "c": b.close}
+                for b in self._recent_bars
+            ]
         status = {
             "last_bar_time": bar.timestamp.isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "last_price": bar.close,
-            "recent_candles": [
-                {"t": b.timestamp.isoformat(), "o": b.open, "h": b.high, "l": b.low, "c": b.close}
-                for b in self._recent_bars
-            ],
+            "recent_candles": recent_candles,
             "day": self.day_slot.status_for_dashboard(bar.close),
             "overnight": (
                 self.overnight_slot.status_for_dashboard(bar.close) if self.overnight_slot is not None else None

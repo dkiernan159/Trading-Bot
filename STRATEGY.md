@@ -761,6 +761,84 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   wrong. The real, still-live bug this session was masking is the
   `_on_trade_event` payload-shape bug documented above, which silently
   dropped every real tick with no error at all.
+
+  **A real live entry order was rejected, and the bot never traded again
+  that day (found and fixed 2026-07-08):** the user noticed zero trades on
+  a day the bot had clearly been running and receiving live bars. `grep`
+  of `logs/bot.log` (not `journalctl` -- the app's own prints go to the
+  file the systemd unit redirects to, not the journal, which cost one
+  wasted round-trip before checking the right place) turned up two real
+  entry attempts that both failed the same way:
+  ```
+  [LIVE] placing entry LIMIT long x1 @ 29707.375
+  Receive error: 400 Client Error: Bad Request for url: https://api.topstepx.com/api/Order/place
+  ```
+  Root cause, found by tracing what happens after that: `_enter_trade`
+  (in `src/runner.py`) called `place_bracket_order`, which raised
+  `HTTPError` uncaught. By that point the strategy's own `on_bar` had
+  already optimistically set `self.state = State.IN_TRADE` (same as the
+  documented not-filled case), but the exception meant `current_trade`
+  never got created and `notify_entry_not_filled()` never got called --
+  so the strategy was stuck at `IN_TRADE` **forever**, with the dashboard
+  showing `state: IN_TRADE, in_trade: false` for the rest of the process's
+  life. This happened to both the day and overnight strategies
+  independently over the course of the day. Fixes, all confirmed via
+  revert-and-confirm:
+  - `_post` now prints the response body before `raise_for_status()` --
+    previously the API's own explanation of what was wrong with the
+    request (a 400's body) was thrown away entirely, visible nowhere.
+    Exact request-schema bug still not identified (needs the actual body
+    text from a live 400, which nothing before this printed).
+  - `_StrategySlot._enter_trade` now wraps the broker call in
+    `try/except`, treating *any* failure -- not just a clean `None`
+    return -- the same as "didn't fill": tell the strategy to keep
+    hunting instead of getting stuck.
+  - `place_bracket_order` now flattens immediately if placing the stop or
+    target leg fails *after* the entry already filled -- previously that
+    would leave a real, naked, unprotected position on the exchange while
+    the runner believed no trade was ever taken.
+  - `OvernightMomentumStrategy` was missing `notify_entry_not_filled`
+    entirely (only the day strategy had it) -- any not-filled/failed entry
+    there would have raised `AttributeError` instead of resetting state.
+    Added, mirroring the day strategy's version.
+
+  **A second, independent bug found while fixing the first:** reading
+  signalrcore's own source (`base_socket_client.py`'s `run()`) while
+  investigating why the 400 error printed but nothing after it did,
+  turned up something more serious than the one bad order: an exception
+  escaping the `on_message` callback chain (i.e. anything raised inside
+  `Runner.on_bar`) makes that receive loop log the error, set
+  `self.running = False`, and return -- **silently killing that hub
+  connection's thread**, with no reconnect triggered via any of the normal
+  paths, until the next scheduled hourly refresh (or forever, if the same
+  bug fires again right after). This means *any* bug anywhere in the
+  strategy pipeline didn't just fail one signal -- it could silently take
+  the bot deaf to real-time data for up to an hour. Fixed by wrapping
+  `Runner.on_bar`'s entire body in a top-level `try/except` that logs and
+  swallows anything unexpected, so a trading-logic bug can never again
+  take down the data feed itself.
+
+  **A third bug, also found via the same investigation:** a
+  `RuntimeError: deque mutated during iteration` also appeared in
+  `logs/bot.log`, meaning `Runner._recent_bars` (the live chart snapshot
+  buffer, added 2026-07-07) was being appended to and iterated from more
+  than one thread at once -- i.e. more than one realtime hub connection
+  was alive and delivering ticks concurrently, most likely because
+  `_reconnect_hub`'s `self._hub.stop()` on the old connection doesn't
+  reliably kill its underlying receive thread (unconfirmed which of
+  signalrcore's several teardown paths is actually failing). Two fixes:
+  - `Runner._recent_bars_lock` now guards every read and write of
+    `_recent_bars`, so concurrent access from any number of threads can no
+    longer corrupt it. Confirmed via a test that forces the exact same
+    `RuntimeError` reliably without the lock (needs an artificially short
+    `sys.setswitchinterval` to reproduce reliably in a short test run --
+    without it the race is real but doesn't reliably manifest in time).
+  - Each hub connection's `GatewayTrade` handler now captures the
+    generation number (`self._hub_generation`, incremented in
+    `_start_hub`) it was built with, and silently drops events once a
+    newer hub has superseded it -- so even if an old connection's thread
+    does survive a reconnect, it can no longer race a shared aggregator
+    with whichever hub is actually current.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover

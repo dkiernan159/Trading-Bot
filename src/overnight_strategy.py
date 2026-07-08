@@ -302,3 +302,22 @@ class OvernightMomentumStrategy:
 
         self._reset_hunt_state()
         self.state = State.WAIT_FVG
+
+    def notify_entry_not_filled(self) -> None:
+        """Live trading only -- mirrors OpeningRangeStrategy's method of the
+        same name (see its docstring for the full reasoning). on_bar
+        already moves to IN_TRADE and clears the hunt state
+        (_reset_hunt_state) the instant it returns a signal, since backtest
+        treats a signal as a guaranteed fill; live, the broker's resting
+        limit order can still fail to actually fill or the order placement
+        itself can be rejected. Runner calls this in that case.
+
+        Confirmed live 2026-07-08: this method didn't exist at all before
+        -- a real /Order/place rejection left Runner._enter_trade's
+        not-filled path calling it, raising AttributeError and leaving
+        self.state stuck at IN_TRADE forever, with no trade ever recorded
+        and no further hunting for the rest of the process's life. Hunt-
+        state fields are already None by this point (_reset_hunt_state
+        already ran when the signal was generated), so there's nothing
+        left to reset except the state itself."""
+        self.state = State.WAIT_FVG
