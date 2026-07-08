@@ -165,13 +165,14 @@ def test_dollar_floor_grows_in_points_as_contract_size_scales_up():
     assert at_four_contracts.stop_points == 10.0
 
 
-# ---------- find_structural_stop_price: nearest strong 5m FVG, else break of structure ----------
+# ---------- find_structural_stop_price: break of structure first, else nearest strong 5m FVG ----------
+# (priority flipped 2026-07-08 -- see the function's docstring for the real-data reasoning)
 
 
-def test_long_stop_is_the_nearest_qualifying_fvgs_outer_edge_below_entry():
-    """Two candidate support FVGs below entry (98-99 and 90-92) -- the
-    nearer one (98-99) wins, and the stop sits at its *outer* (low) edge,
-    not its near edge."""
+def test_long_stop_falls_back_to_the_nearest_qualifying_fvgs_outer_edge_below_entry_when_no_swing():
+    """No swing point given -- falls back to FVG. Two candidate support
+    FVGs below entry (98-99 and 90-92) -- the nearer one (98-99) wins, and
+    the stop sits at its *outer* (low) edge, not its near edge."""
     nearer = make_fvg(Direction.LONG, gap_low=98.0, gap_high=99.0)
     farther = make_fvg(Direction.LONG, gap_low=90.0, gap_high=92.0)
     stop = find_structural_stop_price(
@@ -186,7 +187,7 @@ def test_long_stop_is_the_nearest_qualifying_fvgs_outer_edge_below_entry():
     assert stop.fvg_size == 1.0
 
 
-def test_short_stop_is_the_nearest_qualifying_fvgs_outer_edge_above_entry():
+def test_short_stop_falls_back_to_the_nearest_qualifying_fvgs_outer_edge_above_entry_when_no_swing():
     nearer = make_fvg(Direction.SHORT, gap_low=101.0, gap_high=102.0)
     farther = make_fvg(Direction.SHORT, gap_low=108.0, gap_high=110.0)
     stop = find_structural_stop_price(
@@ -203,22 +204,21 @@ def test_short_stop_is_the_nearest_qualifying_fvgs_outer_edge_above_entry():
 
 def test_fvg_candidates_on_the_wrong_side_of_entry_are_ignored():
     """A LONG-direction FVG whose gap sits *above* entry (not below) isn't
-    a valid stop reference for a long -- must be ignored, falling through
-    to the break-of-structure fallback instead."""
+    a valid stop reference for a long -- must be ignored, same as if it
+    didn't exist at all (no swing point given either, so this must fall
+    all the way through to None)."""
     wrong_side = make_fvg(Direction.LONG, gap_low=101.0, gap_high=103.0)
     stop = find_structural_stop_price(
         direction=Direction.LONG,
         entry_price=100.0,
         fvg_candidates=[wrong_side],
         swing_high=None,
-        swing_low=95.0,
+        swing_low=None,
     )
-    assert stop.price == 95.0
-    assert stop.source == "swing"
-    assert stop.fvg_size is None
+    assert stop is None
 
 
-def test_falls_back_to_the_break_of_structure_swing_point_when_no_fvg_qualifies():
+def test_swing_point_is_the_primary_stop_for_long_and_short():
     stop = find_structural_stop_price(
         direction=Direction.LONG,
         entry_price=100.0,
@@ -265,17 +265,34 @@ def test_returns_none_when_neither_fvg_nor_swing_point_exists():
     assert stop is None
 
 
-def test_a_qualifying_fvg_takes_priority_over_a_closer_break_of_structure_point():
-    """Even if the break-of-structure swing point would give a tighter
-    stop, a qualifying 5m FVG always wins -- it's the primary rule, not
-    "whichever is nearer" (see risk.py's find_structural_stop_price)."""
+def test_a_qualifying_swing_point_takes_priority_over_a_qualifying_fvg():
+    """Priority flipped 2026-07-08: a real 32-trade overnight backtest
+    showed swing-based stops winning 50% (+$55/trade) versus FVG-based
+    stops winning only 35% (+$12/trade), so the break-of-structure swing
+    point is now the primary rule and a qualifying 5m FVG is only used as
+    a fallback (see risk.py's find_structural_stop_price) -- even when the
+    FVG would give a tighter stop, it must not be used if a swing point
+    qualifies."""
+    fvg = make_fvg(Direction.LONG, gap_low=98.0, gap_high=99.0)
+    stop = find_structural_stop_price(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        fvg_candidates=[fvg],
+        swing_high=None,
+        swing_low=90.0,  # farther than the FVG, but must still win
+    )
+    assert stop.price == 90.0
+    assert stop.source == "swing"
+
+
+def test_falls_back_to_a_qualifying_fvg_when_no_swing_point_qualifies():
     fvg = make_fvg(Direction.LONG, gap_low=90.0, gap_high=92.0)
     stop = find_structural_stop_price(
         direction=Direction.LONG,
         entry_price=100.0,
         fvg_candidates=[fvg],
         swing_high=None,
-        swing_low=98.0,  # closer than the FVG, but must not be used
+        swing_low=None,
     )
     assert stop.price == 90.0
     assert stop.source == "fvg"

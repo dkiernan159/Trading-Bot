@@ -43,39 +43,47 @@ def find_structural_stop_price(
     swing_high: float | None,
     swing_low: float | None,
 ) -> StopCandidate | None:
-    """Where the stop goes, per the two-tier rule added 2026-07-08 at the
-    user's explicit correction (see compute_stop_target's revision history
-    for what this replaced): primarily the outer edge of the nearest
-    strong 5m FVG sitting on the stop side of entry (below entry for a
-    LONG, above for a SHORT) -- a real support/resistance zone, the same
-    "strong" 5m FVGs already used for anchor selection (fvg_candidates is
-    the caller's fvg_detector_5m.unmitigated_in_direction(direction) pool,
-    same direction as the trade: a LONG-direction gap is a bullish/support
-    gap, which is what should sit *below* a long entry). If none qualifies
-    -- nothing unmitigated on that side at all -- falls back to the most
-    recent 1-minute break-of-structure swing point on that same side (see
-    swing_points.py). Returns None if neither exists, meaning "no real
-    invalidation point behind this entry at all" -- skip the trade (see
-    compute_stop_target)."""
+    """Where the stop goes. Originally a two-tier rule added 2026-07-08 at
+    the user's explicit correction (see compute_stop_target's revision
+    history for what that replaced) that tried the nearest strong 5m FVG
+    first and fell back to the 1-minute break-of-structure swing point
+    only when no FVG qualified. **Priority flipped 2026-07-08** after a
+    real 32-trade overnight backtest's --verbose detail (StopCandidate's
+    stop_source/stop_fvg_size fields, added the same day) showed
+    swing-based stops winning 50% (net +$665 across 12 trades, +$55/trade)
+    versus FVG-based stops winning only 35% (net +$248 across 20 trades,
+    +$12/trade) -- and FVG size didn't predict the difference (the worst
+    bucket was mid-sized 20-30pt gaps, not the smallest ones), so it's the
+    source itself, not gap size, that's the discriminator. Swing point is
+    now tried first: the most recent 1-minute break-of-structure swing
+    point on the stop side of entry (below entry for a LONG, above for a
+    SHORT; see swing_points.py). If none qualifies -- no swing point on
+    that side at all -- falls back to the outer edge of the nearest strong
+    5m FVG sitting on that same side (fvg_candidates is the caller's
+    fvg_detector_5m.unmitigated_in_direction(direction) pool, same
+    direction as the trade: a LONG-direction gap is a bullish/support gap,
+    which is what should sit *below* a long entry). Returns None if
+    neither exists, meaning "no real invalidation point behind this entry
+    at all" -- skip the trade (see compute_stop_target)."""
     if direction is Direction.LONG:
+        if swing_low is not None and swing_low < entry_price:
+            return StopCandidate(price=swing_low, source="swing")
         below = [g for g in fvg_candidates if g.gap_high < entry_price]
         if below:
             nearest = max(below, key=lambda g: g.gap_high)
             return StopCandidate(
                 price=nearest.gap_low, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
             )
-        if swing_low is not None and swing_low < entry_price:
-            return StopCandidate(price=swing_low, source="swing")
         return None
     else:
+        if swing_high is not None and swing_high > entry_price:
+            return StopCandidate(price=swing_high, source="swing")
         above = [g for g in fvg_candidates if g.gap_low > entry_price]
         if above:
             nearest = min(above, key=lambda g: g.gap_low)
             return StopCandidate(
                 price=nearest.gap_high, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
             )
-        if swing_high is not None and swing_high > entry_price:
-            return StopCandidate(price=swing_high, source="swing")
         return None
 
 

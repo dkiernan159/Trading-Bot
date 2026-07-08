@@ -236,21 +236,28 @@ review these and adjust `config.yaml` before running live.
 - **Stop-loss placement** (`src/risk.py`): **rewritten 2026-07-08** at the
   user's explicit correction to a two-tier rule, replacing the
   previous-day/Asia/London/box-level approach described in the revision
-  history below entirely: primarily, the outer edge of the nearest strong
-  5m FVG sitting on the stop side of entry (below entry for a LONG, above
-  for a SHORT) -- the same "strong" 5m FVGs already used for anchor
-  selection, just required to sit on the opposite side of entry from
-  where the anchor itself sits (`find_structural_stop_price`, given
-  `fvg_detector_5m.unmitigated_in_direction(direction)` -- same direction
-  as the trade, since a LONG-direction gap is a bullish/support gap,
-  which is what should sit *below* a long entry). If none qualifies --
-  nothing unmitigated on that side at all -- falls back to the most
-  recent 1-minute break-of-structure swing point on that same side
+  history below entirely: originally, primarily the outer edge of the
+  nearest strong 5m FVG sitting on the stop side of entry (below entry for
+  a LONG, above for a SHORT), falling back to the most recent 1-minute
+  break-of-structure swing point only when no FVG qualified.
+  **Priority flipped 2026-07-08** (same day, later): a real 32-trade
+  overnight backtest's `--verbose` detail (see the diagnostic addition
+  below) showed swing-based stops winning 50% of the time (net +$665
+  across 12 trades, +$55/trade) versus FVG-based stops winning only 35%
+  (net +$248 across 20 trades, +$12/trade) -- and FVG size didn't predict
+  the difference (the worst bucket was mid-sized 20-30pt gaps, not the
+  smallest ones), so the *source* itself, not gap size, was the
+  discriminator. The break-of-structure swing point
   (`src/swing_points.py`'s `SwingPointTracker`: a standard N-bar fractal
   pivot, `PIVOT_WIDTH=2` -- ASSUMPTION, tune if real data suggests
   otherwise -- fed 1-minute bars directly, reset at day/night session
-  boundaries same as the FVG detectors). Whichever of the two applies
-  becomes the stop, as long as that distance falls between
+  boundaries same as the FVG detectors) is now tried **first**; the
+  nearest strong 5m FVG on the stop side (the same "strong" 5m FVGs
+  already used for anchor selection, `fvg_detector_5m.unmitigated_in_direction(direction)`
+  -- same direction as the trade, since a LONG-direction gap is a
+  bullish/support gap, which is what should sit *below* a long entry) is
+  now only a fallback when no swing point qualifies. Whichever of the two
+  applies becomes the stop, as long as that distance falls between
   `min_stop_dollars` and `max_stop_dollars` (`config.yaml`, $40-$200)
   converted to points at signal time (unchanged from before -- see
   `compute_stop_target`, whose own job shrank to just validating a given
