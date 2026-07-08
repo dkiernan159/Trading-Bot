@@ -9,8 +9,9 @@ from src.config import BotConfig
 from src.fvg import FairValueGap, FvgDetector
 from src.models import Bar, Direction
 from src.opening_range import OpeningRangeBox
-from src.risk import compute_stop_target
+from src.risk import compute_stop_target, find_structural_stop_price
 from src.session_levels import SessionLevels, SessionLevelSet
+from src.swing_points import SwingPointTracker
 
 
 class State(Enum):
@@ -28,7 +29,7 @@ class EntrySignal:
     direction: Direction
     entry_price: float
     anchor_fvg: FairValueGap
-    structural_levels: list[float]
+    stop_price: float
     timestamp: datetime
 
 
@@ -39,13 +40,12 @@ class AnchorRecord:
     itself. `outcome` is one of "filled", "superseded" (a nearer/fresher
     anchor replaced it before it ever filled), "invalidated" (the
     breakout thesis failed while it was still live), "no_valid_stop"
-    (price retraced far enough into the gap to fill, but no real marked structural level
-    sat within the $40-$200 budget beyond that entry -- either none
-    existed, the nearest was too far, or the nearest was too close to be
-    a genuine invalidation point -- so the trade was skipped rather than
-    using an arbitrary or noise-sized stop -- see risk.py's
-    compute_stop_target), or "session_ended" (time ran out with it still
-    live, unfilled)."""
+    (price retraced far enough into the gap to fill, but no real
+    invalidation point -- neither a strong 5m FVG nor a 1m break of
+    structure -- sat within the $40-$200 budget beyond that entry, so the
+    trade was skipped rather than using an arbitrary or noise-sized stop
+    -- see risk.py's find_structural_stop_price / compute_stop_target), or
+    "session_ended" (time ran out with it still live, unfilled)."""
 
     direction: Direction
     gap_low: float
@@ -65,18 +65,19 @@ class OpeningRangeStrategy:
     """State machine implementing the NY-open opening-range breakout + 5m
     FVG anchor entry strategy described in STRATEGY.md.
 
-    Sequence: mark previous-day/Asia/London levels (kept for stop-loss
-    placement, see risk.py) -> form the 9:30-9:45 box -> a close beyond the
-    box sets the breakout direction -> wait for a large 5m FVG in that
-    direction to anchor the move -> a limit order rests at a retracement
-    point inside that anchor (see _entry_price -- the exact midpoint by
-    default, configurably shallower), kept live/current while waiting to
-    fill (see WAIT_FILL: switching to a nearer/fresher unmitigated 5m FVG,
-    and updating the resting price, rather than staying frozen on the
-    first anchor found). The anchor FVG can form -- and later get
-    retested -- at any point before the session cutoff, no matter how far
-    price has since moved away from it; there's no separate time or
-    distance limit on the retest beyond the cutoff itself.
+    Sequence: mark previous-day/Asia/London levels (used for chart/
+    dashboard display only, not stop placement -- see risk.py's
+    find_structural_stop_price for that) -> form the 9:30-9:45 box -> a
+    close beyond the box sets the breakout direction -> wait for a large
+    5m FVG in that direction to anchor the move -> a limit order rests at
+    a retracement point inside that anchor (see _entry_price -- the exact
+    midpoint by default, configurably shallower), kept live/current while
+    waiting to fill (see WAIT_FILL: switching to a nearer/fresher
+    unmitigated 5m FVG, and updating the resting price, rather than
+    staying frozen on the first anchor found). The anchor FVG can form --
+    and later get retested -- at any point before the session cutoff, no
+    matter how far price has since moved away from it; there's no separate
+    time or distance limit on the retest beyond the cutoff itself.
     Mitigation (a gap broken by price trading through its far side) only
     matters when *selecting* a candidate anchor -- a resting limit order
     at any point strictly between the gap's two edges always fills before
@@ -102,6 +103,10 @@ class OpeningRangeStrategy:
         # redesign; this pool is searched independently and pooled
         # alongside fvg_detector_5m's, not required to sit inside it.
         self.fvg_detector_1m = FvgDetector(cfg.strategy.entry_fvg, self.tz)
+        # Break-of-structure stop fallback (see risk.py's
+        # find_structural_stop_price) -- only consulted when no strong 5m
+        # FVG sits on the stop side of an entry.
+        self.swing_tracker = SwingPointTracker()
 
         self.state = State.MARKING_LEVELS
         self._trading_date: date | None = None
@@ -218,6 +223,7 @@ class OpeningRangeStrategy:
         self.box.add_bar(bar)
         self.fvg_detector_5m.add_bar(bar)
         self.fvg_detector_1m.add_bar(bar)
+        self.swing_tracker.add_bar(bar)
 
         if self.state is State.DONE_FOR_DAY:
             return None
@@ -342,45 +348,24 @@ class OpeningRangeStrategy:
                 else bar.high >= self._pending_limit_price
             )
             if filled:
-                # Deliberately does NOT include the anchor FVG's own
-                # boundaries: entry sits at a fixed fraction of the
-                # anchor's own gap width in from one edge (see
-                # _entry_price -- exactly half when entry_retracement_pct
-                # is 0.5), so its near/far edges are always some
-                # deterministic, pre-known distance from entry -- a pure
-                # arithmetic consequence of where entry was defined, not a
-                # real break of structure. Left in at the original
-                # exact-midpoint design, that fixed distance was provably
-                # always the nearest candidate (checked against 3 real
-                # losing trades: stop distances of $55.75/$56.25/$27
-                # matched exactly half the anchor's width in every case),
-                # so it silently overrode the marked previous-day/Asia/
-                # London/box levels even when those were legitimately
-                # closer to representing an actual invalidation and would
-                # have used much more of the $200 budget. Only the marked
-                # session levels and the box edges are real structure here.
-                structural_levels = list(self._levels.all_levels()) if self._levels else []
-                if self.box.high is not None:
-                    structural_levels.append(self.box.high)
-                if self.box.low is not None:
-                    structural_levels.append(self.box.low)
-
-                # Reject the trade if no real marked level sits within the
-                # $40-$200 stop budget beyond this entry -- too far means
-                # no genuine invalidation point behind the stop; too close
-                # (usually just the box edge, a common noise-retest spot,
-                # not real structure) means it's sized like ordinary chop,
-                # not a real one. Real 7-day backtests showed both losing
-                # trades in one window defaulting to the max-risk cap with
-                # nothing structural behind it, and in another, stops under
-                # ~20 points winning only 1 of 7 times versus 3 of 6 for
-                # wider ones. Skip and keep hunting for a different anchor
-                # instead (see risk.py's compute_stop_target for the full
-                # reasoning).
+                # Stop is the nearest strong 5m FVG's outer edge on the
+                # stop side of entry, or (if none qualifies) the most
+                # recent 1m break-of-structure swing point on that side --
+                # see risk.py's find_structural_stop_price for the full
+                # rule (replaced the previous-day/Asia/London/box-edge
+                # approach entirely, 2026-07-08, at the user's explicit
+                # correction).
+                stop_price = find_structural_stop_price(
+                    direction=self._breakout_direction,
+                    entry_price=self._pending_limit_price,
+                    fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._breakout_direction),
+                    swing_high=self.swing_tracker.most_recent_swing_high,
+                    swing_low=self.swing_tracker.most_recent_swing_low,
+                )
                 bracket = compute_stop_target(
                     direction=self._breakout_direction,
                     entry_price=self._pending_limit_price,
-                    structural_levels=structural_levels,
+                    stop_price=stop_price,
                     max_stop_dollars=self.cfg.strategy.max_stop_dollars,
                     min_stop_dollars=self.cfg.strategy.min_stop_dollars,
                     point_value=self.cfg.instrument.point_value,
@@ -400,7 +385,7 @@ class OpeningRangeStrategy:
                     direction=self._breakout_direction,
                     entry_price=self._pending_limit_price,
                     anchor_fvg=self._anchor_fvg,
-                    structural_levels=structural_levels,
+                    stop_price=bracket.stop_price,
                     timestamp=bar.timestamp,
                 )
                 self._close_anchor("filled", bar.timestamp)
@@ -470,6 +455,7 @@ class OpeningRangeStrategy:
         # populated with real pre-market/overnight data by 9:30.
         self.fvg_detector_5m.clear_active_gaps()
         self.fvg_detector_1m.clear_active_gaps()
+        self.swing_tracker.reset()
         self._rejected_anchor_ids = set()
         self.state = State.MARKING_LEVELS
         self._breakout_direction = None

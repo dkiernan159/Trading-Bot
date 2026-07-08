@@ -8,9 +8,10 @@ from zoneinfo import ZoneInfo
 from src.config import BotConfig, SessionConfig
 from src.fvg import FairValueGap, FvgDetector
 from src.models import Bar, Direction
-from src.risk import compute_stop_target
+from src.risk import compute_stop_target, find_structural_stop_price
 from src.session_levels import SessionLevels, SessionLevelSet
 from src.strategy import AnchorRecord
+from src.swing_points import SwingPointTracker
 
 
 class State(Enum):
@@ -26,7 +27,7 @@ class EntrySignal:
     direction: Direction
     entry_price: float
     anchor_fvg: FairValueGap
-    structural_levels: list[float]
+    stop_price: float
     timestamp: datetime
 
 
@@ -80,6 +81,10 @@ class OvernightMomentumStrategy:
         self.session_levels = SessionLevels(cfg.session)
         self.fvg_detector_5m = FvgDetector(cfg.strategy.fvg, self.tz)
         self.fvg_detector_1m = FvgDetector(cfg.strategy.entry_fvg, self.tz)
+        # Break-of-structure stop fallback (see risk.py's
+        # find_structural_stop_price) -- only consulted when no strong 5m
+        # FVG sits on the stop side of an entry.
+        self.swing_tracker = SwingPointTracker()
 
         self.state = State.IDLE
         self._night_date: date | None = None
@@ -172,6 +177,7 @@ class OvernightMomentumStrategy:
         self._close_anchor("session_ended", bar_timestamp)
         self.fvg_detector_5m.clear_active_gaps()
         self.fvg_detector_1m.clear_active_gaps()
+        self.swing_tracker.reset()
         self._rejected_anchor_ids = set()
         self._trades_tonight = 0
         self._reset_hunt_state()
@@ -185,6 +191,7 @@ class OvernightMomentumStrategy:
         self.session_levels.add_bar(bar)
         self.fvg_detector_5m.add_bar(bar)
         self.fvg_detector_1m.add_bar(bar)
+        self.swing_tracker.add_bar(bar)
 
         if self.state is State.IN_TRADE:
             # Nothing to do until the runner/backtest harness calls
@@ -246,13 +253,24 @@ class OvernightMomentumStrategy:
                 else bar.high >= self._pending_limit_price
             )
             if filled:
-                levels = self.current_session_levels
-                structural_levels = list(levels.all_levels()) if levels else []
-
+                # Stop is the nearest strong 5m FVG's outer edge on the
+                # stop side of entry, or (if none qualifies) the most
+                # recent 1m break-of-structure swing point on that side --
+                # see risk.py's find_structural_stop_price / strategy.py's
+                # matching WAIT_FILL handling for the same rule (replaced
+                # the previous-day/Asia/London-based approach entirely,
+                # 2026-07-08, at the user's explicit correction).
+                stop_price = find_structural_stop_price(
+                    direction=self._direction,
+                    entry_price=self._pending_limit_price,
+                    fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._direction),
+                    swing_high=self.swing_tracker.most_recent_swing_high,
+                    swing_low=self.swing_tracker.most_recent_swing_low,
+                )
                 bracket = compute_stop_target(
                     direction=self._direction,
                     entry_price=self._pending_limit_price,
-                    structural_levels=structural_levels,
+                    stop_price=stop_price,
                     max_stop_dollars=self.cfg.strategy.max_stop_dollars,
                     min_stop_dollars=self.cfg.strategy.min_stop_dollars,
                     point_value=self.cfg.instrument.point_value,
@@ -270,7 +288,7 @@ class OvernightMomentumStrategy:
                     direction=self._direction,
                     entry_price=self._pending_limit_price,
                     anchor_fvg=self._anchor_fvg,
-                    structural_levels=structural_levels,
+                    stop_price=bracket.stop_price,
                     timestamp=bar.timestamp,
                 )
                 self._close_anchor("filled", bar.timestamp)

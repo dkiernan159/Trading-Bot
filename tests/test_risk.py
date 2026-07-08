@@ -1,17 +1,46 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from src.fvg import FairValueGap
 from src.models import Direction
-from src.risk import compute_stop_target
+from src.risk import compute_stop_target, find_structural_stop_price
+
+TZ = ZoneInfo("America/New_York")
+NOW = datetime(2026, 7, 6, 10, 0, tzinfo=TZ)
 
 
-def test_long_uses_nearby_structural_level_within_cap():
-    """Two candidates (95.0, 90.0) both fit within the 100-point cap --
-    the nearer one (95.0) is used, not the farther one (90.0). A real
-    30-day backtest tried the opposite (farthest-within-cap) and found
-    it made losing trades lose more without turning any into wins --
-    see risk.py's revision history."""
+def make_fvg(direction: Direction, gap_low: float, gap_high: float, timeframe_minutes: int = 5) -> FairValueGap:
+    return FairValueGap(
+        direction=direction, gap_low=gap_low, gap_high=gap_high, formed_at=NOW, timeframe_minutes=timeframe_minutes
+    )
+
+
+# ---------- compute_stop_target: validates a given stop_price against the $min-$max budget ----------
+
+
+def test_returns_none_when_stop_price_is_none():
+    """find_structural_stop_price returns None when neither a qualifying
+    FVG nor a break-of-structure swing point exists -- compute_stop_target
+    must treat that the same as any other "no real invalidation point"
+    case: skip the trade."""
     result = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
-        structural_levels=[95.0, 90.0, 105.0],
+        stop_price=None,
+        max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
+        point_value=2.0,
+        contracts=1,
+        reward_risk_ratio=2.0,
+    )
+    assert result is None
+
+
+def test_long_computes_stop_and_target_from_a_given_stop_price():
+    result = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        stop_price=95.0,
         max_stop_dollars=200.0,
         min_stop_dollars=0.0,
         point_value=2.0,
@@ -24,90 +53,11 @@ def test_long_uses_nearby_structural_level_within_cap():
     assert result.target_price == 110.0
 
 
-def test_long_returns_none_when_structural_level_too_far():
-    # $200 / (2.0 point_value * 1 contract) = 100 point cap -- the only
-    # candidate (-50.0) is 150 points away, so there's no real level
-    # within budget and the trade is skipped rather than defaulting to
-    # an arbitrary 100-point stop with nothing structural behind it.
-    result = compute_stop_target(
-        direction=Direction.LONG,
-        entry_price=100.0,
-        structural_levels=[-50.0],
-        max_stop_dollars=200.0,
-        min_stop_dollars=0.0,
-        point_value=2.0,
-        contracts=1,
-        reward_risk_ratio=2.0,
-    )
-    assert result is None
-
-
-def test_long_returns_none_with_no_levels_below_entry():
-    result = compute_stop_target(
-        direction=Direction.LONG,
-        entry_price=100.0,
-        structural_levels=[105.0, 110.0],
-        max_stop_dollars=200.0,
-        min_stop_dollars=0.0,
-        point_value=2.0,
-        contracts=1,
-        reward_risk_ratio=2.0,
-    )
-    assert result is None
-
-
-def test_long_returns_none_when_structural_level_too_close():
-    """A real 7-day backtest showed trades whose stop landed under ~20
-    points away (usually the box edge -- close because that's where the
-    breakout happened, not real structure) won only 1 of 7 times, versus
-    3 of 6 for wider stops -- so a level closer than min_stop_dollars is
-    now rejected the same way an out-of-budget one is, rather than taken
-    as a noise-sized "stop." $40 / (2.0 * 1) = 20-point floor; the only
-    candidate (97.0) is just 3 points away."""
-    result = compute_stop_target(
-        direction=Direction.LONG,
-        entry_price=100.0,
-        structural_levels=[97.0],
-        max_stop_dollars=200.0,
-        min_stop_dollars=40.0,
-        point_value=2.0,
-        contracts=1,
-        reward_risk_ratio=2.0,
-    )
-    assert result is None
-
-
-def test_long_returns_none_when_only_the_nearest_level_is_too_close_even_if_a_farther_one_exists():
-    """The nearest candidate (97.0, 3 points away) is too close to be a
-    real invalidation point. A second, farther candidate (70.0, 30 points
-    away) does clear the 20-point floor -- but the trade is still
-    skipped rather than reaching past the too-close nearest level to use
-    it. (Briefly changed to prefer this farther-but-valid level 2026-07-04;
-    reverted the same day after a real 30-day backtest showed every trade
-    recovered that way -- 5 of them -- lost, all landing on Asia/London
-    levels reached by skipping a tighter box edge, the same failure shape
-    as the farthest-within-budget experiment. See risk.py's revision
-    history.)"""
-    result = compute_stop_target(
-        direction=Direction.LONG,
-        entry_price=100.0,
-        structural_levels=[97.0, 70.0, 105.0],
-        max_stop_dollars=200.0,
-        min_stop_dollars=40.0,
-        point_value=2.0,
-        contracts=1,
-        reward_risk_ratio=2.0,
-    )
-    assert result is None
-
-
-def test_short_uses_nearby_structural_level_within_cap():
-    """Two candidates (110.0, 120.0) both fit within the 100-point cap --
-    the nearer one (110.0) is used, not the farther one (120.0)."""
+def test_short_computes_stop_and_target_from_a_given_stop_price():
     result = compute_stop_target(
         direction=Direction.SHORT,
         entry_price=100.0,
-        structural_levels=[110.0, 120.0, 95.0],
+        stop_price=110.0,
         max_stop_dollars=200.0,
         min_stop_dollars=0.0,
         point_value=2.0,
@@ -120,17 +70,49 @@ def test_short_uses_nearby_structural_level_within_cap():
     assert result.target_price == 80.0
 
 
+def test_returns_none_when_stop_price_too_far():
+    # $200 / (2.0 point_value * 1 contract) = 100 point cap -- 150 points away is too far.
+    result = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        stop_price=-50.0,
+        max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
+        point_value=2.0,
+        contracts=1,
+        reward_risk_ratio=2.0,
+    )
+    assert result is None
+
+
+def test_returns_none_when_stop_price_too_close():
+    """A real 7-day backtest showed trades whose stop landed under ~20
+    points away won only 1 of 7 times, versus 3 of 6 for wider stops -- so
+    a stop closer than min_stop_dollars is rejected the same way an
+    out-of-budget one is. $40 / (2.0 * 1) = 20-point floor; 3 points away
+    is too close."""
+    result = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        stop_price=97.0,
+        max_stop_dollars=200.0,
+        min_stop_dollars=40.0,
+        point_value=2.0,
+        contracts=1,
+        reward_risk_ratio=2.0,
+    )
+    assert result is None
+
+
 def test_dollar_cap_shrinks_in_points_as_contract_size_scales_up():
     """The $200 cap stays fixed in dollars, so at more contracts it maps
     to fewer points -- $200 / (2.0 point_value * 4 contracts) = 25 points,
-    versus 100 points at 1 contract. The same real level (50 points away)
-    fits the budget at 1 contract but not at 4, where it's now skipped
-    rather than falling back to an arbitrary stop."""
-    level = [50.0]
+    versus 100 points at 1 contract. The same 50-point-away stop fits the
+    budget at 1 contract but not at 4."""
     at_one_contract = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
-        structural_levels=level,
+        stop_price=50.0,
         max_stop_dollars=200.0,
         min_stop_dollars=0.0,
         point_value=2.0,
@@ -143,7 +125,7 @@ def test_dollar_cap_shrinks_in_points_as_contract_size_scales_up():
     at_four_contracts = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
-        structural_levels=level,  # 50 points away -- beyond the 25pt cap at 4 contracts
+        stop_price=50.0,  # 50 points away -- beyond the 25pt cap at 4 contracts
         max_stop_dollars=200.0,
         min_stop_dollars=0.0,
         point_value=2.0,
@@ -156,13 +138,12 @@ def test_dollar_cap_shrinks_in_points_as_contract_size_scales_up():
 def test_dollar_floor_grows_in_points_as_contract_size_scales_up():
     """The $40 floor stays fixed in dollars, so at more contracts it maps
     to more points -- $40 / (2.0 point_value * 1 contract) = 20 points,
-    versus 5 points at 4 contracts. The same real level (10 points away)
-    is too close at 1 contract but clears the (smaller) floor at 4."""
-    level = [90.0]  # 10 points away
+    versus 5 points at 4 contracts. The same 10-point-away stop is too
+    close at 1 contract but clears the (smaller) floor at 4."""
     at_one_contract = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
-        structural_levels=level,
+        stop_price=90.0,
         max_stop_dollars=200.0,
         min_stop_dollars=40.0,
         point_value=2.0,
@@ -174,7 +155,7 @@ def test_dollar_floor_grows_in_points_as_contract_size_scales_up():
     at_four_contracts = compute_stop_target(
         direction=Direction.LONG,
         entry_price=100.0,
-        structural_levels=level,
+        stop_price=90.0,
         max_stop_dollars=200.0,
         min_stop_dollars=40.0,  # $40 / (2.0 * 4) = 5-point floor -- 10 points now clears it
         point_value=2.0,
@@ -182,3 +163,110 @@ def test_dollar_floor_grows_in_points_as_contract_size_scales_up():
         reward_risk_ratio=2.0,
     )
     assert at_four_contracts.stop_points == 10.0
+
+
+# ---------- find_structural_stop_price: nearest strong 5m FVG, else break of structure ----------
+
+
+def test_long_stop_is_the_nearest_qualifying_fvgs_outer_edge_below_entry():
+    """Two candidate support FVGs below entry (98-99 and 90-92) -- the
+    nearer one (98-99) wins, and the stop sits at its *outer* (low) edge,
+    not its near edge."""
+    nearer = make_fvg(Direction.LONG, gap_low=98.0, gap_high=99.0)
+    farther = make_fvg(Direction.LONG, gap_low=90.0, gap_high=92.0)
+    stop = find_structural_stop_price(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        fvg_candidates=[nearer, farther],
+        swing_high=None,
+        swing_low=None,
+    )
+    assert stop == 98.0
+
+
+def test_short_stop_is_the_nearest_qualifying_fvgs_outer_edge_above_entry():
+    nearer = make_fvg(Direction.SHORT, gap_low=101.0, gap_high=102.0)
+    farther = make_fvg(Direction.SHORT, gap_low=108.0, gap_high=110.0)
+    stop = find_structural_stop_price(
+        direction=Direction.SHORT,
+        entry_price=100.0,
+        fvg_candidates=[nearer, farther],
+        swing_high=None,
+        swing_low=None,
+    )
+    assert stop == 102.0
+
+
+def test_fvg_candidates_on_the_wrong_side_of_entry_are_ignored():
+    """A LONG-direction FVG whose gap sits *above* entry (not below) isn't
+    a valid stop reference for a long -- must be ignored, falling through
+    to the break-of-structure fallback instead."""
+    wrong_side = make_fvg(Direction.LONG, gap_low=101.0, gap_high=103.0)
+    stop = find_structural_stop_price(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        fvg_candidates=[wrong_side],
+        swing_high=None,
+        swing_low=95.0,
+    )
+    assert stop == 95.0
+
+
+def test_falls_back_to_the_break_of_structure_swing_point_when_no_fvg_qualifies():
+    stop = find_structural_stop_price(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        fvg_candidates=[],
+        swing_high=None,
+        swing_low=93.0,
+    )
+    assert stop == 93.0
+
+    stop = find_structural_stop_price(
+        direction=Direction.SHORT,
+        entry_price=100.0,
+        fvg_candidates=[],
+        swing_high=107.0,
+        swing_low=None,
+    )
+    assert stop == 107.0
+
+
+def test_a_swing_point_on_the_wrong_side_of_entry_does_not_count():
+    """A "swing low" that's actually above entry can't be a long's stop --
+    must fall through to None (no valid stop at all) rather than using it
+    anyway."""
+    stop = find_structural_stop_price(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        fvg_candidates=[],
+        swing_high=None,
+        swing_low=101.0,
+    )
+    assert stop is None
+
+
+def test_returns_none_when_neither_fvg_nor_swing_point_exists():
+    stop = find_structural_stop_price(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        fvg_candidates=[],
+        swing_high=None,
+        swing_low=None,
+    )
+    assert stop is None
+
+
+def test_a_qualifying_fvg_takes_priority_over_a_closer_break_of_structure_point():
+    """Even if the break-of-structure swing point would give a tighter
+    stop, a qualifying 5m FVG always wins -- it's the primary rule, not
+    "whichever is nearer" (see risk.py's find_structural_stop_price)."""
+    fvg = make_fvg(Direction.LONG, gap_low=90.0, gap_high=92.0)
+    stop = find_structural_stop_price(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        fvg_candidates=[fvg],
+        swing_high=None,
+        swing_low=98.0,  # closer than the FVG, but must not be used
+    )
+    assert stop == 90.0

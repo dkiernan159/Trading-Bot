@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from src.config import RiskLimitsConfig
+from src.fvg import FairValueGap
 from src.models import Direction
 
 
@@ -15,26 +16,64 @@ class BracketLevels:
     target_points: float
 
 
+def find_structural_stop_price(
+    direction: Direction,
+    entry_price: float,
+    fvg_candidates: list[FairValueGap],
+    swing_high: float | None,
+    swing_low: float | None,
+) -> float | None:
+    """Where the stop goes, per the two-tier rule added 2026-07-08 at the
+    user's explicit correction (see compute_stop_target's revision history
+    for what this replaced): primarily the outer edge of the nearest
+    strong 5m FVG sitting on the stop side of entry (below entry for a
+    LONG, above for a SHORT) -- a real support/resistance zone, the same
+    "strong" 5m FVGs already used for anchor selection (fvg_candidates is
+    the caller's fvg_detector_5m.unmitigated_in_direction(direction) pool,
+    same direction as the trade: a LONG-direction gap is a bullish/support
+    gap, which is what should sit *below* a long entry). If none qualifies
+    -- nothing unmitigated on that side at all -- falls back to the most
+    recent 1-minute break-of-structure swing point on that same side (see
+    swing_points.py). Returns None if neither exists, meaning "no real
+    invalidation point behind this entry at all" -- skip the trade (see
+    compute_stop_target)."""
+    if direction is Direction.LONG:
+        below = [g for g in fvg_candidates if g.gap_high < entry_price]
+        if below:
+            nearest = max(below, key=lambda g: g.gap_high)
+            return nearest.gap_low
+        if swing_low is not None and swing_low < entry_price:
+            return swing_low
+        return None
+    else:
+        above = [g for g in fvg_candidates if g.gap_low > entry_price]
+        if above:
+            nearest = min(above, key=lambda g: g.gap_low)
+            return nearest.gap_high
+        if swing_high is not None and swing_high > entry_price:
+            return swing_high
+        return None
+
+
 def compute_stop_target(
     direction: Direction,
     entry_price: float,
-    structural_levels: list[float],
+    stop_price: float | None,
     max_stop_dollars: float,
     min_stop_dollars: float,
     point_value: float,
     contracts: int,
     reward_risk_ratio: float,
 ) -> BracketLevels | None:
-    """Stop is the nearest marked structural level beyond entry (previous
-    day/Asia/London high-low, or opening range box edge -- see
-    strategy.py's structural_levels). Returns None -- meaning "don't take
-    this trade" -- if no such level exists beyond entry at all, if it's
-    farther out than max_stop_dollars allows, or if it's closer than
-    min_stop_dollars: either way, a stop with no real, reasonably-sized
-    level behind it isn't a genuine invalidation point, so there's
-    nothing to size a trade against. When the nearest level *is* within
-    that band, target is always reward_risk_ratio x that level's actual
-    distance.
+    """Validates a candidate stop_price (see find_structural_stop_price)
+    against the $min-$max stop budget and computes the target at
+    reward_risk_ratio x the resulting distance. Returns None -- meaning
+    "don't take this trade" -- if stop_price is None (no real invalidation
+    point found at all), if the distance is farther out than
+    max_stop_dollars allows, or if it's closer than min_stop_dollars:
+    either way, a stop this far or this close isn't a genuine, reasonably-
+    sized invalidation point, so there's nothing sound to size a trade
+    against.
 
     (Revision history: briefly changed 2026-07-04 to pick the *farthest*
     level within budget instead of the nearest, on the theory that
@@ -97,30 +136,35 @@ def compute_stop_target(
     not better ones, so nearest-only stands: if the single nearest level
     doesn't clear the band, the trade is skipped, full stop, rather than
     hunting for a farther substitute.)
+
+    Replaced entirely 2026-07-08 at the user's explicit correction: the
+    marked previous-day/Asia/London high-low and opening-range box edges
+    above are no longer used as stop candidates at all. The user's own
+    read: "the stop should be set at either below or above respectively
+    the nearest strong 5 minute FVG based on if the entry is long or
+    short. Or if no strong 5 min fvg exists, the stop should be slightly
+    above the nearest break of structure, which means the most recent
+    high/low respectively for a long or short entry on the chart." See
+    find_structural_stop_price for that selection; this function's own
+    job shrank to just validating whatever stop_price it's given against
+    the $min-$max budget and computing the target -- it no longer
+    searches a candidate list itself.
     """
-    max_stop_points = max_stop_dollars / (point_value * contracts)
-    min_stop_points = min_stop_dollars / (point_value * contracts)
-
-    if direction is Direction.LONG:
-        candidates = [lvl for lvl in structural_levels if lvl < entry_price]
-        nearest = max(candidates) if candidates else None
-        structural_distance = (entry_price - nearest) if nearest is not None else None
-    else:
-        candidates = [lvl for lvl in structural_levels if lvl > entry_price]
-        nearest = min(candidates) if candidates else None
-        structural_distance = (nearest - entry_price) if nearest is not None else None
-
-    if structural_distance is None or not (min_stop_points <= structural_distance <= max_stop_points):
+    if stop_price is None:
         return None
 
-    stop_points = structural_distance
+    max_stop_points = max_stop_dollars / (point_value * contracts)
+    min_stop_points = min_stop_dollars / (point_value * contracts)
+    stop_points = abs(entry_price - stop_price)
+
+    if not (min_stop_points <= stop_points <= max_stop_points):
+        return None
+
     target_points = stop_points * reward_risk_ratio
 
     if direction is Direction.LONG:
-        stop_price = entry_price - stop_points
         target_price = entry_price + target_points
     else:
-        stop_price = entry_price + stop_points
         target_price = entry_price - target_points
 
     return BracketLevels(

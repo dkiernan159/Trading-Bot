@@ -67,11 +67,33 @@ def load_test_config():
 
 
 def feed_previous_day_levels(strategy: OpeningRangeStrategy):
-    """Marks a previous-day high of 105 and low of 95 (kept only for stop-
-    loss structural-level reference now, not for entry gating)."""
+    """Marks a previous-day high of 105 and low of 95 -- dashboard/chart
+    display only now (see risk.py's find_structural_stop_price), no
+    longer used for stop placement."""
     strategy.on_bar(bar_at(PREV_DAY_BASE, 100.0, 101.0, 99.0, 100.0))
     strategy.on_bar(bar_at(PREV_DAY_BASE + timedelta(minutes=15), 100.0, 105.0, 100.0, 104.0))
     strategy.on_bar(bar_at(PREV_DAY_BASE + timedelta(minutes=30), 100.0, 101.0, 95.0, 98.0))
+
+
+def feed_premarket_swing_low(strategy: OpeningRangeStrategy, swing_low: float = 90.0) -> float:
+    """Feeds a short, genuine 1-minute price dip well before 9:30 ET on
+    DAY itself (MARKING_LEVELS doesn't gate swing_tracker.add_bar -- see
+    on_bar), forming a real confirmed break-of-structure swing low at
+    exactly `swing_low` (see swing_points.py) -- the fallback stop
+    candidate the new stop rule (risk.py's find_structural_stop_price)
+    uses when no strong 5m FVG qualifies. Deliberately NOT built from an
+    FVG-style displacement (each leg here is far under min_gap_points, and
+    only spans one 5-minute bucket, so no 5m or 1m FVG forms) -- so unlike
+    a real support-zone FVG, this can never accidentally also get picked
+    up as a candidate *anchor* (which only searches fvg_detector_5m/1m's
+    pools, never the swing tracker), which would otherwise contaminate
+    these tests' anchor_history/state assertions with an extra premature
+    pick-and-supersede cycle."""
+    start = DAY - timedelta(hours=2)
+    lows = [swing_low + 3.0, swing_low + 1.5, swing_low, swing_low + 1.5, swing_low + 3.0]
+    for i, low in enumerate(lows):
+        strategy.on_bar(bar_at(start + timedelta(minutes=i), low + 0.3, low + 0.6, low, low + 0.3))
+    return swing_low
 
 
 def feed_box_and_breakout(strategy: OpeningRangeStrategy):
@@ -138,6 +160,7 @@ def test_full_breakout_then_fill_at_the_anchors_own_midpoint():
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
+    feed_premarket_swing_low(strategy)
     feed_box_and_breakout(strategy)
 
     anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
@@ -174,6 +197,7 @@ def test_entry_fills_at_a_shallower_retracement_than_the_midpoint():
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
+    feed_premarket_swing_low(strategy)
     feed_box_and_breakout(strategy)
 
     # Built by hand rather than via feed_large_5m_fvg, since that helper
@@ -227,6 +251,7 @@ def test_a_1m_fvg_can_anchor_and_fill_a_trade_on_its_own():
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
+    feed_premarket_swing_low(strategy)
     feed_box_and_breakout(strategy)  # LONG breakout at DAY + 30 minutes
 
     pattern_start = DAY + timedelta(minutes=31)
@@ -315,6 +340,7 @@ def test_fills_the_instant_price_reaches_the_midpoint_even_if_the_bar_also_break
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
+    feed_premarket_swing_low(strategy)
     feed_box_and_breakout(strategy)
     anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
     midpoint = (anchor_low + anchor_high) / 2
@@ -335,6 +361,7 @@ def test_reenters_after_stop_out_when_setup_reforms():
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
+    feed_premarket_swing_low(strategy)
     feed_box_and_breakout(strategy)
     anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
     midpoint = (anchor_low + anchor_high) / 2
@@ -365,6 +392,7 @@ def test_notify_entry_not_filled_keeps_hunting_within_the_same_breakout():
     strategy = OpeningRangeStrategy(cfg)
 
     feed_previous_day_levels(strategy)
+    feed_premarket_swing_low(strategy)
     feed_box_and_breakout(strategy)
     anchor_low, anchor_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
     midpoint = (anchor_low + anchor_high) / 2
@@ -516,23 +544,27 @@ def test_stale_fvg_from_a_previous_day_is_not_available_as_todays_anchor():
 
 
 def test_anchor_rejected_and_a_fresh_one_is_hunted_when_no_real_level_is_within_budget():
-    """If price retraces to an anchor's midpoint but no real marked level
-    (previous-day/Asia/London/box) sits within the $200 stop budget beyond
-    it, the trade is skipped -- recorded as "no_valid_stop" -- instead of
-    defaulting to an arbitrary max-risk stop with nothing structural
-    behind it (see risk.py's compute_stop_target). The rejected anchor
-    isn't silently re-offered forever, and the bot keeps hunting: a
-    different anchor that *does* sit near a real level fills normally."""
+    """If price retraces to an anchor's midpoint but no strong 5m FVG or
+    1m break-of-structure swing point sits within the $200 stop budget
+    beyond it (see risk.py's find_structural_stop_price), the trade is
+    skipped -- recorded as "no_valid_stop" -- instead of defaulting to an
+    arbitrary max-risk stop with nothing real behind it. The rejected
+    anchor isn't silently re-offered forever, and the bot keeps hunting: a
+    different anchor that *does* sit near a real stop candidate fills
+    normally."""
     cfg = load_test_config()
     strategy = OpeningRangeStrategy(cfg)
 
-    feed_previous_day_levels(strategy)  # previous-day high=105 -- the highest real level below this anchor
+    feed_previous_day_levels(strategy)
+    # The only real stop candidate in these fixtures (a swing low at 90) --
+    # comfortably within budget for the second anchor below, but still
+    # 100+ points away from the first (too far, deliberately).
+    feed_premarket_swing_low(strategy)
     feed_box_and_breakout(strategy)
 
-    # This anchor's midpoint (~212.2) sits 107.2 points above the nearest
-    # real level below it (previous-day high, 105.0) -- past the
-    # $200/100-point cap. (All the other marked levels -- previous-day
-    # low 95, box high/low 101/99.5 -- are even farther away.)
+    # This anchor's midpoint (~212.2) sits well over 100 points above the
+    # only real stop candidate in these fixtures (the swing low at 90) --
+    # past the $200/100-point cap.
     first_low, first_high = feed_large_5m_fvg(
         strategy, DAY + timedelta(minutes=45), quiet_price=210.0, c1_end=214.3
     )
@@ -556,8 +588,8 @@ def test_anchor_rejected_and_a_fresh_one_is_hunted_when_no_real_level_is_within_
     assert strategy.state is State.WAIT_5M_FVG
     assert len(strategy.anchor_history) == 1  # not re-rejected
 
-    # A different anchor, close enough to a real level (box low, 99.5) to
-    # have a valid stop, forms next and fills normally.
+    # A different anchor, close enough to the swing low at 90 to have a
+    # valid stop, forms next and fills normally.
     second_start = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=20)
     second_low, second_high = feed_large_5m_fvg(strategy, second_start, quiet_price=100.0, c1_end=104.3)
     second_midpoint = (second_low + second_high) / 2
@@ -578,21 +610,20 @@ def test_anchor_rejected_and_a_fresh_one_is_hunted_when_no_real_level_is_within_
 
 def test_anchor_rejected_when_the_only_real_level_is_too_close():
     """The mirror image of the too-far case: a real 7-day backtest showed
-    stops under ~20 points (usually the box edge, close only because
-    that's where the breakout happened, not real structure) losing 6 of
-    7 times. Below that floor (min_stop_dollars), a trade is skipped just
-    like it would be above the cap -- there's no real invalidation point
-    behind a stop that tight, only ordinary chop."""
+    stops under ~20 points losing 6 of 7 times. Below that floor
+    (min_stop_dollars), a trade is skipped just like it would be above the
+    cap -- there's no real invalidation point behind a stop that tight,
+    only ordinary chop."""
     cfg = load_test_config()
     cfg.strategy.min_stop_dollars = 40.0  # $40 / (point_value 2.0 * 1 contract) = 20-point floor
     strategy = OpeningRangeStrategy(cfg)
 
-    feed_previous_day_levels(strategy)  # previous-day low=95, box low=99.5
+    feed_previous_day_levels(strategy)
+    # A real swing low at 100, but too close (7.2 points) to the anchor's
+    # own midpoint (107.2) below to clear the 20-point floor.
+    feed_premarket_swing_low(strategy, swing_low=100.0)
     feed_box_and_breakout(strategy)
 
-    # The default anchor's midpoint (107.2) sits only 7.7 points above the
-    # nearest real level below it (box low, 99.5) -- inside the 20-point
-    # floor, even though it's comfortably under the $200 cap too.
     first_low, first_high = feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))
 
     fill_time = DAY + timedelta(minutes=45) + timedelta(minutes=5 * 8) + timedelta(minutes=16)

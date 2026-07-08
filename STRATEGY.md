@@ -233,23 +233,35 @@ review these and adjust `config.yaml` before running live.
 
 ## How ambiguous points were resolved (ASSUMPTIONS)
 
-- **Stop-loss placement** (`src/risk.py`): the "large formed area of
-  resistance/support" is interpreted as the nearest already-marked level
-  beyond entry in the stop direction -- previous day high/low, Asia
-  high/low, London high/low, or the opening range box edge
-  (`strategy.py`'s `structural_levels`, built when the trade signal
-  fires). Whichever of these ends up nearest beyond entry becomes the
-  stop, as long as that distance falls between `min_stop_dollars` and
-  `max_stop_dollars` (`config.yaml`, $40-$200) converted to points at
-  signal time (`max_stop_dollars / (instrument.point_value *
-  position_sizing.contract_size)`, same formula for the floor) -- so the
-  dollar risk per trade always stays in that band regardless of contract
-  size. If *no* marked level exists below (long) or above (short) entry
-  at all, the nearest one is farther out than the cap allows, or it's
-  closer than the floor, the trade is skipped entirely
-  (`compute_stop_target` returns `None`) rather than using the cap as a
-  stop distance with no real level behind it, or taking a stop too tight
-  to be a genuine invalidation point.
+- **Stop-loss placement** (`src/risk.py`): **rewritten 2026-07-08** at the
+  user's explicit correction to a two-tier rule, replacing the
+  previous-day/Asia/London/box-level approach described in the revision
+  history below entirely: primarily, the outer edge of the nearest strong
+  5m FVG sitting on the stop side of entry (below entry for a LONG, above
+  for a SHORT) -- the same "strong" 5m FVGs already used for anchor
+  selection, just required to sit on the opposite side of entry from
+  where the anchor itself sits (`find_structural_stop_price`, given
+  `fvg_detector_5m.unmitigated_in_direction(direction)` -- same direction
+  as the trade, since a LONG-direction gap is a bullish/support gap,
+  which is what should sit *below* a long entry). If none qualifies --
+  nothing unmitigated on that side at all -- falls back to the most
+  recent 1-minute break-of-structure swing point on that same side
+  (`src/swing_points.py`'s `SwingPointTracker`: a standard N-bar fractal
+  pivot, `PIVOT_WIDTH=2` -- ASSUMPTION, tune if real data suggests
+  otherwise -- fed 1-minute bars directly, reset at day/night session
+  boundaries same as the FVG detectors). Whichever of the two applies
+  becomes the stop, as long as that distance falls between
+  `min_stop_dollars` and `max_stop_dollars` (`config.yaml`, $40-$200)
+  converted to points at signal time (unchanged from before -- see
+  `compute_stop_target`, whose own job shrank to just validating a given
+  `stop_price` against this budget and computing the target, no longer
+  searching a candidate list itself). If neither a qualifying FVG nor a
+  swing point exists on the stop side at all, or the one that does is
+  outside the $40-$200 band, the trade is skipped entirely
+  (`find_structural_stop_price` returns `None`, or `compute_stop_target`
+  does) rather than using the cap as a stop distance with no real level
+  behind it, or taking a stop too tight to be a genuine invalidation
+  point.
   - Take-profit is always `2 x actual_stop_distance` (so smaller structural
     stops give a smaller, still-2:1, target -- this is why the target
     varies per trade rather than always chasing the reference $300).
@@ -371,7 +383,36 @@ review these and adjust `config.yaml` before running live.
     the next bar happened to arrive, sometimes days later if the fed data
     had a gap. Fixed by clearing those fields at the cutoff close too;
     this only affects the near-miss diagnostic report, not any trading
-    decision or past backtest P&L.)
+    decision or past backtest P&L.
+
+    **Replaced entirely 2026-07-08** at the user's explicit correction,
+    prompted by them noticing a live overnight anchor go from `WAIT_FILL`
+    back to `WAIT_FVG` and asking why: "the stop doesn't need to be a
+    previous day high or low... the stop should be within $200 and at or
+    above/below respectively the nearest break of structure on the 1 min
+    timeframe." Followed up with the precise two-tier rule once asked to
+    clarify the exact definition: "The stop should be set at either below
+    or above respectively the nearest strong 5 minute FVG based on if the
+    entry is long or short. Or if no strong 5 min fvg exists, the stop
+    should be slightly above the nearest break of structure, which means
+    the most recent high/low respectively for a long or short entry on
+    the chart." Confirmed this fully replaces (not layers alongside) the
+    previous-day/Asia/London/box-level approach above, and applies to
+    both the day and overnight strategies. See `find_structural_stop_price`
+    and `src/swing_points.py` for the implementation; every test in this
+    file's revision history above that depended on previous-day/box
+    levels for its stop was rewritten to construct a real 5m FVG or swing
+    low instead (see `tests/test_strategy.py`'s `feed_premarket_swing_low`
+    and `tests/test_overnight_strategy.py`'s
+    `feed_swing_low_after_window_opens`/`feed_swing_high_after_window_opens`
+    -- deliberately built from price action too small/short-lived to ever
+    also register as a candidate *anchor*, which would otherwise
+    contaminate those tests' anchor_history/state assertions with an
+    extra premature pick-and-supersede cycle). Not yet validated against a
+    real historical backtest as of this writing -- no network/broker
+    credentials were available in the sandbox this change was made in;
+    run a real backtest before trusting trade frequency/behavior at this
+    new rule.)
 - **"Strong" FVG** (`src/fvg.py`): a 3-candle fair value gap on
   `FvgConfig.timeframe_minutes` where (a) the gap size is >=
   `min_gap_points` and (b) the middle (displacement) candle's body is >=
@@ -847,6 +888,12 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   the dashboard) still shade it as a band for visual context, showing
   which candle actually set the previous day's high/low.
 - `src/risk.py` -- stop/target/size calculation described above.
+- `src/swing_points.py` -- `SwingPointTracker`, the 1-minute break-of-
+  structure stop fallback (added 2026-07-08, see the stop-loss placement
+  rule above): a standard N-bar fractal pivot over the raw 1-minute bar
+  stream, tracking only the most recent confirmed swing high/low. Reset
+  at day/night session boundaries by both strategies, same as their FVG
+  detectors' `clear_active_gaps`.
 - `src/session_levels.py`, `src/opening_range.py`, `src/fvg.py` -- level
   marking, box tracking, and FVG detection respectively.
 - `src/runner.py` -- wires it all together into a run loop. Runs the day

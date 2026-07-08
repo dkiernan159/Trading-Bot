@@ -58,17 +58,34 @@ def load_test_config():
     return cfg
 
 
+def swing_low_bars(start: datetime, swing_low: float = 90.0) -> list[Bar]:
+    """A real, genuine 1-minute break-of-structure swing low at exactly
+    swing_low (see swing_points.py) -- the stop-placement fallback
+    risk.py's find_structural_stop_price uses when no strong 5m FVG
+    qualifies. Deliberately NOT FVG-shaped (each leg is far under
+    min_gap_points and spans only one 5-minute bucket), so it can never
+    accidentally also get picked up as a candidate *anchor* (which only
+    searches the fvg detectors, never the swing tracker)."""
+    lows = [swing_low + 3.0, swing_low + 1.5, swing_low, swing_low + 1.5, swing_low + 3.0]
+    return [
+        bar_at(start + timedelta(minutes=i), low + 0.3, low + 0.6, low, low + 0.3) for i, low in enumerate(lows)
+    ]
+
+
 def breakout_5m_anchor_bars() -> list[Bar]:
-    """Previous-day high of 105 and low of 95, box 9:30-9:45 (high=101/
-    low=99.5), breakout above the box, 8 quiet 5m baseline candles, then
-    a real displacement move from 105.1 to 109.3 that forms a large 5m
-    FVG anchor (gap 105.3-109.1) -- its own midpoint (107.2) is the entry
-    trigger, filled by the final bar's retrace back down to it."""
+    """Previous-day high of 105 and low of 95 (chart display only, not
+    stop placement), a real swing low at 90 (the stop -- see
+    swing_low_bars), box 9:30-9:45 (high=101/low=99.5), breakout above the
+    box, 8 quiet 5m baseline candles, then a real displacement move from
+    105.1 to 109.3 that forms a large 5m FVG anchor (gap 105.3-109.1) --
+    its own midpoint (107.2) is the entry trigger, filled by the final
+    bar's retrace back down to it."""
     bars = [
         bar_at(PREV_DAY_BASE, 100.0, 101.0, 99.0, 100.0),
         bar_at(PREV_DAY_BASE + timedelta(minutes=15), 100.0, 105.0, 100.0, 104.0),
         bar_at(PREV_DAY_BASE + timedelta(minutes=30), 100.0, 101.0, 95.0, 98.0),
     ]
+    bars += swing_low_bars(DAY - timedelta(hours=2))
     bars.append(bar_at(DAY, 100.0, 101.0, 99.5, 100.5))  # box
     bars.append(bar_at(DAY + timedelta(minutes=15), 100.5, 101.2, 100.0, 100.8))  # box formed
     bars.append(bar_at(DAY + timedelta(minutes=30), 100.8, 103.0, 100.7, 102.5))  # breakout
@@ -89,13 +106,13 @@ def breakout_5m_anchor_bars() -> list[Bar]:
 def test_backtest_records_a_win():
     cfg = load_test_config()
     bars = breakout_5m_anchor_bars()
-    # Stop candidates are only the marked previous-day/box levels now (the
-    # anchor's own edges are deliberately excluded -- see strategy.py: at
-    # entry=midpoint, they're always exactly half the anchor's own width
-    # away, not real structure). Nearest below entry (107.2) is the
-    # previous-day high (105.0), so target is 107.2 + 2*(107.2-105.0) = 111.6.
-    # Runs up to the target (111.6) without dipping to the stop (105.0) first.
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
+    # No strong 5m FVG sits below entry (107.2) -- the anchor's own edges
+    # are deliberately excluded (see strategy.py: at entry=midpoint,
+    # they're always exactly half the anchor's own width away, not real
+    # structure) -- so the stop falls back to the real swing low at 90
+    # (see swing_low_bars), giving target = 107.2 + 2*(107.2-90.0) = 141.6.
+    # Runs up to the target (141.6) without dipping to the stop (90.0) first.
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 141.9, 107.1, 141.7))
 
     results = run_backtest(cfg, bars)
 
@@ -103,16 +120,16 @@ def test_backtest_records_a_win():
     assert results[0]["won"] is True
     assert results[0]["date"] == DAY.date()
     assert results[0]["entry_price"] == pytest.approx(107.2)
-    assert results[0]["stop_price"] == pytest.approx(105.0)
-    assert results[0]["target_price"] == pytest.approx(111.6)
+    assert results[0]["stop_price"] == pytest.approx(90.0)
+    assert results[0]["target_price"] == pytest.approx(141.6)
 
 
 def test_backtest_records_a_loss():
     cfg = load_test_config()
     bars = breakout_5m_anchor_bars()
-    # Drops to the stop (105.0, the previous-day high) without reaching
-    # the target (111.6) first.
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.0, 107.2, 104.5, 105.0))
+    # Drops to the stop (90.0, the real swing low -- see swing_low_bars)
+    # without reaching the target (141.6) first.
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.0, 107.2, 89.5, 90.0))
 
     results = run_backtest(cfg, bars)
 
@@ -156,6 +173,7 @@ def breakout_5m_anchor_no_fill_bars() -> list[Bar]:
         bar_at(PREV_DAY_BASE + timedelta(minutes=15), 100.0, 105.0, 100.0, 104.0),
         bar_at(PREV_DAY_BASE + timedelta(minutes=30), 100.0, 101.0, 95.0, 98.0),
     ]
+    bars += swing_low_bars(DAY - timedelta(hours=2))
     bars.append(bar_at(DAY, 100.0, 101.0, 99.5, 100.5))
     bars.append(bar_at(DAY + timedelta(minutes=15), 100.5, 101.2, 100.0, 100.8))
     bars.append(bar_at(DAY + timedelta(minutes=30), 100.8, 103.0, 100.7, 102.5))  # breakout
@@ -268,7 +286,7 @@ def test_pnl_points_is_positive_for_a_short_win():
 def test_export_chart_json_writes_candles_and_levels(tmp_path):
     cfg = load_test_config()
     bars = breakout_5m_anchor_bars()
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 141.9, 107.1, 141.7))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.json"
@@ -299,7 +317,7 @@ def test_export_chart_json_writes_candles_and_levels(tmp_path):
 def test_export_chart_html_embeds_trade_data(tmp_path):
     cfg = load_test_config()
     bars = breakout_5m_anchor_bars()
-    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 111.9, 107.1, 111.7))
+    bars.append(bar_at(bars[-1].timestamp + timedelta(minutes=1), 107.5, 141.9, 107.1, 141.7))
 
     results = run_backtest(cfg, bars)
     out_path = tmp_path / "chart.html"

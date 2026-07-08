@@ -143,7 +143,7 @@ def run_backtest(
             bracket = compute_stop_target(
                 direction=signal.direction,
                 entry_price=signal.entry_price,
-                structural_levels=signal.structural_levels,
+                stop_price=signal.stop_price,
                 max_stop_dollars=cfg.strategy.max_stop_dollars,
                 min_stop_dollars=cfg.strategy.min_stop_dollars,
                 point_value=cfg.instrument.point_value,
@@ -224,7 +224,7 @@ def run_overnight_backtest(
             bracket = compute_stop_target(
                 direction=signal.direction,
                 entry_price=signal.entry_price,
-                structural_levels=signal.structural_levels,
+                stop_price=signal.stop_price,
                 max_stop_dollars=cfg.strategy.max_stop_dollars,
                 min_stop_dollars=cfg.strategy.min_stop_dollars,
                 point_value=cfg.instrument.point_value,

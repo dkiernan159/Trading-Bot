@@ -62,7 +62,7 @@ def make_signal(entry_price: float = 100.0) -> EntrySignal:
         direction=Direction.LONG,
         entry_price=entry_price,
         anchor_fvg=anchor,
-        structural_levels=[70.0],  # 30 points below entry -- clears the real config's min/max stop band
+        stop_price=entry_price - 30.0,  # 30 points below entry -- clears the real config's min/max stop band
         timestamp=DAY,
     )
 

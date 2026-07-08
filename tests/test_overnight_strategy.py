@@ -48,6 +48,43 @@ def smooth_walk_1m(start: datetime, minutes: int, start_price: float, end_price:
     return bars
 
 
+def feed_swing_low_after_window_opens(
+    strategy: OvernightMomentumStrategy, night_start: datetime, swing_low: float = 90.0
+) -> datetime:
+    """Assumes the window-opening bar has already been fed at night_start
+    (so _start_new_night already ran) -- feeds 5 more real 1-minute bars
+    right after it, forming a genuine confirmed break-of-structure swing
+    low at exactly `swing_low` (see swing_points.py), the LONG-trade stop
+    fallback risk.py's find_structural_stop_price uses when no strong 5m
+    FVG qualifies. Deliberately NOT built from an FVG-style displacement
+    (each leg is far under min_gap_points, and spans only one 5-minute
+    bucket) -- so unlike a real support-zone FVG, this can never
+    accidentally also get picked up as a candidate *anchor* (which only
+    searches fvg_detector_5m/1m's pools, never the swing tracker), which
+    would otherwise contaminate these tests' anchor_history/state
+    assertions with an extra premature pick-and-supersede cycle. Returns a
+    5-minute-aligned timestamp right after these bars, to build the actual
+    anchor from (feed_large_5m_fvg requires a 5-minute-aligned start, like
+    every other bucket boundary in these tests)."""
+    start = night_start + timedelta(minutes=5)
+    lows = [swing_low + 3.0, swing_low + 1.5, swing_low, swing_low + 1.5, swing_low + 3.0]
+    for i, low in enumerate(lows):
+        strategy.on_bar(bar_at(start + timedelta(minutes=i), low + 0.3, low + 0.6, low, low + 0.3))
+    return night_start + timedelta(minutes=10)
+
+
+def feed_swing_high_after_window_opens(
+    strategy: OvernightMomentumStrategy, night_start: datetime, swing_high: float = 120.0
+) -> datetime:
+    """Mirror of feed_swing_low_after_window_opens, for the SHORT-trade
+    break-of-structure fallback."""
+    start = night_start + timedelta(minutes=5)
+    highs = [swing_high - 3.0, swing_high - 1.5, swing_high, swing_high - 1.5, swing_high - 3.0]
+    for i, high in enumerate(highs):
+        strategy.on_bar(bar_at(start + timedelta(minutes=i), high - 0.3, high, high - 0.6, high - 0.3))
+    return night_start + timedelta(minutes=10)
+
+
 def feed_quiet_5m(strategy: OvernightMomentumStrategy, start: datetime, count: int, price: float):
     for i in range(count):
         signal = strategy.on_bar(flat_bar(start + timedelta(minutes=5 * i), price))
@@ -115,12 +152,13 @@ def test_full_fvg_then_fill_at_its_own_midpoint_sets_long_direction_directly():
     strategy = OvernightMomentumStrategy(cfg)
 
     strategy.on_bar(flat_bar(NIGHT_START, 100.0))
-    anchor_low, anchor_high = feed_large_5m_fvg(strategy, NIGHT_START)
+    anchor_start = feed_swing_low_after_window_opens(strategy, NIGHT_START)
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, anchor_start)
     midpoint = (anchor_low + anchor_high) / 2
     assert strategy._direction is Direction.LONG
     assert strategy._pending_limit_price == pytest.approx(midpoint)
 
-    fill_time = NIGHT_START + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    fill_time = anchor_start + timedelta(minutes=5 * 8) + timedelta(minutes=16)
     signal = strategy.on_bar(bar_at(fill_time, anchor_high, anchor_high + 0.1, anchor_low, anchor_low + 0.1))
 
     assert signal is not None
@@ -143,8 +181,9 @@ def test_full_fvg_then_fill_sets_short_direction_directly():
     strategy = OvernightMomentumStrategy(cfg)
 
     strategy.on_bar(flat_bar(NIGHT_START, 105.0))
-    feed_quiet_5m(strategy, NIGHT_START, 8, 105.0)
-    pattern_start = NIGHT_START + timedelta(minutes=5 * 8)
+    anchor_start = feed_swing_high_after_window_opens(strategy, NIGHT_START, swing_high=120.0)
+    feed_quiet_5m(strategy, anchor_start, 8, 105.0)
+    pattern_start = anchor_start + timedelta(minutes=5 * 8)
 
     c0_bars = smooth_walk_1m(pattern_start, 5, 105.0, 104.9)
     c1_bars = smooth_walk_1m(pattern_start + timedelta(minutes=5), 5, 104.9, 100.7)
@@ -179,8 +218,9 @@ def test_a_1m_fvg_can_anchor_and_fill_a_trade_on_its_own():
     cfg = load_test_config()
     strategy = OvernightMomentumStrategy(cfg)
     strategy.on_bar(flat_bar(NIGHT_START, 103.0))
+    anchor_start = feed_swing_low_after_window_opens(strategy, NIGHT_START)
 
-    baseline_start = NIGHT_START + timedelta(minutes=1)
+    baseline_start = anchor_start
     for i in range(8):
         signal = strategy.on_bar(bar_at(baseline_start + timedelta(minutes=i), 103.0, 103.05, 102.95, 103.0))
         assert signal is None
@@ -231,10 +271,12 @@ def test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill():
 
 
 def test_no_real_structural_stop_within_budget_rejects_and_keeps_hunting():
-    """Same $40-$200 stop-band rule as the day strategy (risk.py) -- if the
-    fill has no real marked level within budget, it's skipped (not
-    defaulted to the cap), and the hunt continues rather than taking the
-    trade anyway."""
+    """Same rule as the day strategy (risk.py's find_structural_stop_price)
+    -- if the fill has no strong 5m FVG or break-of-structure swing point
+    on the stop side at all (the tight anchor here can't be its own stop --
+    see find_structural_stop_price's docstring for why -- and nothing else
+    was constructed), it's skipped rather than defaulted to the cap, and
+    the hunt continues rather than taking the trade anyway."""
     cfg = load_test_config()
     cfg.strategy.min_stop_dollars = 40.0
     cfg.strategy.max_stop_dollars = 200.0
@@ -367,8 +409,9 @@ def test_notify_entry_not_filled_goes_back_to_hunting_instead_of_staying_stuck()
     cfg = load_test_config()
     strategy = OvernightMomentumStrategy(cfg)
     strategy.on_bar(flat_bar(NIGHT_START, 100.0))
-    anchor_low, anchor_high = feed_large_5m_fvg(strategy, NIGHT_START)
-    fill_time = NIGHT_START + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    anchor_start = feed_swing_low_after_window_opens(strategy, NIGHT_START)
+    anchor_low, anchor_high = feed_large_5m_fvg(strategy, anchor_start)
+    fill_time = anchor_start + timedelta(minutes=5 * 8) + timedelta(minutes=16)
     signal = strategy.on_bar(bar_at(fill_time, anchor_high, anchor_high + 0.1, anchor_low, anchor_low + 0.1))
     assert signal is not None
     assert strategy.state is State.IN_TRADE  # as if on_bar just fired this signal
