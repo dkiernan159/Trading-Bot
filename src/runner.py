@@ -200,6 +200,16 @@ class Runner:
         self.logger = logger or TradeLogger()
         self.status_path = Path(status_path)
         self.status_path.parent.mkdir(parents=True, exist_ok=True)
+        # Confirmed live 2026-07-09: the bot was found to be getting
+        # restarted (via bot-pull/systemctl restart) far more often than
+        # intended, silently wiping the box/FVG-pool/swing-tracker state
+        # built up so far each time -- with no restart visible anywhere
+        # in the dashboard, it looked like "the strategy just isn't
+        # finding trades" when the real cause was the process never
+        # staying up long enough to. Recorded once at process start so the
+        # dashboard can surface it (see dashboard_template.html's
+        # process-uptime badge).
+        self.process_started_at = datetime.now(timezone.utc)
         self._recent_bars: deque[Bar] = deque(maxlen=RECENT_CANDLES_MAXLEN)
         # Confirmed live 2026-07-08: a "deque mutated during iteration"
         # RuntimeError surfaced here, meaning on_bar was genuinely being
@@ -257,6 +267,7 @@ class Runner:
         status = {
             "last_bar_time": bar.timestamp.isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            "process_started_at": self.process_started_at.isoformat(),
             "last_price": bar.close,
             "recent_candles": recent_candles,
             "day": self.day_slot.status_for_dashboard(bar.close),

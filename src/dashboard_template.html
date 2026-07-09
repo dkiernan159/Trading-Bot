@@ -66,6 +66,7 @@
   .section-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   .section-head .spacer { flex: 1; }
   .freshness { font-family: var(--font-data); font-size: 12px; color: var(--ink-muted); }
+  .freshness.warn { color: var(--bad); font-weight: 650; }
 
   .stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
   .stat-tile {
@@ -182,6 +183,7 @@
     <div class="section-head">
       <h2>Bot activity</h2>
       <span class="spacer"></span>
+      <span class="freshness" id="status-uptime"></span>
       <span class="freshness" id="status-freshness">loading&hellip;</span>
     </div>
     <div id="bot-status"></div>
@@ -231,6 +233,22 @@ function timeAgo(isoString) {
   if (seconds < 60) return `${seconds}s ago`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
   return `${Math.round(seconds / 3600)}h ago`;
+}
+
+// How long the *current* bot process has been running -- separate from
+// timeAgo's "last bar" freshness. A restart (bot-pull/systemctl restart)
+// silently wipes the box/FVG-pool/swing-tracker state built up so far
+// (confirmed live 2026-07-09: frequent unnoticed restarts were the real
+// reason trades weren't showing up, not the strategy itself), so this is
+// flagged in red under UPTIME_WARN_SECONDS -- long enough for the 5m FVG
+// detector to bucket its first candles and the swing tracker to confirm
+// its first pivot, roughly.
+const UPTIME_WARN_SECONDS = 20 * 60;
+function formatUptime(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60) % 60;
+  const h = Math.floor(seconds / 3600);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 // ---------- Bot activity (live status) ----------
@@ -417,12 +435,25 @@ async function loadStatus() {
   }
 
   const freshnessEl = document.getElementById("status-freshness");
+  const uptimeEl = document.getElementById("status-uptime");
   const el = document.getElementById("bot-status");
 
   if (!status) {
     freshnessEl.textContent = "";
+    uptimeEl.textContent = "";
     el.innerHTML = '<div class="empty">No activity yet -- this appears once the live bot has processed its first bar.</div>';
     return;
+  }
+
+  if (status.process_started_at) {
+    const uptimeSeconds = Math.round((Date.now() - new Date(status.process_started_at).getTime()) / 1000);
+    uptimeEl.textContent = `bot up ${formatUptime(uptimeSeconds)}`;
+    uptimeEl.classList.toggle("warn", uptimeSeconds < UPTIME_WARN_SECONDS);
+    uptimeEl.title = uptimeSeconds < UPTIME_WARN_SECONDS
+      ? "Recently restarted -- box/FVG-pool/swing-tracker state resets on every restart, so a fresh process needs some uninterrupted runtime before it can find a real setup."
+      : "";
+  } else {
+    uptimeEl.textContent = "";
   }
 
   freshnessEl.textContent = `last bar ${timeAgo(status.last_bar_time)}`;

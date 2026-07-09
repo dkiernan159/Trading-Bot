@@ -202,6 +202,7 @@ def test_on_bar_writes_a_status_file_for_the_dashboard(tmp_path):
     assert status_path.exists()
     status = json.loads(status_path.read_text())
     assert status["last_bar_time"] == DAY.isoformat()
+    assert status["process_started_at"] == runner.process_started_at.isoformat()
     assert status["day"]["state"] == runner.day_slot.strategy.state.name
     assert status["day"]["in_trade"] is False
     if runner.overnight_slot is not None:

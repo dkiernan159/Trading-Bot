@@ -1008,6 +1008,34 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
       entry/stop/target lines for whichever strategy slot(s) currently
       have an open trade (labelled by strategy name, since both could be
       open at once).
+  - **Process uptime indicator (added 2026-07-09):** the actual root cause
+    of a "why didn't we take a real trade" report -- the live bot was
+    being restarted (via `bot-pull`/`systemctl restart`) far more often
+    than intended, most likely by earlier Claude Code sessions treating a
+    full redeploy+restart as a routine status check rather than reserving
+    it for an actual new commit. Every restart silently wipes all
+    in-memory state (`Runner` keeps no historical backfill at all -- see
+    `runner.py`'s `main()`/`start()`, which only subscribes to live bars),
+    including the opening-range box, both FVG detector pools, and the
+    swing-point tracker, none of which are persisted anywhere. With
+    restarts happening every 10-20 minutes in the worst observed stretch
+    (confirmed via `journalctl -u trading-bot`, cross-referenced against
+    `/root/.bash_history` and `auth.log` login timestamps, all from the
+    same source), the bot never accumulated enough uninterrupted live
+    history to recognize a setup at all -- it looked like "the strategy
+    isn't finding trades" when the real cause was infrastructure, not
+    strategy logic, and there was nothing on the dashboard to reveal it.
+    `Runner.__init__` now records `self.process_started_at` once at
+    startup; `_write_status` includes it as `process_started_at` in
+    `status.json`. The template shows it as a `bot up Xh Xm` badge next to
+    the existing `last bar Xm ago` freshness indicator, styled red
+    (`.freshness.warn`) whenever uptime is under `UPTIME_WARN_SECONDS`
+    (20 minutes -- roughly how long the 5m FVG detector needs to bucket
+    its first candles and the swing tracker needs to confirm its first
+    pivot), with a tooltip explaining why a fresh restart means "give it
+    time" rather than "something's broken." No trading logic changed --
+    purely a visibility fix so a restart is obvious at a glance instead of
+    requiring a `journalctl` investigation.
 
 ## Before going live
 
