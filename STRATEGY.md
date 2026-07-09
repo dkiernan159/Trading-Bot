@@ -1036,6 +1036,20 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
     time" rather than "something's broken." No trading logic changed --
     purely a visibility fix so a restart is obvious at a glance instead of
     requiring a `journalctl` investigation.
+  - **Live anchor-outcome logging (added 2026-07-09):** a follow-up
+    visibility gap found the same evening -- `WAIT_FILL` was observed
+    reverting several times live with no way to tell why. Both strategy
+    classes already record every anchor's fate
+    (filled/superseded/invalidated/no_valid_stop/session_ended) in
+    `anchor_history` purely for backtest's `--near-miss` reporting, but
+    nothing printed that live, so there was no `bot.log` trail to check
+    after the fact. `_StrategySlot.on_bar` (`runner.py`) now snapshots
+    `len(strategy.anchor_history)` before calling the strategy's own
+    `on_bar`, and prints every record appended since (direction, gap
+    bounds, outcome, how long the anchor was live) -- the strategy classes
+    themselves stay unaware of whether they're running live or backtest,
+    same as before; this is purely an addition at the runner layer that
+    diffs a list they were already maintaining.
 
 ## Before going live
 

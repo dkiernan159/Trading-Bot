@@ -9,7 +9,7 @@ from src.fvg import FairValueGap
 from src.logger import TradeLogger
 from src.models import Bar, Direction
 from src.runner import Runner
-from src.strategy import EntrySignal, State
+from src.strategy import AnchorRecord, EntrySignal, State
 
 TZ = ZoneInfo("America/New_York")
 DAY = datetime(2026, 7, 6, 10, 15, tzinfo=TZ)
@@ -107,6 +107,36 @@ def test_enter_trade_resets_strategy_when_the_broker_never_fills_the_entry(tmp_p
     # The broker was actually asked to place the order -- this isn't
     # skipping the attempt, just handling its failure to fill.
     assert len(broker.placed_orders) == 1
+
+
+def test_on_bar_prints_anchor_outcomes_recorded_in_anchor_history(tmp_path, capsys):
+    """Confirmed live 2026-07-09: WAIT_FILL was observed reverting several
+    times in one evening with no way to tell why -- anchor_history already
+    records every anchor's outcome (filled/superseded/invalidated/
+    no_valid_stop/session_ended) for backtest's own near-miss reporting,
+    but nothing surfaced that live. _StrategySlot.on_bar diffs
+    anchor_history's length around the strategy's own on_bar call and
+    prints whatever's new, so bot.log shows the reason without the
+    strategy classes needing to know they're running live vs backtest."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    record = AnchorRecord(
+        direction=Direction.LONG,
+        gap_low=95.0,
+        gap_high=105.0,
+        started_at=DAY,
+        ended_at=DAY,
+        outcome="no_valid_stop",
+    )
+    runner.day_slot.strategy.on_bar = lambda bar: runner.day_slot.strategy.anchor_history.append(record) or None
+
+    runner.day_slot.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0), DAY.time())
+
+    out = capsys.readouterr().out
+    assert "no_valid_stop" in out
+    assert "95.00-105.00" in out
 
 
 def test_enter_trade_resets_strategy_when_placing_the_order_raises(tmp_path, capsys):

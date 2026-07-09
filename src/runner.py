@@ -58,7 +58,24 @@ class _StrategySlot:
         if not self.runner.risk_state.can_take_new_trade():
             return
 
+        # Confirmed live 2026-07-09: WAIT_FILL was observed reverting
+        # several times in one evening with no way to tell why -- the
+        # strategy classes already record every anchor's outcome
+        # (filled/superseded/invalidated/no_valid_stop/session_ended) in
+        # anchor_history for backtest's own near-miss reporting, but
+        # nothing surfaced that live. Diffing anchor_history's length
+        # around the on_bar call and printing whatever's new gives that
+        # same visibility in bot.log without the strategy classes
+        # themselves needing to know they're running live vs backtest.
+        anchors_before = len(self.strategy.anchor_history)
         signal = self.strategy.on_bar(bar)
+        for record in self.strategy.anchor_history[anchors_before:]:
+            live_for = record.ended_at - record.started_at
+            print(
+                f"[LIVE] {self.name}: anchor ended ({record.outcome}) -- "
+                f"{record.direction.value.upper()} gap={record.gap_low:.2f}-{record.gap_high:.2f}, "
+                f"live for {live_for}"
+            )
         if signal is not None:
             self._enter_trade(signal)
 
