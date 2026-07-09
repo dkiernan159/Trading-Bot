@@ -311,6 +311,7 @@ def print_funnel_overnight(stats: dict) -> None:
     exactly, box_high/box_low always None -- see run_overnight_backtest)."""
     print("\nFunnel (how many setups made it past each gate):")
     print(f"  Large 5m or 1m FVGs found (either direction sets it):   {stats.get('large_fvgs', 0)}")
+    print(f"  ...of those, abandoned as stale (price ran too far):    {stats.get('stale_abandoned', 0)}")
     print(f"  ...of those, price retraced to fill the limit:          {stats.get('fills', 0)}")
 
 

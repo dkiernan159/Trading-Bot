@@ -270,6 +270,36 @@ def test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill():
     assert superseded[0].gap_low == pytest.approx(first_low)
 
 
+def test_anchor_is_abandoned_as_stale_once_price_runs_too_far_without_filling():
+    """User's explicit instruction, 2026-07-09: don't "hedge the whole
+    night" on the first anchor found -- a real overnight session sat in
+    WAIT_FILL for hours while price ran ~52 points past a SHORT anchor's
+    own entry with no fresher FVG ever qualifying to supersede it. Once
+    price moves more than half the $200 stop budget (50 points, at this
+    config's point_value=2.0/contract_size=1) past the pending entry
+    without retracing to fill it, the anchor is dropped and the strategy
+    goes back to plain hunting instead of waiting on a now-stale level
+    indefinitely."""
+    cfg = load_test_config()
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+
+    feed_large_5m_fvg(strategy, NIGHT_START)  # LONG anchor; fills on a dip, not a rally
+    assert strategy.state is State.WAIT_FILL
+    entry = strategy._pending_limit_price
+
+    # Price runs well past the entry (up, away from the dip that would
+    # fill a LONG) without ever retracing back down to it.
+    runaway_time = NIGHT_START + timedelta(minutes=5 * 8) + timedelta(minutes=30)
+    signal = strategy.on_bar(flat_bar(runaway_time, entry + 60.0))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_FVG
+    assert strategy.stats["stale_abandoned"] == 1
+    stale = [a for a in strategy.anchor_history if a.outcome == "stale"]
+    assert len(stale) == 1
+
+
 def test_no_real_structural_stop_within_budget_rejects_and_keeps_hunting():
     """Same rule as the day strategy (risk.py's find_structural_stop_price)
     -- if the fill has no strong 5m FVG or break-of-structure swing point

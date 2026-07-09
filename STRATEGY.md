@@ -584,6 +584,32 @@ own), just without the box/breakout gate in front of it:
 4. The anchor is kept "live" while waiting to fill -- a nearer/fresher
    unmitigated FVG in the same direction supersedes it, mirroring the day
    strategy's WAIT_FILL behavior, rather than freezing on the first pick.
+5. **Stale-anchor abandonment (added 2026-07-09), your explicit
+   instruction:** a real overnight session sat in `WAIT_FILL` for hours
+   while price ran ~52 points past a SHORT anchor's own entry and kept
+   going, without any fresher FVG ever qualifying to supersede it (the
+   move was a steady grind, not a sharp displacement, so nothing new
+   registered as a "strong" FVG) -- "we shouldn't be hedging our entire
+   night of trading on the first FVG we see that is strong." Once price
+   moves more than half the `max_stop_dollars` budget (`config.yaml`,
+   currently 50 points at $200/2.0-point-value/1-contract) past the
+   pending entry without ever retracing to fill it, the anchor is dropped
+   (`AnchorRecord.outcome == "stale"`, counted in `stats["stale_abandoned"]`,
+   shown in `--overnight`'s funnel print) and the strategy goes back to
+   `WAIT_FVG` to hunt a fresh setup, rather than waiting on a now-stale
+   level for the rest of the window. Checked after the existing
+   nearer/fresher-FVG supersede check each bar, so a fresh anchor just
+   picked that same bar (distance ~0) never spuriously trips it. Half the
+   stop budget, not the full amount, was chosen deliberately: dropping
+   well before price reaches a distance a stop at this level would even
+   be allowed to sit at. Requires a real strong FVG to re-anchor
+   afterward, same bar as before abandonment -- not loosened, at your
+   explicit choice, so a dropped anchor doesn't just get replaced by a
+   weaker one right away. Overnight-strategy-only scope for now (the day
+   strategy already has its own, different invalidation -- a full
+   reversal through the box's opposite edge -- for the same "don't keep
+   chasing a broken thesis" purpose); ask if you'd like the same
+   distance-based check added there too.
 
 **Revision history:** originally built 2026-07-05 as a two-stage
 large-anchor (15m/30m) + nested-entry (5m/1m) design, resurrecting a

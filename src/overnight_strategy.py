@@ -104,10 +104,25 @@ class OvernightMomentumStrategy:
         # single-trade nights -- capped independently of the day strategy's
         # own reentry.allow_reentry_after_stop.
         self._trades_tonight = 0
+        # User's explicit instruction, 2026-07-09: a real overnight session
+        # sat in WAIT_FILL for hours while price fell ~52 points past a
+        # SHORT anchor's own entry and kept going -- no fresher/nearer FVG
+        # ever qualified to supersede it (the decline was a steady grind,
+        # not a sharp displacement move), so the strategy just kept
+        # "hedging the whole night" on the first anchor it found. Half the
+        # $200 stop budget (config.yaml's strategy.max_stop_dollars) was
+        # chosen as the abandon-and-rehunt threshold -- half, not the full
+        # amount, so a continuation move gets dropped well before it would
+        # ever reach the full stop distance a fill at this level would even
+        # be given. See the WAIT_FILL handling below.
+        self._stale_anchor_distance_points = (cfg.strategy.max_stop_dollars / 2) / (
+            cfg.instrument.point_value * cfg.position_sizing.contract_size
+        )
 
         self.stats = {
             "large_fvgs": 0,
             "fills": 0,
+            "stale_abandoned": 0,
         }
         self.anchor_history: list[AnchorRecord] = []
 
@@ -249,6 +264,27 @@ class OvernightMomentumStrategy:
                     self._anchor_started_at = bar.timestamp
                     self._pending_limit_price = self._entry_price(best)
                     self.stats["large_fvgs"] += 1
+
+            # User's explicit instruction, 2026-07-09: don't "hedge the
+            # whole night" on the first anchor found -- if price keeps
+            # moving away from the entry (the continuation move the
+            # anchor bet on, playing out too far without ever retracing)
+            # by more than half the stop budget, drop it and go back to
+            # plain hunting rather than sitting on a now-stale level
+            # indefinitely. Checked after the supersede block above, so a
+            # fresh (near-zero-distance) anchor just picked this same bar
+            # never spuriously trips this.
+            distance_away = (
+                bar.close - self._pending_limit_price
+                if self._direction is Direction.LONG
+                else self._pending_limit_price - bar.close
+            )
+            if distance_away > self._stale_anchor_distance_points:
+                self._close_anchor("stale", bar.timestamp)
+                self._reset_hunt_state()
+                self.stats["stale_abandoned"] += 1
+                self.state = State.WAIT_FVG
+                return None
 
             filled = (
                 bar.low <= self._pending_limit_price
