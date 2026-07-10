@@ -610,6 +610,23 @@ own), just without the box/breakout gate in front of it:
    reversal through the box's opposite edge -- for the same "don't keep
    chasing a broken thesis" purpose); ask if you'd like the same
    distance-based check added there too.
+   - **Bug fixed the next day, 2026-07-09:** the first cut of this
+     abandonment didn't exclude the dropped anchor from re-selection --
+     real `bot.log` from a deployed session showed the *same* gap
+     (`29911.75-29931.25`) marked `stale` roughly 15 times in a row, each
+     time "live for 0:01:00": since it was still the nearest unmitigated
+     candidate in the pool, `WAIT_FVG` immediately re-picked the exact
+     same anchor next bar, which immediately re-tripped the same distance
+     check -- an infinite pick/abandon loop on one gap that defeated the
+     entire point of the feature (it never actually moved on to hunt
+     anything fresh; you noticed because 19 hours of uptime produced zero
+     trades). Fixed by adding the abandoned anchor's id to
+     `_rejected_anchor_ids` before clearing it -- the exact same exclusion
+     mechanism the pre-existing `no_valid_stop` rejection path already
+     used correctly, which this one should have matched from the start.
+     A regression test reproduces the loop against the un-fixed code (confirmed
+     failing before the fix, passing after) to make sure this exact
+     failure mode can't silently return.
 
 **Revision history:** originally built 2026-07-05 as a two-stage
 large-anchor (15m/30m) + nested-entry (5m/1m) design, resurrecting a

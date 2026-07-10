@@ -280,7 +280,20 @@ class OvernightMomentumStrategy:
                 else self._pending_limit_price - bar.close
             )
             if distance_away > self._stale_anchor_distance_points:
+                # Confirmed live 2026-07-09: without excluding it here, the
+                # same gap is still the nearest unmitigated candidate in
+                # the pool, so WAIT_FVG immediately re-picked this exact
+                # anchor next bar, which immediately re-tripped this same
+                # check -- an infinite pick/abandon loop on one gap that
+                # defeated the entire point of this feature (real bot.log
+                # showed the identical gap marked "stale" ~15 times in a
+                # row instead of ever moving on to a fresh one). Same
+                # exclusion mechanism as the no_valid_stop rejection path
+                # below: tracked by identity so it stays excluded until
+                # mitigated or the night rolls over, not just until the
+                # next bar.
                 self._close_anchor("stale", bar.timestamp)
+                self._rejected_anchor_ids.add(id(self._anchor_fvg))
                 self._reset_hunt_state()
                 self.stats["stale_abandoned"] += 1
                 self.state = State.WAIT_FVG

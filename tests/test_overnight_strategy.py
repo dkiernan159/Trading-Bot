@@ -300,6 +300,38 @@ def test_anchor_is_abandoned_as_stale_once_price_runs_too_far_without_filling():
     assert len(stale) == 1
 
 
+def test_stale_anchor_is_not_immediately_re_picked_after_being_abandoned():
+    """Regression test for a real live bug (2026-07-09): the first
+    implementation of stale-anchor abandonment didn't exclude the dropped
+    anchor from re-selection, so the exact same gap -- still the nearest
+    unmitigated candidate in the pool -- got immediately re-picked next
+    bar and immediately re-tripped the same stale check, over and over
+    (bot.log showed one real gap marked "stale" ~15 times in a row instead
+    of the strategy ever moving on). Once abandoned, the same anchor must
+    not resurface."""
+    cfg = load_test_config()
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+
+    feed_large_5m_fvg(strategy, NIGHT_START)
+    entry = strategy._pending_limit_price
+    abandoned_gap_id = id(strategy._anchor_fvg)
+
+    runaway_time = NIGHT_START + timedelta(minutes=5 * 8) + timedelta(minutes=30)
+    strategy.on_bar(flat_bar(runaway_time, entry + 60.0))
+    assert strategy.state is State.WAIT_FVG
+
+    # Price stays right where it is -- the only candidate FVG in the pool
+    # is the one that was just abandoned, so it must not get re-picked.
+    signal = strategy.on_bar(flat_bar(runaway_time + timedelta(minutes=1), entry + 60.0))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_FVG
+    assert strategy._anchor_fvg is None
+    assert strategy.stats["stale_abandoned"] == 1  # not re-tripped a second time
+    assert abandoned_gap_id in strategy._rejected_anchor_ids
+
+
 def test_no_real_structural_stop_within_budget_rejects_and_keeps_hunting():
     """Same rule as the day strategy (risk.py's find_structural_stop_price)
     -- if the fill has no strong 5m FVG or break-of-structure swing point
