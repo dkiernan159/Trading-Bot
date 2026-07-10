@@ -1130,6 +1130,18 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
     themselves stay unaware of whether they're running live or backtest,
     same as before; this is purely an addition at the runner layer that
     diffs a list they were already maintaining.
+    - **Timestamp added, 2026-07-10:** these lines had no timestamp at
+      all, just a duration ("live for 0:01:00") -- when the user asked
+      whether tonight specifically had missed any FVGs, there was no way
+      to tell tonight's anchors apart from any other night's in the same
+      `bot.log` (only rotated weekly, so it can hold days of mixed
+      history). `AnchorRecord` already carries `ended_at`; it just wasn't
+      being printed. Now prefixed to every line
+      (`record.ended_at.isoformat()`), so a plain `grep`/`tail` can
+      isolate one night's actual events instead of guessing from
+      surrounding context (or, in the meantime, bounding by the line
+      number of the process's own startup print, `"...strategy is LIVE
+      alongside..."`, which appears once per restart).
 
 ## Before going live
 

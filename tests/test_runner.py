@@ -137,6 +137,11 @@ def test_on_bar_prints_anchor_outcomes_recorded_in_anchor_history(tmp_path, caps
     out = capsys.readouterr().out
     assert "no_valid_stop" in out
     assert "95.00-105.00" in out
+    # Confirmed live 2026-07-10: no timestamp at all meant a plain grep of
+    # bot.log couldn't tell "tonight" apart from any earlier night since
+    # the file was last rotated -- ended_at was already tracked, just
+    # wasn't printed.
+    assert DAY.isoformat() in out
 
 
 def test_enter_trade_resets_strategy_when_placing_the_order_raises(tmp_path, capsys):

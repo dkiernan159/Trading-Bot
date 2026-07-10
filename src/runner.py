@@ -71,8 +71,12 @@ class _StrategySlot:
         signal = self.strategy.on_bar(bar)
         for record in self.strategy.anchor_history[anchors_before:]:
             live_for = record.ended_at - record.started_at
+            # Confirmed live 2026-07-10: these lines had no timestamp at
+            # all, so a plain grep of bot.log couldn't tell "tonight" apart
+            # from any earlier night since the file was last rotated --
+            # AnchorRecord already carries ended_at, just wasn't printed.
             print(
-                f"[LIVE] {self.name}: anchor ended ({record.outcome}) -- "
+                f"[LIVE] {record.ended_at.isoformat()} {self.name}: anchor ended ({record.outcome}) -- "
                 f"{record.direction.value.upper()} gap={record.gap_low:.2f}-{record.gap_high:.2f}, "
                 f"live for {live_for}"
             )
