@@ -181,6 +181,7 @@ def test_long_stop_falls_back_to_the_nearest_qualifying_fvgs_outer_edge_below_en
         fvg_candidates=[nearer, farther],
         swing_high=None,
         swing_low=None,
+        fallback_cap_points=50.0,
     )
     assert stop.price == 98.0
     assert stop.source == "fvg"
@@ -196,6 +197,7 @@ def test_short_stop_falls_back_to_the_nearest_qualifying_fvgs_outer_edge_above_e
         fvg_candidates=[nearer, farther],
         swing_high=None,
         swing_low=None,
+        fallback_cap_points=50.0,
     )
     assert stop.price == 102.0
     assert stop.source == "fvg"
@@ -206,7 +208,7 @@ def test_fvg_candidates_on_the_wrong_side_of_entry_are_ignored():
     """A LONG-direction FVG whose gap sits *above* entry (not below) isn't
     a valid stop reference for a long -- must be ignored, same as if it
     didn't exist at all (no swing point given either, so this must fall
-    all the way through to None)."""
+    all the way through to the cap fallback)."""
     wrong_side = make_fvg(Direction.LONG, gap_low=101.0, gap_high=103.0)
     stop = find_structural_stop_price(
         direction=Direction.LONG,
@@ -214,8 +216,10 @@ def test_fvg_candidates_on_the_wrong_side_of_entry_are_ignored():
         fvg_candidates=[wrong_side],
         swing_high=None,
         swing_low=None,
+        fallback_cap_points=50.0,
     )
-    assert stop is None
+    assert stop.price == 50.0
+    assert stop.source == "cap"
 
 
 def test_swing_point_is_the_primary_stop_for_long_and_short():
@@ -225,6 +229,7 @@ def test_swing_point_is_the_primary_stop_for_long_and_short():
         fvg_candidates=[],
         swing_high=None,
         swing_low=93.0,
+        fallback_cap_points=50.0,
     )
     assert stop.price == 93.0
     assert stop.source == "swing"
@@ -235,6 +240,7 @@ def test_swing_point_is_the_primary_stop_for_long_and_short():
         fvg_candidates=[],
         swing_high=107.0,
         swing_low=None,
+        fallback_cap_points=50.0,
     )
     assert stop.price == 107.0
     assert stop.source == "swing"
@@ -242,27 +248,48 @@ def test_swing_point_is_the_primary_stop_for_long_and_short():
 
 def test_a_swing_point_on_the_wrong_side_of_entry_does_not_count():
     """A "swing low" that's actually above entry can't be a long's stop --
-    must fall through to None (no valid stop at all) rather than using it
-    anyway."""
+    must fall through to the cap fallback rather than using it anyway."""
     stop = find_structural_stop_price(
         direction=Direction.LONG,
         entry_price=100.0,
         fvg_candidates=[],
         swing_high=None,
         swing_low=101.0,
+        fallback_cap_points=50.0,
     )
-    assert stop is None
+    assert stop.price == 50.0
+    assert stop.source == "cap"
 
 
-def test_returns_none_when_neither_fvg_nor_swing_point_exists():
+def test_falls_back_to_the_cap_when_neither_fvg_nor_swing_point_exists():
+    """Added 2026-07-10 at the user's explicit instruction, against known
+    contrary evidence flagged before making this change (see the
+    function's own docstring) -- when nothing structural exists on the
+    stop side at all, a trade is no longer skipped outright; it uses
+    fallback_cap_points (the caller's max_stop_dollars budget converted to
+    points) as a last resort instead."""
     stop = find_structural_stop_price(
         direction=Direction.LONG,
         entry_price=100.0,
         fvg_candidates=[],
         swing_high=None,
         swing_low=None,
+        fallback_cap_points=50.0,
     )
-    assert stop is None
+    assert stop.price == 50.0
+    assert stop.source == "cap"
+    assert stop.fvg_size is None
+
+    stop = find_structural_stop_price(
+        direction=Direction.SHORT,
+        entry_price=100.0,
+        fvg_candidates=[],
+        swing_high=None,
+        swing_low=None,
+        fallback_cap_points=50.0,
+    )
+    assert stop.price == 150.0
+    assert stop.source == "cap"
 
 
 def test_prefer_swing_true_takes_priority_over_a_qualifying_fvg():
@@ -279,6 +306,7 @@ def test_prefer_swing_true_takes_priority_over_a_qualifying_fvg():
         fvg_candidates=[fvg],
         swing_high=None,
         swing_low=90.0,  # farther than the FVG, but must still win
+        fallback_cap_points=50.0,
     )
     assert stop.price == 90.0
     assert stop.source == "swing"
@@ -298,6 +326,7 @@ def test_prefer_swing_false_takes_the_fvg_even_when_swing_is_closer():
         fvg_candidates=[fvg],
         swing_high=None,
         swing_low=98.0,  # closer than the FVG, but must not be used
+        fallback_cap_points=50.0,
         prefer_swing=False,
     )
     assert stop.price == 90.0
@@ -312,6 +341,7 @@ def test_falls_back_to_a_qualifying_fvg_when_no_swing_point_qualifies():
         fvg_candidates=[fvg],
         swing_high=None,
         swing_low=None,
+        fallback_cap_points=50.0,
     )
     assert stop.price == 90.0
     assert stop.source == "fvg"
@@ -324,6 +354,7 @@ def test_prefer_swing_false_still_falls_back_to_swing_when_no_fvg_qualifies():
         fvg_candidates=[],
         swing_high=None,
         swing_low=93.0,
+        fallback_cap_points=50.0,
         prefer_swing=False,
     )
     assert stop.price == 93.0

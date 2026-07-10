@@ -118,6 +118,15 @@ class OvernightMomentumStrategy:
         self._stale_anchor_distance_points = (cfg.strategy.max_stop_dollars / 2) / (
             cfg.instrument.point_value * cfg.position_sizing.contract_size
         )
+        # Last-resort stop distance when NEITHER a qualifying FVG nor a
+        # swing point exists at all -- user's explicit instruction
+        # 2026-07-10 (see find_structural_stop_price's docstring for the
+        # full reasoning and the contrary evidence flagged before this was
+        # added): rather than skip the trade entirely, use the full
+        # max_stop_dollars budget as the stop distance.
+        self._fallback_cap_points = cfg.strategy.max_stop_dollars / (
+            cfg.instrument.point_value * cfg.position_sizing.contract_size
+        )
 
         self.stats = {
             "large_fvgs": 0,
@@ -320,12 +329,13 @@ class OvernightMomentumStrategy:
                     fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._direction),
                     swing_high=self.swing_tracker.most_recent_swing_high,
                     swing_low=self.swing_tracker.most_recent_swing_low,
+                    fallback_cap_points=self._fallback_cap_points,
                     prefer_swing=True,
                 )
                 bracket = compute_stop_target(
                     direction=self._direction,
                     entry_price=self._pending_limit_price,
-                    stop_price=stop_candidate.price if stop_candidate is not None else None,
+                    stop_price=stop_candidate.price,
                     max_stop_dollars=self.cfg.strategy.max_stop_dollars,
                     min_stop_dollars=self.cfg.strategy.min_stop_dollars,
                     point_value=self.cfg.instrument.point_value,

@@ -22,10 +22,13 @@ class StopCandidate:
     only (see backtest.py's --verbose trade detail), so a hypothesis like
     "the FVGs backing these stops aren't strong enough" can actually be
     checked against real data instead of guessed at. `fvg_size` is
-    `gap_high - gap_low` of the FVG used, None when source is "swing"."""
+    `gap_high - gap_low` of the FVG used, None when source is "swing" or
+    "cap" (the max_stop_dollars-distance last resort used when neither a
+    qualifying FVG nor swing point exists at all, added 2026-07-10 -- see
+    find_structural_stop_price)."""
 
     price: float
-    source: str  # "fvg" | "swing"
+    source: str  # "fvg" | "swing" | "cap"
     fvg_gap_low: float | None = None
     fvg_gap_high: float | None = None
 
@@ -42,8 +45,9 @@ def find_structural_stop_price(
     fvg_candidates: list[FairValueGap],
     swing_high: float | None,
     swing_low: float | None,
+    fallback_cap_points: float,
     prefer_swing: bool = True,
-) -> StopCandidate | None:
+) -> StopCandidate:
     """Where the stop goes: either the outer edge of the nearest strong 5m
     FVG sitting on the stop side of entry (below entry for a LONG, above
     for a SHORT -- the same "strong" 5m FVGs already used for anchor
@@ -53,9 +57,11 @@ def find_structural_stop_price(
     which is what should sit *below* a long entry), or the most recent
     1-minute break-of-structure swing point on that same side (see
     swing_points.py) -- whichever `prefer_swing` says to try first, with
-    the other used as a fallback if the first doesn't qualify. Returns
-    None if neither exists, meaning "no real invalidation point behind
-    this entry at all" -- skip the trade (see compute_stop_target).
+    the other used as a fallback if the first doesn't qualify. If
+    *neither* exists, falls back to `fallback_cap_points` (the
+    max_stop_dollars budget converted to points by the caller) as the stop
+    distance outright (`source="cap"`) -- see the revision history below
+    for why this always takes the trade now instead of skipping it.
 
     Originally (2026-07-08, at the user's explicit correction replacing
     the previous-day/Asia/London/box-level approach -- see
@@ -76,7 +82,24 @@ def find_structural_stop_price(
     marginal setups that used to get skipped as no_valid_stop. So each
     strategy passes its own `prefer_swing` based on its own real data
     (see strategy.py: prefer_swing=False; overnight_strategy.py:
-    prefer_swing=True) rather than sharing one global priority order."""
+    prefer_swing=True) rather than sharing one global priority order.
+
+    **Cap fallback added 2026-07-10, the user's explicit instruction,
+    against known contrary evidence:** the user noticed frequent
+    `no_valid_stop` rejections live and asked that a trade "still occur as
+    long as it meets all other qualifiers" even when no real structural
+    level exists, using the chart-based rule above only when it's
+    available. This is the same thing this project tried once before (see
+    compute_stop_target's revision history, 2026-07-04) and reverted after
+    real data showed both losing trades in that sample had defaulted to
+    the full cap while real-level trades won -- flagged to the user
+    directly before making this change; they chose to proceed anyway,
+    specifically with the full $200 cap (not half, not a custom number).
+    Whether it holds up under the current (swing/FVG-based, not
+    level-based) anchor design is an open question to watch via real
+    trade-by-trade data (`StopCandidate.source == "cap"` in --verbose
+    output), the same way every other stop-rule change in this project has
+    been validated."""
     if direction is Direction.LONG:
         swing_candidate = (
             StopCandidate(price=swing_low, source="swing")
@@ -90,6 +113,7 @@ def find_structural_stop_price(
             fvg_candidate = StopCandidate(
                 price=nearest.gap_low, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
             )
+        cap_candidate = StopCandidate(price=entry_price - fallback_cap_points, source="cap")
     else:
         swing_candidate = (
             StopCandidate(price=swing_high, source="swing")
@@ -103,9 +127,14 @@ def find_structural_stop_price(
             fvg_candidate = StopCandidate(
                 price=nearest.gap_high, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
             )
+        cap_candidate = StopCandidate(price=entry_price + fallback_cap_points, source="cap")
 
     first, second = (swing_candidate, fvg_candidate) if prefer_swing else (fvg_candidate, swing_candidate)
-    return first if first is not None else second
+    if first is not None:
+        return first
+    if second is not None:
+        return second
+    return cap_candidate
 
 
 def compute_stop_target(
@@ -202,6 +231,18 @@ def compute_stop_target(
     job shrank to just validating whatever stop_price it's given against
     the $min-$max budget and computing the target -- it no longer
     searches a candidate list itself.
+
+    Note (2026-07-10): the "skipped entirely" behavior described just
+    above (2026-07-04, when no real level was within budget) was
+    explicitly reversed at the user's instruction the same day this note
+    was added -- find_structural_stop_price no longer returns None; it
+    falls back to the max_stop_dollars cap as a last resort instead of
+    letting the caller skip the trade. This function itself is unchanged
+    (it still rejects a stop_price outside the $min-$max band, and the cap
+    fallback is constructed to always land exactly at the max end of that
+    band, so it always passes); see find_structural_stop_price's own
+    docstring for the full reasoning and the contrary evidence that was
+    flagged before making this change.
     """
     if stop_price is None:
         return None

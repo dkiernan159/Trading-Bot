@@ -296,6 +296,32 @@ review these and adjust `config.yaml` before running live.
     stop. No selection logic changed -- `compute_stop_target` still just
     validates a plain `stop_price` float against the budget; the callers
     now pass `stop_candidate.price` instead of the candidate itself.
+  - **Cap fallback added 2026-07-10, the user's explicit instruction,
+    against known contrary evidence:** the user noticed frequent
+    `no_valid_stop` rejections live and asked that a trade "still occur as
+    long as it meets all other qualifiers" even when no real structural
+    level exists at all, using the chart-based rule above only when it's
+    available. This is the exact thing this project tried once before
+    (see `compute_stop_target`'s revision history, 2026-07-04) and
+    reverted after real data showed both losing trades in that sample had
+    defaulted to the full cap while real-level trades won small and
+    consistently -- flagged to the user directly before making this
+    change; they chose to proceed anyway, specifically with the full $200
+    cap (not half, not a custom number). Two things distinguish this from
+    a plain re-do of the reverted idea: (1) it only applies when
+    `find_structural_stop_price` finds genuinely nothing at all on the
+    stop side -- a real level that simply falls outside the $40-$200 band
+    (too far or too close) is still rejected as `no_valid_stop`, exactly
+    as before; the cap is a true last resort, not a wider net. (2) the
+    entire anchor-selection design has changed since the 2026-07-04
+    revert (FVG/swing-based now, not previous-day/Asia/London-level-based
+    then), so whether the same failure mode recurs is a genuinely open
+    question rather than a known outcome. `find_structural_stop_price`
+    now always returns a `StopCandidate` (never `None`) --
+    `source == "cap"` identifies this path in `--verbose` output and
+    `EntrySignal.stop_source`, so real trade-by-trade data can confirm or
+    refute it the same way every other stop-rule change here has been
+    validated.
   - **Open question, 2026-07-08** (not yet acted on -- watching for more
     data): with `prefer_swing=False` restored, the day strategy's own
     30-day backtest (10 trades, 30% win, -$199.75 net) split sharply by
