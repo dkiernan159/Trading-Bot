@@ -967,6 +967,43 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
     newer hub has superseded it -- so even if an old connection's thread
     does survive a reconnect, it can no longer race a shared aggregator
     with whichever hub is actually current.
+
+  **The exact request-schema bug flagged above, finally identified
+  (2026-07-09):** the user noticed 19 hours of continuous uptime with
+  zero trades, despite `bot.log`'s new anchor-outcome logging (see the
+  stop-loss placement section) showing several `anchor ended (filled)`
+  events for the day strategy that day -- meaning the strategy's own
+  state machine believed real entries had happened, but
+  `trades/trades.csv` had no rows at all beyond its header. Grepping
+  `bot.log` for `WARNING`/`Order/place` (the response-body print added in
+  the first bug above) finally surfaced the actual 400 body on every
+  single order-placement attempt:
+  ```
+  {"errors":{"$.accountId":["The JSON value could not be converted to System.Int32. ..."]}}
+  ```
+  Root cause: `self.account_id = account_id or os.environ.get("PROJECTX_ACCOUNT_ID")`
+  -- `os.environ` values are always `str`, and that string went straight
+  into every order's JSON body (`{"accountId": self.account_id, ...}`),
+  but the Gateway API requires `accountId` as a JSON integer, not a
+  quoted string. This meant **every single order placement had been
+  failing from the very first live session** -- not a timing/fill-window
+  issue as first suspected, not the stale-anchor loop (a separate, real
+  bug fixed the same day, see the overnight momentum strategy section),
+  just a wrong JSON type on every request, silently caught by
+  `_StrategySlot._enter_trade`'s existing try/except (from the first bug
+  above) and treated as an ordinary "didn't fill," so nothing ever
+  surfaced as an error to the dashboard or the user -- it looked
+  identical to the strategy simply not finding a good setup. Fixed by
+  converting `account_id` to `int` once in `connect()`, right after
+  confirming it's set, so every `_post` call downstream sends a real
+  integer; raises a clear `RuntimeError` if it isn't numeric at all
+  rather than silently misbehaving. This is very likely the actual
+  explanation for *why no trade had ever been taken live at all*, across
+  every session up to this point -- everything before it (stop-rule
+  tuning, the restart-storm fix, the anchor-outcome logging, the
+  stale-anchor abandonment feature and its own infinite-loop bug) was
+  real, necessary work, but none of it could have produced a trade while
+  this sat underneath, unnoticed, the whole time.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover

@@ -139,6 +139,18 @@ class ProjectXGatewayBroker(Broker):
                 "PROJECTX_ACCOUNT_ID not set -- required for order placement. "
                 "Add it to .env once you know which account to trade."
             )
+        # Confirmed live 2026-07-09: every single /Order/place call was
+        # failing with a 400 ("$.accountId: The JSON value could not be
+        # converted to System.Int32") -- os.environ values are always str,
+        # and that str was going straight into the JSON body below, but
+        # the Gateway API requires accountId as a JSON integer, not a
+        # quoted string. No order had ever actually reached the exchange
+        # as a result -- every "filled" anchor was silently discarded here
+        # instead. Converted once, so every _post call below sends an int.
+        try:
+            self.account_id = int(self.account_id)
+        except ValueError:
+            raise RuntimeError(f"PROJECTX_ACCOUNT_ID must be a plain integer, got {self.account_id!r}")
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}

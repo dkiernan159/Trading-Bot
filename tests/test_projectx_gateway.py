@@ -57,6 +57,44 @@ def test_post_gives_up_after_max_retries_and_raises():
             broker._post("/History/retrieveBars", {}, max_retries=4)
 
 
+def test_connect_converts_account_id_to_int_for_the_api(monkeypatch):
+    """Confirmed live 2026-07-09: every single /Order/place call was
+    failing with a 400 ("$.accountId: The JSON value could not be
+    converted to System.Int32") -- os.environ values are always str, and
+    that str was going straight into the JSON body, but the Gateway API
+    requires accountId as a JSON integer, not a quoted string. No order
+    had ever actually reached the exchange as a result -- every "filled"
+    anchor was silently discarded there instead. connect() now converts
+    it once, so every _post call sends an int."""
+    monkeypatch.setenv("PROJECTX_USERNAME", "user")
+    monkeypatch.setenv("PROJECTX_API_KEY", "key")
+    monkeypatch.setenv("PROJECTX_ACCOUNT_ID", "12345")
+    broker = ProjectXGatewayBroker(base_url="https://api.example.com", dry_run=True)
+
+    with patch(
+        "src.broker.projectx_gateway.requests.post",
+        return_value=fake_response(200, {"token": "test-token"}),
+    ):
+        broker.connect()
+
+    assert broker.account_id == 12345
+    assert isinstance(broker.account_id, int)
+
+
+def test_connect_raises_a_clear_error_when_account_id_is_not_numeric(monkeypatch):
+    monkeypatch.setenv("PROJECTX_USERNAME", "user")
+    monkeypatch.setenv("PROJECTX_API_KEY", "key")
+    monkeypatch.setenv("PROJECTX_ACCOUNT_ID", "not-a-number")
+    broker = ProjectXGatewayBroker(base_url="https://api.example.com", dry_run=True)
+
+    with patch(
+        "src.broker.projectx_gateway.requests.post",
+        return_value=fake_response(200, {"token": "test-token"}),
+    ):
+        with pytest.raises(RuntimeError, match="PROJECTX_ACCOUNT_ID must be a plain integer"):
+            broker.connect()
+
+
 def _make_builder_mock() -> MagicMock:
     """A HubConnectionBuilder mock whose chained with_url/with_automatic_reconnect
     calls all return itself, so .build() at the end of the chain is reachable --
