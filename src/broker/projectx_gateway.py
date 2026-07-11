@@ -150,7 +150,38 @@ class ProjectXGatewayBroker(Broker):
         try:
             self.account_id = int(self.account_id)
         except ValueError:
-            raise RuntimeError(f"PROJECTX_ACCOUNT_ID must be a plain integer, got {self.account_id!r}")
+            # Confirmed live 2026-07-10: PROJECTX_ACCOUNT_ID had been set
+            # to the account's display label (e.g. "50KTC-V2-69346-...."),
+            # not the Gateway's internal numeric account ID -- the fix
+            # above then correctly rejected it on every single connect(),
+            # crashing the whole process at startup (Restart=on-failure
+            # just kept restarting it into the same crash every 10s,
+            # forever, so it never got far enough to process a single
+            # bar). Resolved automatically instead of requiring the user
+            # to go find the raw number by hand: /Account/search is the
+            # same naming convention as this file's other endpoints
+            # (/Order/searchOpen, /History/retrieveBars); its exact
+            # response shape is UNVERIFIED, so the raw payload is printed
+            # the first time this path is hit, same defensive pattern as
+            # _fetch_open_order_ids/_on_trade_event.
+            self.account_id = self._resolve_account_id_from_label(self.account_id)
+
+    def _resolve_account_id_from_label(self, label: str) -> int:
+        data = self._post("/Account/search", {"onlyActiveAccounts": True})
+        print(f"[LIVE] /Account/search raw response (verify envelope/field names): {data}")
+        accounts = data.get("accounts", [])
+        name_keys = ("name", "accountName", "nickname", "nickName")
+        for account in accounts:
+            if any(account.get(key) == label for key in name_keys):
+                account_id = account.get("id")
+                if account_id is not None:
+                    print(f"[LIVE] Resolved PROJECTX_ACCOUNT_ID {label!r} -> numeric id {account_id!r}")
+                    return int(account_id)
+        raise RuntimeError(
+            f"PROJECTX_ACCOUNT_ID {label!r} is not a plain integer, and no matching account "
+            f"was found via /Account/search (see the raw response just printed above). Set "
+            f"PROJECTX_ACCOUNT_ID to the numeric account id directly instead."
+        )
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}

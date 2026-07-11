@@ -81,18 +81,51 @@ def test_connect_converts_account_id_to_int_for_the_api(monkeypatch):
     assert isinstance(broker.account_id, int)
 
 
-def test_connect_raises_a_clear_error_when_account_id_is_not_numeric(monkeypatch):
+def test_connect_raises_a_clear_error_when_account_id_cannot_be_resolved(monkeypatch):
+    """A non-numeric account_id that also has no matching name in
+    /Account/search's response must raise a clear, actionable error --
+    not fail silently or crash with an unrelated traceback."""
     monkeypatch.setenv("PROJECTX_USERNAME", "user")
     monkeypatch.setenv("PROJECTX_API_KEY", "key")
-    monkeypatch.setenv("PROJECTX_ACCOUNT_ID", "not-a-number")
+    monkeypatch.setenv("PROJECTX_ACCOUNT_ID", "not-a-real-account")
     broker = ProjectXGatewayBroker(base_url="https://api.example.com", dry_run=True)
 
-    with patch(
-        "src.broker.projectx_gateway.requests.post",
-        return_value=fake_response(200, {"token": "test-token"}),
-    ):
-        with pytest.raises(RuntimeError, match="PROJECTX_ACCOUNT_ID must be a plain integer"):
+    responses = [
+        fake_response(200, {"token": "test-token"}),
+        fake_response(200, {"accounts": [{"id": 12345, "name": "some-other-account"}]}),
+    ]
+    with patch("src.broker.projectx_gateway.requests.post", side_effect=responses):
+        with pytest.raises(RuntimeError, match="no matching account was found"):
             broker.connect()
+
+
+def test_connect_resolves_account_id_via_account_search_when_not_numeric(monkeypatch, capsys):
+    """Confirmed live 2026-07-10: PROJECTX_ACCOUNT_ID had been set to the
+    account's display label ("50KTC-V2-69346-...."), not the Gateway's
+    numeric account id -- the int() conversion added the day before then
+    correctly rejected it on every single connect(), crashing the whole
+    process at startup in an infinite restart loop (systemd's
+    Restart=on-failure just kept restarting it into the same crash every
+    10s, so it never got far enough to process a single bar -- this was
+    the actual reason nothing had traded in days, discovered only once
+    the user grepped bot.log for the traceback). connect() now falls back
+    to /Account/search to resolve a non-numeric account_id automatically,
+    matching it against the account's name."""
+    monkeypatch.setenv("PROJECTX_USERNAME", "user")
+    monkeypatch.setenv("PROJECTX_API_KEY", "key")
+    monkeypatch.setenv("PROJECTX_ACCOUNT_ID", "50KTC-V2-69346-54207896")
+    broker = ProjectXGatewayBroker(base_url="https://api.example.com", dry_run=True)
+
+    responses = [
+        fake_response(200, {"token": "test-token"}),
+        fake_response(200, {"accounts": [{"id": 98765, "name": "50KTC-V2-69346-54207896"}]}),
+    ]
+    with patch("src.broker.projectx_gateway.requests.post", side_effect=responses):
+        broker.connect()
+
+    assert broker.account_id == 98765
+    assert isinstance(broker.account_id, int)
+    assert "Resolved PROJECTX_ACCOUNT_ID" in capsys.readouterr().out
 
 
 def _make_builder_mock() -> MagicMock:

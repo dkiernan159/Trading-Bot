@@ -1030,6 +1030,29 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   stale-anchor abandonment feature and its own infinite-loop bug) was
   real, necessary work, but none of it could have produced a trade while
   this sat underneath, unnoticed, the whole time.
+
+  **Immediately caused a second, worse outage (found and fixed the next
+  day, 2026-07-10):** the `int()` conversion above raises if
+  `PROJECTX_ACCOUNT_ID` isn't a plain number -- and the value actually in
+  `.env` was the account's *display label* (`"50KTC-V2-69346-54207896"`,
+  the TopstepX-style account name), not the Gateway's internal numeric
+  account ID. So `connect()` now raised on every single call, which
+  propagates all the way up through `main()` uncaught -- crashing the
+  whole process at startup, every time, before `Runner.start()` ever
+  subscribed to a single bar. `Restart=on-failure` / `RestartSec=10` just
+  restarted it into the identical crash every 10 seconds, forever. The
+  user noticed via a plain `grep -iE "warning|error|traceback"
+  logs/bot.log` turning up the raw `ValueError`/`RuntimeError` -- this had
+  been silently crash-looping since the moment the previous fix deployed,
+  meaning the bot did not process a single live bar in that entire
+  window. Fixed by resolving a non-numeric `account_id` automatically:
+  `connect()` now falls back to `POST /Account/search` (same naming
+  convention as this file's other endpoints, `/Order/searchOpen` /
+  `/History/retrieveBars` -- UNVERIFIED, so the raw response is printed
+  the first time, same defensive pattern as those), matching the
+  configured label against each returned account's name and using its
+  numeric `id`. Raises a clear, actionable `RuntimeError` (not a bare
+  traceback) if no match is found, rather than crash-looping again.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover
