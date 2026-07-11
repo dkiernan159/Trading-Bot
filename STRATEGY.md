@@ -1053,6 +1053,11 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   configured label against each returned account's name and using its
   numeric `id`. Raises a clear, actionable `RuntimeError` (not a bare
   traceback) if no match is found, rather than crash-looping again.
+  **Confirmed working live the same day**: the real `/Account/search`
+  response matched the assumed shape exactly (`{"accounts": [{"id":
+  ..., "name": ..., ...}], "success": true, ...}`), resolving the
+  configured label to its correct numeric id among two accounts
+  returned. No field-name adjustment needed.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover
