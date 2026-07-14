@@ -18,6 +18,8 @@ _HEADER = [
     "pnl_points",
     "pnl_dollars",
     "strategy",
+    "stop_source",
+    "stop_fvg_size",
 ]
 
 
@@ -36,15 +38,17 @@ class TradeLogger:
             self._migrate_header_if_needed()
 
     def _migrate_header_if_needed(self) -> None:
-        """Files created before per-strategy tagging (2026-07-07, added so
-        the dashboard can break out day vs overnight performance) have a
-        header without "strategy" -- rewrite just that header line in
-        place. Existing data rows are left untouched; DictReader fills
-        their missing trailing "strategy" value with None, which
+        """Files created before a trailing column existed (per-strategy
+        tagging, 2026-07-07; stop_source/stop_fvg_size, 2026-07-14, added
+        so a live trade's losses can actually be analyzed for a pattern
+        the same way backtest's --verbose already could) have a header
+        missing one or more trailing columns -- rewrite just that header
+        line in place. Existing data rows are left untouched; DictReader
+        fills their missing trailing values with None, which
         src/dashboard.py's read_live_trades treats as "unknown"."""
         with open(self.path, newline="") as f:
             rows = list(csv.reader(f))
-        if not rows or "strategy" in rows[0]:
+        if not rows or rows[0] == _HEADER:
             return
         rows[0] = list(_HEADER)
         with open(self.path, "w", newline="") as f:
@@ -66,5 +70,7 @@ class TradeLogger:
                     trade.pnl_points(),
                     trade.pnl_dollars(point_value),
                     strategy,
+                    trade.stop_source,
+                    trade.stop_fvg_size,
                 ]
             )

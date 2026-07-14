@@ -35,6 +35,43 @@ def test_read_live_trades_parses_rows_and_sorts_newest_first(tmp_path):
     assert rows[1]["strategy"] == "day"
 
 
+def test_read_live_trades_parses_stop_source_and_fvg_size(tmp_path):
+    """Added 2026-07-14 alongside logger.py's new trailing columns, so a
+    live trade's losses can actually be analyzed for a pattern."""
+    header = (
+        "entry_time,direction,contracts,entry_price,stop_price,target_price,"
+        "exit_price,exit_time,exit_reason,pnl_points,pnl_dollars,strategy,"
+        "stop_source,stop_fvg_size\n"
+    )
+    csv_path = tmp_path / "trades.csv"
+    csv_path.write_text(
+        header
+        + "2026-07-13T19:20:00-04:00,short,1,29391.75,29491.75,29191.75,29491.75,2026-07-14T00:51:00-04:00,stop,-100.0,-200.0,overnight,cap,\n"
+        + "2026-07-13T22:02:00-04:00,short,1,29464.5,29504.25,29385.0,29385.0,2026-07-13T22:21:00-04:00,target,79.5,159.0,overnight,fvg,14.5\n"
+    )
+
+    rows = read_live_trades(str(csv_path))
+
+    assert len(rows) == 2
+    cap_row = next(r for r in rows if r["stop_source"] == "cap")
+    assert cap_row["stop_fvg_size"] is None
+    fvg_row = next(r for r in rows if r["stop_source"] == "fvg")
+    assert fvg_row["stop_fvg_size"] == 14.5
+
+
+def test_read_live_trades_defaults_stop_source_to_unknown_for_old_rows(tmp_path):
+    csv_path = tmp_path / "trades.csv"
+    csv_path.write_text(
+        _HEADER
+        + "2026-06-24T09:50:00-04:00,short,1,29713.0,29728.0,29683.0,29728.0,2026-06-24T10:10:00-04:00,stop,-15.0,-30.0,day\n"
+    )
+
+    rows = read_live_trades(str(csv_path))
+
+    assert rows[0]["stop_source"] == "unknown"
+    assert rows[0]["stop_fvg_size"] is None
+
+
 def test_read_status_returns_none_when_file_missing(tmp_path):
     missing_path = tmp_path / "does_not_exist.json"
     assert read_status(str(missing_path)) is None

@@ -139,6 +139,8 @@ class _StrategySlot:
             target_price=bracket.target_price,
             contracts=contracts,
             entry_time=signal.timestamp,
+            stop_source=signal.stop_source,
+            stop_fvg_size=signal.stop_fvg_size,
         )
 
     def _check_open_trade(self, bar: Bar) -> None:

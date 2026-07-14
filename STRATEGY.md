@@ -1119,6 +1119,20 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
       `trades.csv` written before this change (including the live one
       already deployed) in place -- old data rows are left untouched and
       read back with `strategy=None` -> `"unknown"`, never a crash.
+    - **`stop_source`/`stop_fvg_size` added 2026-07-14**: the user asked
+      to analyze real losing trades for a pattern and iteratively correct
+      -- but `trades.csv` had no way to tell which stop rule (fvg/swing/
+      cap) produced any given trade's stop, the exact diagnostic
+      `EntrySignal` had already been carrying since `risk.py`'s
+      `StopCandidate` was added for backtest's `--verbose` output. `Trade`
+      (`models.py`) gained the same two fields (defaulting to `"unknown"`/
+      `None` for backward compatibility); `_StrategySlot._enter_trade`
+      populates them from the signal; `_migrate_header_if_needed` now
+      compares the whole header against the current one (not just
+      checking for `"strategy"`) so it also migrates files stuck on the
+      previous partial header. `read_live_trades` parses both, so the
+      dashboard's `/api/live-trades.json` carries this too, not just
+      `--verbose` backtests.
     - `Trade.unrealized_pnl_dollars(current_price, point_value)` mirrors
       `pnl_dollars` but marks to a live price instead of `exit_price`.
       `_StrategySlot.status_for_dashboard` uses it (mark-to-last-bar-close,

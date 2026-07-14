@@ -53,6 +53,8 @@ def read_live_trades(csv_path: str = TRADES_CSV_PATH) -> list[dict]:
                     "pnl_points": float(row["pnl_points"]),
                     "pnl_dollars": float(row["pnl_dollars"]),
                     "strategy": row.get("strategy") or "unknown",
+                    "stop_source": row.get("stop_source") or "unknown",
+                    "stop_fvg_size": float(row["stop_fvg_size"]) if row.get("stop_fvg_size") else None,
                 }
             )
     rows.sort(key=lambda r: r["entry_time"], reverse=True)

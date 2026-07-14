@@ -34,6 +34,8 @@ class Trade:
     exit_price: float | None = None
     exit_time: datetime | None = None
     exit_reason: str | None = None  # "target" | "stop" | "flatten"
+    stop_source: str = "unknown"  # "fvg" | "swing" | "cap" | "unknown" -- see risk.StopCandidate
+    stop_fvg_size: float | None = None
 
     @property
     def stop_points(self) -> float:
