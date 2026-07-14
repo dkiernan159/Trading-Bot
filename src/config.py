@@ -75,7 +75,7 @@ class PositionSizingConfig:
 
 @dataclass
 class RiskLimitsConfig:
-    max_trades_per_day: int
+    max_trades_per_day: int | None  # None -- removed 2026-07-14 at the user's explicit instruction -- means no cap
     max_daily_loss_dollars: float
     kill_switch: bool
 

@@ -296,32 +296,31 @@ review these and adjust `config.yaml` before running live.
     stop. No selection logic changed -- `compute_stop_target` still just
     validates a plain `stop_price` float against the budget; the callers
     now pass `stop_candidate.price` instead of the candidate itself.
-  - **Cap fallback added 2026-07-10, the user's explicit instruction,
-    against known contrary evidence:** the user noticed frequent
-    `no_valid_stop` rejections live and asked that a trade "still occur as
-    long as it meets all other qualifiers" even when no real structural
-    level exists at all, using the chart-based rule above only when it's
-    available. This is the exact thing this project tried once before
-    (see `compute_stop_target`'s revision history, 2026-07-04) and
-    reverted after real data showed both losing trades in that sample had
-    defaulted to the full cap while real-level trades won small and
-    consistently -- flagged to the user directly before making this
-    change; they chose to proceed anyway, specifically with the full $200
-    cap (not half, not a custom number). Two things distinguish this from
-    a plain re-do of the reverted idea: (1) it only applies when
-    `find_structural_stop_price` finds genuinely nothing at all on the
-    stop side -- a real level that simply falls outside the $40-$200 band
-    (too far or too close) is still rejected as `no_valid_stop`, exactly
-    as before; the cap is a true last resort, not a wider net. (2) the
-    entire anchor-selection design has changed since the 2026-07-04
-    revert (FVG/swing-based now, not previous-day/Asia/London-level-based
-    then), so whether the same failure mode recurs is a genuinely open
-    question rather than a known outcome. `find_structural_stop_price`
-    now always returns a `StopCandidate` (never `None`) --
-    `source == "cap"` identifies this path in `--verbose` output and
-    `EntrySignal.stop_source`, so real trade-by-trade data can confirm or
-    refute it the same way every other stop-rule change here has been
-    validated.
+  - **Cap fallback added 2026-07-10, reverted 2026-07-14:** the user
+    noticed frequent `no_valid_stop` rejections live and asked that a
+    trade "still occur as long as it meets all other qualifiers" even
+    when no real structural level exists at all, using the chart-based
+    rule above only when it's available. This was the exact thing this
+    project tried once before (see `compute_stop_target`'s revision
+    history, 2026-07-04) and reverted after real data showed both losing
+    trades in that sample had defaulted to the full cap while real-level
+    trades won small and consistently -- flagged to the user directly
+    before making the change; they chose to proceed anyway to see if it
+    held up under the newer (FVG/swing-based, not previous-day/Asia/
+    London-level-based) anchor design, specifically with the full $200
+    cap. It didn't: within days, a real live overnight trade whose stop
+    landed on an exact round 100.00-point distance (precisely
+    `max_stop_dollars/point_value/contracts` -- not a number any real
+    structural level would coincidentally produce) lost $200, the same
+    failure shape as before. On seeing that, the user reverted it
+    immediately: "if the trade isn't strong and doesn't have a good stop
+    loss point below a break of structure or resistance level then we
+    shouldn't take it." `find_structural_stop_price` returns `None` again
+    (skip the trade) when neither a qualifying FVG nor swing point exists
+    at all -- this exact rule has now failed the same way under two
+    different anchor-selection designs, so per the function's own
+    docstring it shouldn't be tried a third time without a fundamentally
+    different justification than "let more trades through."
   - **Open question, 2026-07-08** (not yet acted on -- watching for more
     data): with `prefer_swing=False` restored, the day strategy's own
     30-day backtest (10 trades, 30% win, -$199.75 net) split sharply by
@@ -576,6 +575,14 @@ review these and adjust `config.yaml` before running live.
   `kill_switch`): not requested, added because this trades a TopStep
   funded/evaluation account where breaching a drawdown rule can end the
   account. Disable/adjust freely in `config.yaml`.
+  - **`max_trades_per_day` removed 2026-07-14, your explicit instruction**
+    after reviewing a day where it (not the $ loss limit) was what
+    actually stood the bot down: it was capping trade count regardless of
+    quality, and you'd rather the FVG/swing-structure entry criteria (and
+    the $ loss limit / kill switch below, which remain) be the only real
+    gate. `RiskLimitsConfig.max_trades_per_day` is now `int | None`;
+    `null` in `config.yaml` means no cap (`DailyRiskState.can_take_new_trade`
+    skips the count check entirely when it's `None`).
 
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 

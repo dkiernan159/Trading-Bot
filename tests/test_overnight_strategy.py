@@ -332,17 +332,15 @@ def test_stale_anchor_is_not_immediately_re_picked_after_being_abandoned():
     assert abandoned_gap_id in strategy._rejected_anchor_ids
 
 
-def test_falls_back_to_the_cap_when_no_structural_stop_exists_at_all():
-    """User's explicit instruction, 2026-07-10, against known contrary
-    evidence (flagged before making this change -- see
-    find_structural_stop_price's docstring): rather than skip a trade
-    entirely when neither a qualifying FVG nor a swing point exists on
-    the stop side at all, take it anyway using the full max_stop_dollars
-    budget as the stop distance. The tight anchor here can't be its own
-    stop (see find_structural_stop_price's docstring for why), and
-    nothing else was constructed, so this exercises the pure "nothing at
-    all" case -- not a too-tight real level (see the test right after
-    this one for that, still-rejected, case)."""
+def test_no_real_structural_stop_within_budget_rejects_and_keeps_hunting():
+    """Same rule as the day strategy (risk.py's find_structural_stop_price)
+    -- if the fill has no strong 5m FVG or break-of-structure swing point
+    on the stop side at all (the tight anchor here can't be its own stop --
+    see find_structural_stop_price's docstring for why -- and nothing else
+    was constructed), it's skipped rather than defaulted to the cap (that
+    fallback was tried 2026-07-10 and reverted 2026-07-14 -- see the
+    function's docstring), and the hunt continues rather than taking the
+    trade anyway."""
     cfg = load_test_config()
     cfg.strategy.min_stop_dollars = 40.0
     cfg.strategy.max_stop_dollars = 200.0
@@ -372,21 +370,18 @@ def test_falls_back_to_the_cap_when_no_structural_stop_exists_at_all():
     fill_time = NIGHT_START + timedelta(minutes=2)
     signal = strategy.on_bar(bar_at(fill_time, 105.0, 105.05, 104.8, 104.9))
 
-    # $200 max_stop_dollars / (2.0 point_value * 1 contract) = 100-point cap.
-    assert signal is not None
-    assert signal.direction is Direction.LONG
-    assert signal.entry_price == pytest.approx(105.0)
-    assert signal.stop_price == pytest.approx(5.0)
-    assert signal.stop_source == "cap"
-    assert strategy.state is State.IN_TRADE
-    assert strategy.anchor_history[-1].outcome == "filled"
+    assert signal is None
+    assert strategy.state is State.WAIT_FVG
+    assert strategy._anchor_fvg is None
+    assert strategy.stats["fills"] == 0
+    assert strategy.anchor_history[-1].outcome == "no_valid_stop"
 
 
-def test_a_too_tight_real_swing_point_is_still_rejected_not_overridden_by_the_cap():
-    """The cap fallback above only applies when NEITHER a qualifying FVG
-    nor a swing point exists at all -- a real swing point that's simply
-    too close for min_stop_dollars must still be rejected (no_valid_stop),
-    not silently replaced by the cap."""
+def test_a_too_tight_real_swing_point_is_still_rejected():
+    """A real swing point that's simply too close for min_stop_dollars
+    must still be rejected (no_valid_stop), same as the FVG case above --
+    a genuine structural point isn't automatically valid just because it
+    exists; it has to actually clear the $min-$max budget."""
     cfg = load_test_config()
     cfg.strategy.min_stop_dollars = 40.0
     cfg.strategy.max_stop_dollars = 200.0

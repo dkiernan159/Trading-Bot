@@ -175,7 +175,8 @@ position_sizing:
   scaling: manual_only     # you bump this to 5 yourself once win rate is proven
 
 risk_limits:
-  max_trades_per_day: 4          # ASSUMPTION: safety cap, independent of setup re-entry logic
+  max_trades_per_day: null       # removed 2026-07-14 at your explicit instruction (was 4) -- no cap on trade
+                                   # count; max_daily_loss_dollars and kill_switch below are the real safety net
   max_daily_loss_dollars: 600    # ASSUMPTION: hard stop for the day, protects a funded/eval account
   kill_switch: false              # set true to force the bot to flatten and stop taking new trades
 

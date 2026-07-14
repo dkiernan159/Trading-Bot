@@ -22,13 +22,10 @@ class StopCandidate:
     only (see backtest.py's --verbose trade detail), so a hypothesis like
     "the FVGs backing these stops aren't strong enough" can actually be
     checked against real data instead of guessed at. `fvg_size` is
-    `gap_high - gap_low` of the FVG used, None when source is "swing" or
-    "cap" (the max_stop_dollars-distance last resort used when neither a
-    qualifying FVG nor swing point exists at all, added 2026-07-10 -- see
-    find_structural_stop_price)."""
+    `gap_high - gap_low` of the FVG used, None when source is "swing"."""
 
     price: float
-    source: str  # "fvg" | "swing" | "cap"
+    source: str  # "fvg" | "swing"
     fvg_gap_low: float | None = None
     fvg_gap_high: float | None = None
 
@@ -45,9 +42,8 @@ def find_structural_stop_price(
     fvg_candidates: list[FairValueGap],
     swing_high: float | None,
     swing_low: float | None,
-    fallback_cap_points: float,
     prefer_swing: bool = True,
-) -> StopCandidate:
+) -> StopCandidate | None:
     """Where the stop goes: either the outer edge of the nearest strong 5m
     FVG sitting on the stop side of entry (below entry for a LONG, above
     for a SHORT -- the same "strong" 5m FVGs already used for anchor
@@ -57,11 +53,9 @@ def find_structural_stop_price(
     which is what should sit *below* a long entry), or the most recent
     1-minute break-of-structure swing point on that same side (see
     swing_points.py) -- whichever `prefer_swing` says to try first, with
-    the other used as a fallback if the first doesn't qualify. If
-    *neither* exists, falls back to `fallback_cap_points` (the
-    max_stop_dollars budget converted to points by the caller) as the stop
-    distance outright (`source="cap"`) -- see the revision history below
-    for why this always takes the trade now instead of skipping it.
+    the other used as a fallback if the first doesn't qualify. Returns
+    None if neither exists, meaning "no real invalidation point behind
+    this entry at all" -- skip the trade (see compute_stop_target).
 
     Originally (2026-07-08, at the user's explicit correction replacing
     the previous-day/Asia/London/box-level approach -- see
@@ -84,22 +78,26 @@ def find_structural_stop_price(
     (see strategy.py: prefer_swing=False; overnight_strategy.py:
     prefer_swing=True) rather than sharing one global priority order.
 
-    **Cap fallback added 2026-07-10, the user's explicit instruction,
-    against known contrary evidence:** the user noticed frequent
-    `no_valid_stop` rejections live and asked that a trade "still occur as
-    long as it meets all other qualifiers" even when no real structural
-    level exists, using the chart-based rule above only when it's
-    available. This is the same thing this project tried once before (see
-    compute_stop_target's revision history, 2026-07-04) and reverted after
-    real data showed both losing trades in that sample had defaulted to
-    the full cap while real-level trades won -- flagged to the user
-    directly before making this change; they chose to proceed anyway,
-    specifically with the full $200 cap (not half, not a custom number).
-    Whether it holds up under the current (swing/FVG-based, not
-    level-based) anchor design is an open question to watch via real
-    trade-by-trade data (`StopCandidate.source == "cap"` in --verbose
-    output), the same way every other stop-rule change in this project has
-    been validated."""
+    **Cap fallback added 2026-07-10, then reverted 2026-07-14:** briefly
+    fell back to the max_stop_dollars budget as a last-resort stop
+    distance (`source="cap"`) instead of returning None, at the user's
+    explicit instruction and against known contrary evidence (this same
+    idea had already been tried once, under the old level-based design,
+    and reverted for losing -- see compute_stop_target's revision
+    history). It was flagged clearly before making the change; the user
+    chose to proceed anyway to see if it held up under the newer
+    swing/FVG-based design. Within days, a real live trade whose stop
+    landed on an exact round 100.00-point distance (precisely
+    max_stop_dollars/point_value/contracts, not a number any real
+    structural level would coincidentally produce) lost -$200 -- the same
+    failure shape as before. The user reverted it immediately on seeing
+    that: "if the trade isn't strong and doesn't have a good stop loss
+    point below a break of structure or resistance level then we
+    shouldn't take it." Back to returning None when neither a qualifying
+    FVG nor swing point exists -- this rule has now failed the same way
+    twice, under two different anchor-selection designs, so it should not
+    be tried a third time without a fundamentally different justification
+    than "let more trades through."""
     if direction is Direction.LONG:
         swing_candidate = (
             StopCandidate(price=swing_low, source="swing")
@@ -113,7 +111,6 @@ def find_structural_stop_price(
             fvg_candidate = StopCandidate(
                 price=nearest.gap_low, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
             )
-        cap_candidate = StopCandidate(price=entry_price - fallback_cap_points, source="cap")
     else:
         swing_candidate = (
             StopCandidate(price=swing_high, source="swing")
@@ -127,14 +124,9 @@ def find_structural_stop_price(
             fvg_candidate = StopCandidate(
                 price=nearest.gap_high, source="fvg", fvg_gap_low=nearest.gap_low, fvg_gap_high=nearest.gap_high
             )
-        cap_candidate = StopCandidate(price=entry_price + fallback_cap_points, source="cap")
 
     first, second = (swing_candidate, fvg_candidate) if prefer_swing else (fvg_candidate, swing_candidate)
-    if first is not None:
-        return first
-    if second is not None:
-        return second
-    return cap_candidate
+    return first if first is not None else second
 
 
 def compute_stop_target(
@@ -232,17 +224,18 @@ def compute_stop_target(
     the $min-$max budget and computing the target -- it no longer
     searches a candidate list itself.
 
-    Note (2026-07-10): the "skipped entirely" behavior described just
-    above (2026-07-04, when no real level was within budget) was
-    explicitly reversed at the user's instruction the same day this note
-    was added -- find_structural_stop_price no longer returns None; it
-    falls back to the max_stop_dollars cap as a last resort instead of
-    letting the caller skip the trade. This function itself is unchanged
-    (it still rejects a stop_price outside the $min-$max band, and the cap
-    fallback is constructed to always land exactly at the max end of that
-    band, so it always passes); see find_structural_stop_price's own
-    docstring for the full reasoning and the contrary evidence that was
-    flagged before making this change.
+    Note (2026-07-10, reverted 2026-07-14): the "skipped entirely"
+    behavior described just above (2026-07-04, when no real level was
+    within budget) was briefly reversed -- find_structural_stop_price
+    stopped returning None, falling back to the max_stop_dollars cap as a
+    last resort instead of letting the caller skip the trade. Reverted
+    four days later after a real live trade with an exact round
+    100-point (cap-distance) stop lost $200, repeating the same failure
+    this project had already seen once before under the old level-based
+    design. find_structural_stop_price returns None again in the
+    "nothing structural exists" case; this function's own behavior here
+    was never changed either time -- see find_structural_stop_price's own
+    docstring for the full history.
     """
     if stop_price is None:
         return None
@@ -292,7 +285,10 @@ class DailyRiskState:
     def can_take_new_trade(self) -> bool:
         if self.cfg.kill_switch:
             return False
-        if self.trades_today >= self.cfg.max_trades_per_day:
+        # max_trades_per_day removed 2026-07-14 at the user's explicit
+        # instruction -- None means no cap on trade count; the $ loss
+        # limit below and kill_switch above remain the real safety net.
+        if self.cfg.max_trades_per_day is not None and self.trades_today >= self.cfg.max_trades_per_day:
             return False
         if self.realized_pnl_today <= -abs(self.cfg.max_daily_loss_dollars):
             return False

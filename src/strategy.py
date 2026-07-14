@@ -110,15 +110,6 @@ class OpeningRangeStrategy:
         # strategy) -- only consulted when no strong 5m FVG sits on the
         # stop side of an entry.
         self.swing_tracker = SwingPointTracker()
-        # Last-resort stop distance when NEITHER a qualifying FVG nor a
-        # swing point exists at all -- user's explicit instruction
-        # 2026-07-10 (see find_structural_stop_price's docstring for the
-        # full reasoning and the contrary evidence flagged before this was
-        # added): rather than skip the trade entirely, use the full
-        # max_stop_dollars budget as the stop distance.
-        self._fallback_cap_points = cfg.strategy.max_stop_dollars / (
-            cfg.instrument.point_value * cfg.position_sizing.contract_size
-        )
 
         self.state = State.MARKING_LEVELS
         self._trading_date: date | None = None
@@ -378,13 +369,12 @@ class OpeningRangeStrategy:
                     fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._breakout_direction),
                     swing_high=self.swing_tracker.most_recent_swing_high,
                     swing_low=self.swing_tracker.most_recent_swing_low,
-                    fallback_cap_points=self._fallback_cap_points,
                     prefer_swing=False,
                 )
                 bracket = compute_stop_target(
                     direction=self._breakout_direction,
                     entry_price=self._pending_limit_price,
-                    stop_price=stop_candidate.price,
+                    stop_price=stop_candidate.price if stop_candidate is not None else None,
                     max_stop_dollars=self.cfg.strategy.max_stop_dollars,
                     min_stop_dollars=self.cfg.strategy.min_stop_dollars,
                     point_value=self.cfg.instrument.point_value,
