@@ -483,6 +483,22 @@ def test_max_trades_per_night_resets_for_a_fresh_night():
     assert strategy._trades_tonight == 0
 
 
+def test_max_trades_per_night_none_means_no_cap():
+    """Removed 2026-07-16 at the user's explicit instruction ("the per-day
+    limit on trades is a bad idea given we're just testing, remove the
+    limit entirely") -- config.yaml's real default is now null/None, which
+    must let reentry proceed no matter how many trades happened tonight."""
+    cfg = load_test_config()
+    assert cfg.strategy.overnight.max_trades_per_night is None
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+
+    strategy.state = State.IN_TRADE
+    strategy._trades_tonight = 50
+    strategy.notify_trade_closed(won=False)
+    assert strategy.state is State.WAIT_FVG
+
+
 def test_status_snapshot_reflects_current_hunt_state():
     cfg = load_test_config()
     strategy = OvernightMomentumStrategy(cfg)

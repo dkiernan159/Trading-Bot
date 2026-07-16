@@ -361,17 +361,26 @@ class OvernightMomentumStrategy:
     def notify_trade_closed(self, won: bool) -> None:
         """Runner/backtest harness calls this once the open trade hits its
         stop or target. Reentry flags are shared with the day strategy
-        (cfg.strategy.reentry), but max_trades_per_night is this strategy's
-        own, separate cap (see config.yaml's comment) -- checked regardless
-        of allow_reentry_after_stop, since real data showed nights with 2+
-        trades performing far worse than single-trade nights."""
+        (cfg.strategy.reentry). max_trades_per_night was this strategy's
+        own, separate cap on top of that -- removed 2026-07-16 at the
+        user's explicit instruction ("the per-day limit on trades is a bad
+        idea given we're just testing, remove the limit entirely"), so
+        None means no cap here. Flagged before removing: the only backtest
+        ever run without a cap (38 trades, single-stage design) showed
+        nights with 2+ trades winning only 29% versus 67% for single-trade
+        nights -- the reason a cap of 2 (later raised to 4 going live)
+        existed in the first place. max_daily_loss_dollars and kill_switch
+        remain the real safety net regardless of trade count."""
         if won and not self.cfg.strategy.reentry.allow_new_setup_after_win:
             self.state = State.DONE_FOR_NIGHT
             return
         if not won and not self.cfg.strategy.reentry.allow_reentry_after_stop:
             self.state = State.DONE_FOR_NIGHT
             return
-        if self._trades_tonight >= self.cfg.strategy.overnight.max_trades_per_night:
+        if (
+            self.cfg.strategy.overnight.max_trades_per_night is not None
+            and self._trades_tonight >= self.cfg.strategy.overnight.max_trades_per_night
+        ):
             self.state = State.DONE_FOR_NIGHT
             return
 

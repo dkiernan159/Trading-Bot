@@ -50,7 +50,7 @@ class ReentryConfig:
 @dataclass
 class OvernightConfig:
     enabled: bool
-    max_trades_per_night: int
+    max_trades_per_night: int | None  # None -- removed 2026-07-16 at the user's explicit instruction -- means no cap
 
 
 @dataclass

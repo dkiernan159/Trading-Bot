@@ -745,6 +745,22 @@ iterate" instruction, be ready to lower this back down (or retune
 fvg/entry_fvg for this window specifically) if multi-trade nights keep
 underperforming in practice.
 
+**Removed entirely 2026-07-16, your explicit instruction** ("the per-day
+limit on trades is a bad idea given we're just testing, remove the limit
+entirely"), given after reviewing the first 7 live trades (2W/5L). Flagged
+the same contrary backtest evidence above before making the change --
+this is the second time this exact cap has been loosened against that
+evidence (first 2->4, now to no cap at all) -- and you chose to proceed
+anyway, reasoning that during this testing phase you'd rather gather data
+on more trades than have the bot stand down early. `OvernightConfig.max_trades_per_night`
+is now `int | None`; `null` in `config.yaml` means `notify_trade_closed`
+skips the count check entirely and always allows reentry (subject to the
+existing `reentry.allow_reentry_after_stop`/`allow_new_setup_after_win`
+flags, unchanged). `max_daily_loss_dollars` and `kill_switch` remain the
+only account-wide backstop regardless of how many trades happen in a
+night. Revisit if multi-trade nights keep showing the same underperformance
+this evidence predicts.
+
 `strategy.fvg` / `strategy.entry_fvg`'s thresholds are tuned against real NY
 Opening Range data, not Asia/London -- Asia/London's own volatility/gap
 profile may not match NY hours at all, so a real `--overnight` backtest

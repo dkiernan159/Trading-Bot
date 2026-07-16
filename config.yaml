@@ -157,15 +157,19 @@ strategy:
                                     # has been tuned.
     enabled: true                  # gates BOTH src/backtest.py's --overnight mode AND the live overnight
                                     # slot in src/runner.py (see above)
-    max_trades_per_night: 4        # Raised 2026-07-07 from 2 to 4 at your explicit instruction when going
-                                    # live ("capped at 4 trades per night with the same risk tolerance").
-                                    # Untested at this value -- the only real backtest evidence so far
-                                    # (single-stage design, no cap: 38 trades, 37% WR, +$291.25 net) showed
-                                    # nights with 2+ trades performing far worse (29% WR) than single-trade
-                                    # nights (67% WR); a cap of 2 was chosen and tested for exactly that
-                                    # reason before this change, but a fresh backtest at cap=4 was never
-                                    # run before going live -- watch real results closely and be ready to
-                                    # lower this back down if multi-trade nights keep underperforming.
+    max_trades_per_night: null      # removed 2026-07-16 at your explicit instruction ("the per-day limit
+                                    # on trades is a bad idea given we're just testing, remove the limit
+                                    # entirely") -- null means no cap on trades-per-night.
+                                    # History: raised 2026-07-07 from 2 to 4 when going live ("capped at 4
+                                    # trades per night with the same risk tolerance"), untested at that
+                                    # value -- the only real backtest evidence (single-stage design, no cap:
+                                    # 38 trades, 37% WR, +$291.25 net) showed nights with 2+ trades
+                                    # performing far worse (29% WR) than single-trade nights (67% WR); a cap
+                                    # of 2 was chosen and tested for exactly that reason originally. Flagged
+                                    # again before this removal for the same reason -- watch real results
+                                    # closely, since this is the second time this exact cap has been loosened
+                                    # against that evidence. max_daily_loss_dollars and kill_switch below
+                                    # remain the real safety net regardless of trade count either way.
                                     # Same $40-$200 stop band / 2:1 R:R as the day strategy either way
                                     # ("same risk tolerance" -- strategy.max_stop_dollars/min_stop_dollars/
                                     # reward_risk_ratio above, unchanged, shared with the day strategy).
