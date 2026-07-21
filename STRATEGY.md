@@ -1081,6 +1081,52 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   ..., "name": ..., ...}], "success": true, ...}`), resolving the
   configured label to its correct numeric id among two accounts
   returned. No field-name adjustment needed.
+
+  **A third, quieter version of the same failure shape (found and fixed
+  2026-07-21):** after the two bugs above were fixed, trades did start
+  executing live -- but the user noticed `trades/trades.csv`'s row count
+  stuck at 7 for five straight days despite the bot staying up the whole
+  time (`status.json`'s `process_started_at` unchanged since 2026-07-16,
+  ruling out the restart-storm bug recurring). `bot.log` told a different
+  story than "no setups found": `anchor ended (filled)` fired 12 times for
+  both strategies combined in just the 2026-07-19 to 2026-07-21 window
+  alone, and `placing entry LIMIT ...` matched all 12 -- but only 2 ever
+  got a real `entry order placed: id=...` confirmation back, and only 1
+  ever hit the (legitimate, by-design) 20-second fill timeout. The other
+  10 all raised inside `place_bracket_order`, caught by `_enter_trade`'s
+  existing try/except and silently treated as an ordinary "not filled"
+  case -- identical to a normal missed fill from the dashboard's or the
+  logs' point of view. The actual traceback, once pulled via `sed` on the
+  exact line number:
+  ```
+  RuntimeError: /Order/place failed: Specified custom tag is already in
+  use: custom tag should be unique per account
+  ```
+  Root cause: `place_bracket_order`'s `bracket_id` was a plain in-memory
+  counter (`self._next_bracket_id`, starting at `1` in `__init__`),
+  embedded directly into each order's `customTag` (`"entry-1"`,
+  `"stop-1"`, `"target-1"`, ...). The gateway enforces `customTag`
+  uniqueness **per account, forever** -- not per process, per day, or per
+  session. Since the counter resets to `1` on every single restart of the
+  bot (and this account has been restarted many times across this
+  project's history -- the restart-storm bug, the two `accountId` bugs
+  above, ordinary deploys), a fresh process's low bracket-id values are
+  near-guaranteed to collide with a tag some earlier process already sent
+  to this same account, and it fails deterministically until the counter
+  happens to climb past whatever the account's historical high-water mark
+  is. This explains far more than the missing 5 days: it means the
+  majority of every strategy's real entry signals, across every session
+  since going live, have likely been silently eaten by this, not by
+  "price moved on" as the surrounding code's own comments assumed. Fixed
+  by generating `bracket_id` as `uuid.uuid4().hex[:16]` per order instead
+  of an incrementing counter -- unique regardless of how many times the
+  process has restarted, so it can never collide with the account's own
+  tag history again. Regression test
+  (`test_bracket_id_customtag_survives_a_process_restart_without_colliding`,
+  `tests/test_projectx_gateway.py`) simulates a restart as a brand-new
+  broker instance and asserts its customTags never overlap with an
+  earlier instance's -- confirmed to fail against the old counter-based
+  code and pass against the fix.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover

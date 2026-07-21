@@ -340,6 +340,50 @@ def test_place_bracket_order_flattens_if_stop_placement_fails_after_entry_fills(
     mock_flatten.assert_called_once_with("MNQ")
 
 
+def _place_order_and_capture_tags(broker) -> list[str]:
+    tags = []
+
+    def fake_post(path, body, **kwargs):
+        tags.append(body["customTag"])
+        return {"orderId": f"order-for-{body['customTag']}"}
+
+    with patch.object(broker, "_post", side_effect=fake_post), patch.object(
+        broker, "_wait_for_fill", return_value=True
+    ):
+        broker.place_bracket_order(
+            symbol="MNQ", direction=Direction.LONG, contracts=1,
+            entry_price=100.0, stop_price=90.0, target_price=120.0,
+        )
+    return tags
+
+
+def test_bracket_id_customtag_survives_a_process_restart_without_colliding():
+    """Confirmed live 2026-07-21: bracket_id used to be a plain in-memory
+    counter starting at 1 in __init__, embedded directly into customTag
+    ("entry-1", "entry-2", ...). The gateway enforces customTag uniqueness
+    per *account*, not per process -- real bot.log tracebacks showed
+    /Order/place failing with "Specified custom tag is already in use"
+    over and over after every restart, because the new process's counter
+    always starts back at 1 and collides with tags any earlier process
+    already sent for this account. 10 of 12 real entry signals in one
+    2-day window were silently lost this way. A fresh broker instance
+    (standing in for "the process restarted") must not be able to produce
+    a customTag any previous instance could plausibly have already used."""
+    first_process = make_broker()
+    first_process.dry_run = False
+    first_process.account_id = "ACC1"
+    first_process._contract_id = "CON.F.US.MNQ.U26"
+    first_tags = _place_order_and_capture_tags(first_process)
+
+    second_process = make_broker()  # simulates a restart: brand-new instance
+    second_process.dry_run = False
+    second_process.account_id = "ACC1"
+    second_process._contract_id = "CON.F.US.MNQ.U26"
+    second_tags = _place_order_and_capture_tags(second_process)
+
+    assert set(first_tags).isdisjoint(second_tags)
+
+
 def test_hub_generation_guard_ignores_events_from_a_superseded_hub():
     """Confirmed live 2026-07-08: a "deque mutated during iteration" error
     in Runner meant more than one realtime hub was alive and delivering

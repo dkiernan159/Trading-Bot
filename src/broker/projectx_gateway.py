@@ -47,6 +47,7 @@ end to end first.
 import os
 import threading
 import time as time_module
+import uuid
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -107,7 +108,6 @@ class ProjectXGatewayBroker(Broker):
         self._on_bar: Callable[[Bar], None] | None = None
         self._current_bar: dict | None = None
         self._brackets: dict[str, dict] = {}
-        self._next_bracket_id = 1
         # Print the raw payload the first few times these unverified,
         # live-only paths are hit, so a wrong field-name/envelope guess is
         # immediately visible in the terminal instead of silently no-op'ing
@@ -433,8 +433,22 @@ class ProjectXGatewayBroker(Broker):
         stop_price: float,
         target_price: float,
     ) -> str | None:
-        bracket_id = str(self._next_bracket_id)
-        self._next_bracket_id += 1
+        # Confirmed live 2026-07-21: bracket_id used to be a plain in-memory
+        # counter starting at 1 in __init__, embedded straight into
+        # customTag ("entry-1", "entry-2", ...). The gateway enforces
+        # customTag uniqueness *per account*, not per process -- it
+        # remembers every tag ever sent, across every past restart of this
+        # bot. Since the counter resets to 1 on every restart, real bot.log
+        # tracebacks showed /Order/place failing with "Specified custom tag
+        # is already in use" over and over (10 of 12 real entry signals in
+        # one 2-day window alone), each one silently swallowed by
+        # runner.py's _enter_trade as an ordinary "not filled" case -- a
+        # real position was never opened, but nothing distinguished this
+        # from the legitimate "price moved on" miss it was designed to
+        # tolerate. A uuid4-based tag is unique regardless of how many
+        # times the process has restarted, so it can never collide with
+        # the account's own tag history again.
+        bracket_id = uuid.uuid4().hex[:16]
 
         if self.dry_run:
             self._brackets[bracket_id] = {"status": "open", "dry_run": True}
