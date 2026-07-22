@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from src.dashboard import compute_trade_stats, read_live_trades, read_status
+from src.dashboard import BRACKET_ID_FIX_DEPLOYED_AT, SCALE_UP_SAMPLE_TARGET, compute_trade_stats, read_live_trades, read_status
 
 _HEADER = "entry_time,direction,contracts,entry_price,stop_price,target_price,exit_price,exit_time,exit_reason,pnl_points,pnl_dollars,strategy\n"
 
@@ -162,3 +162,27 @@ def test_compute_trade_stats_today_slice_uses_the_given_timezone(monkeypatch):
 
     assert stats["today"]["trades"] == 1
     assert stats["today"]["total_pnl_dollars"] == 60.0
+
+
+def test_compute_trade_stats_since_fix_excludes_trades_before_the_customtag_fix():
+    """Added 2026-07-22 at the user's request ("I'll wait until we have a
+    large enough sample to increase contract size"): every trade before the
+    customTag-collision fix (see dashboard.py's BRACKET_ID_FIX_DEPLOYED_AT)
+    ran under code that silently dropped most real entry signals, so its
+    win rate says nothing about the strategy's true behavior -- only
+    trades entered at or after the fix should count toward the sample the
+    user is waiting on before scaling contract_size."""
+    rows = [
+        _row("2026-07-21T00:22:00+00:00", -297.0, "overnight"),  # before the fix
+        _row("2026-07-22T02:00:00+00:00", 100.0, "overnight"),  # after the fix
+        _row("2026-07-23T09:50:00-04:00", 50.0, "day"),  # after the fix
+    ]
+
+    stats = compute_trade_stats(rows, ET)
+
+    assert stats["since_fix"]["trades"] == 2
+    assert stats["since_fix"]["total_pnl_dollars"] == 150.0
+    assert stats["since_fix"]["sample_target"] == SCALE_UP_SAMPLE_TARGET
+    assert stats["since_fix"]["fix_deployed_at"] == BRACKET_ID_FIX_DEPLOYED_AT.isoformat()
+    # The overall/day/overnight slices are unaffected -- still see every row.
+    assert stats["overall"]["trades"] == 3

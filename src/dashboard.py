@@ -27,6 +27,24 @@ TEMPLATE_PATH = Path(__file__).with_name("dashboard_template.html")
 TRADES_CSV_PATH = "trades/trades.csv"
 STATUS_JSON_PATH = "trades/status.json"
 
+# Confirmed live 2026-07-21/22: place_bracket_order's customTag used to be
+# built from an in-memory counter that reset to 1 on every restart, which
+# the gateway rejects as a duplicate against the account's entire order
+# history -- silently eating roughly 10 of every 12 real entry signals
+# across both strategies (see STRATEGY.md's "third, quieter version of the
+# same failure shape" entry). Fixed in commit 82a0b46 and deployed live at
+# this timestamp (confirmed via `systemctl status trading-bot`'s "Active"
+# line at the time). Every trade before this ran under the buggy code, so
+# its win rate/frequency says nothing about the strategy's true behavior --
+# only trades entered at or after this point reflect what the bot actually
+# does now that it can take (nearly) every signal it finds. At your
+# request (2026-07-22: "I'll wait until we have a large enough sample to
+# increase contract size"), the dashboard tracks this slice separately so
+# it's obvious when a real sample has accumulated, instead of scaling off
+# stats still contaminated by the bug.
+BRACKET_ID_FIX_DEPLOYED_AT = datetime(2026, 7, 22, 1, 18, 37, tzinfo=timezone.utc)
+SCALE_UP_SAMPLE_TARGET = 25
+
 
 def read_live_trades(csv_path: str = TRADES_CSV_PATH) -> list[dict]:
     """Parses trades/trades.csv fresh -- cheap local file read, safe to call
@@ -104,11 +122,16 @@ def compute_trade_stats(rows: list[dict], tz: ZoneInfo) -> dict:
     lines up with when the day/overnight strategies actually reset."""
     today = datetime.now(tz).date()
     today_rows = [r for r in rows if datetime.fromisoformat(r["entry_time"]).astimezone(tz).date() == today]
+    since_fix_rows = [r for r in rows if datetime.fromisoformat(r["entry_time"]) >= BRACKET_ID_FIX_DEPLOYED_AT]
+    since_fix = _stats_for(since_fix_rows)
+    since_fix["sample_target"] = SCALE_UP_SAMPLE_TARGET
+    since_fix["fix_deployed_at"] = BRACKET_ID_FIX_DEPLOYED_AT.isoformat()
     return {
         "overall": _stats_for(rows),
         "today": _stats_for(today_rows),
         "day": _stats_for([r for r in rows if r["strategy"] == "day"]),
         "overnight": _stats_for([r for r in rows if r["strategy"] == "overnight"]),
+        "since_fix": since_fix,
     }
 
 

@@ -1218,6 +1218,23 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
       and broken out per strategy -- fresh from `trades.csv` on every
       request, served at `/api/stats.json`, rendered as a new
       "Performance" section.
+    - **"Since the customTag fix" slice (added 2026-07-22, your request):**
+      after the customTag-collision bug was fixed (see the broker section
+      above -- it had been silently eating roughly 10 of every 12 real
+      entry signals), you said "I'll wait until we have a large enough
+      sample to increase contract size" rather than scaling off stats
+      still contaminated by that bug. `compute_trade_stats` now also
+      returns a `since_fix` slice filtered to
+      `entry_time >= BRACKET_ID_FIX_DEPLOYED_AT` (2026-07-22T01:18:37 UTC,
+      the actual live deploy time confirmed via `systemctl status
+      trading-bot`'s "Active" line, not just the commit timestamp), plus a
+      `sample_target` (25, a placeholder -- adjust freely, it's not
+      enforced anywhere, purely a visual marker) so the dashboard's new
+      "Since the customTag fix" card shows a progress bar toward that
+      target instead of you having to eyeball dates in `trades.csv`.
+      `position_sizing.scaling: manual_only` still means nothing in code
+      actually blocks scaling early -- this is a visibility aid for your
+      own manual decision, not a guardrail.
     - The template's "Bot activity" section gained a candlestick chart
       (`buildLiveChart`, a simpler sibling of the backtest's `buildChart`
       -- no anchor-zone/previous-day-zone overlays, since those are day-
