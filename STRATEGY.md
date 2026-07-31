@@ -567,10 +567,20 @@ review these and adjust `config.yaml` before running live.
   session -- price often needs more real time to come back to an
   anchor's center than the window was allowing, and that's now the
   actual bottleneck for trade frequency, not anchor strength.)
-- **After a winning trade**: bot stands down for the rest of the day by
+- **After a winning trade**: bot stood down for the rest of the day/night by
   default (`allow_new_setup_after_win: false`). You only specified re-entry
-  behavior after a *loss*; flip this flag if you also want multiple winners
-  per day.
+  behavior after a *loss* originally.
+  - **Flipped to `true` 2026-07-31, your explicit instruction**, after a
+    real overnight win (2026-07-31T02:00 UTC, +$149) stood the strategy
+    down for the rest of that night and you asked why -- you'd initially
+    guessed a trade-count cap, but both `max_trades_per_day` and
+    `max_trades_per_night` were confirmed already `null` on the live VPS
+    config, so this flag was the actual cause. You confirmed ("for testing
+    lets just remove the limit entirely") you want the bot to keep hunting
+    for new setups after a win too, same as it already does after a loss
+    (`allow_reentry_after_stop`). Shared by both strategies (day and
+    overnight read the same `strategy.reentry` config); `max_daily_loss_dollars`
+    and `kill_switch` remain the real safety net regardless of trade count.
 - **Daily safety limits** (`max_trades_per_day`, `max_daily_loss_dollars`,
   `kill_switch`): not requested, added because this trades a TopStep
   funded/evaluation account where breaching a drawdown rule can end the

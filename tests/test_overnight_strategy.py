@@ -415,8 +415,14 @@ def test_a_too_tight_real_swing_point_is_still_rejected():
     assert strategy.anchor_history[-1].outcome == "no_valid_stop"
 
 
-def test_notify_trade_closed_stands_down_for_the_night_after_a_win():
+def test_notify_trade_closed_stands_down_for_the_night_after_a_win_when_configured_to():
+    """allow_new_setup_after_win's real config.yaml default flipped to True
+    2026-07-31 at the user's explicit instruction ("for testing lets just
+    remove the limit entirely") -- the mechanism this flag drives still
+    exists and is still config-controlled, so this test sets it to False
+    explicitly to cover that path rather than relying on the live default."""
     cfg = load_test_config()
+    cfg.strategy.reentry.allow_new_setup_after_win = False
     strategy = OvernightMomentumStrategy(cfg)
     strategy.on_bar(flat_bar(NIGHT_START, 100.0))
     strategy.state = State.IN_TRADE
@@ -427,6 +433,19 @@ def test_notify_trade_closed_stands_down_for_the_night_after_a_win():
     signal = strategy.on_bar(flat_bar(NIGHT_START + timedelta(hours=1), 107.0))
     assert signal is None
     assert strategy.state is State.DONE_FOR_NIGHT
+
+
+def test_notify_trade_closed_keeps_hunting_after_a_win_when_allowed():
+    """Real config.yaml default since 2026-07-31: keep hunting after a win,
+    same as it already does after a loss (allow_reentry_after_stop)."""
+    cfg = load_test_config()
+    assert cfg.strategy.reentry.allow_new_setup_after_win is True
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+    strategy.state = State.IN_TRADE
+
+    strategy.notify_trade_closed(won=True)
+    assert strategy.state is State.WAIT_FVG
 
 
 def test_notify_trade_closed_reenters_the_hunt_after_a_stop_when_allowed():

@@ -112,7 +112,14 @@ strategy:
     lookback_bars: 8              # 1m candles used for the recent average range baseline (~8 minutes)
   reentry:
     allow_reentry_after_stop: true      # per your answer: re-arm if stopped out and setup reforms
-    allow_new_setup_after_win: false    # ASSUMPTION: stand down for the day after a winner (change if wrong)
+    allow_new_setup_after_win: true     # Flipped from false 2026-07-31 at your explicit instruction ("for
+                                    # testing lets just remove the limit entirely") -- confirmed the bot
+                                    # standing down after a single overnight win that same night was this
+                                    # flag, not a trade-count cap (both max_trades_per_day and
+                                    # max_trades_per_night were already null). Now keeps hunting for new
+                                    # setups after a win, same as it already does after a loss
+                                    # (allow_reentry_after_stop). max_daily_loss_dollars and kill_switch
+                                    # remain the real safety net regardless of how many trades happen.
 
   overnight:                       # ASSUMPTION (added 2026-07-05): a second, parallel strategy for the
                                     # Asia (19:00-23:59 ET prior evening) / London (02:00-05:00 ET) hours,
