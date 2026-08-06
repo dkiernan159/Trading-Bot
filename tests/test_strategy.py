@@ -63,6 +63,16 @@ def load_test_config():
     # fraction itself is covered separately, see
     # test_entry_fills_at_a_shallower_retracement_than_the_midpoint.
     cfg.strategy.entry_retracement_pct = 0.5
+    # This file's dollar-based assertions (e.g. the $40/20-point floor math
+    # in test_anchor_rejected_when_the_only_real_level_is_too_close, and the
+    # $200/100-point cap in
+    # test_anchor_rejected_and_a_fresh_one_is_hunted_when_no_real_level_is_within_budget)
+    # were written against the real config's contract_size=1/max_stop_dollars=200 --
+    # position_sizing.contract_size/max_stop_dollars/min_stop_dollars/
+    # reward_risk_ratio all scaled together 2026-07-31, so pin them here to
+    # keep those tests isolated from that change.
+    cfg.position_sizing.contract_size = 1
+    cfg.strategy.max_stop_dollars = 200.0
     return cfg
 
 

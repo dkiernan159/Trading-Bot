@@ -1245,6 +1245,54 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
       `position_sizing.scaling: manual_only` still means nothing in code
       actually blocks scaling early -- this is a visibility aid for your
       own manual decision, not a guardrail.
+    - **Scaled to `contract_size: 3` anyway, 2026-07-31, your explicit
+      decision:** exactly the guardrail-not-a-block case above -- at the
+      time you asked to scale, the `since_fix` slice was 16 of the 25-trade
+      target, 37.5% WR, net **-$98** (running at a loss, not the proven
+      win rate `position_sizing.scaling`'s comment originally expected
+      before scaling). Flagged clearly before proceeding; you chose to
+      scale anyway ("I'm happy with the testing so far... lets move from
+      one micro contract to 3 micro contracts per trade").
+      - Raising `contract_size` alone would **not** have actually 3x'd
+        dollar exposure: `max_stop_dollars`/`min_stop_dollars` are fixed
+        *total* dollar caps per trade, converted to points via
+        `/ (point_value * contract_size)` (see risk.py's
+        `compute_stop_target`) -- so at 3x the contracts with the caps
+        left at $200/$40, the allowed stop distance in points would have
+        shrunk to a third (100pt -> ~33pt), keeping total dollar risk per
+        trade roughly where it already was at 1 contract, not 3x it.
+        Flagged this before proceeding; you confirmed you wanted real 3x
+        dollar exposure on the same real structural stops the strategy has
+        been taking, which requires scaling the dollar caps too.
+      - Your own numbers ("scale the TP up to $500 and the stop loss up to
+        $300 as maximums for both") don't fit the existing fixed 2:1
+        `reward_risk_ratio` exactly (a max-sized $300 stop at 2:1 gives a
+        $600 target, not $500) -- flagged this too; you chose to change
+        `reward_risk_ratio` to `1.67` (500/300) rather than keep 2:1, so a
+        max-sized real stop now produces a target close to $500. Target is
+        still always exactly `reward_risk_ratio` x whatever the real
+        per-trade stop distance is (there's no independent target cap) --
+        a tighter real stop still produces a proportionally smaller
+        target, not a flat $500 regardless of the stop.
+      - Net result: `max_stop_dollars: 200 -> 300` (a deliberate
+        *tightening* in points at the new contract_size, not a
+        proportional 3x -- 200/2.0/1=100pt before, 300/2.0/3=50pt now,
+        half the old point-based cap, since you chose $300 over the
+        proportional $600), `min_stop_dollars: 40 -> 120` (scaled a full
+        3x, preserving the original 20-point floor:
+        40/2.0/1=20pt, 120/2.0/3=20pt), `reward_risk_ratio: 2.0 -> 1.67`,
+        `contract_size: 1 -> 3`. Structural stop *selection* itself
+        (`find_structural_stop_price` -- nearest strong 5m FVG or 1m
+        break-of-structure swing point) is completely unchanged; only the
+        $ budget that filters which real stops qualify moved.
+      - Several tests (`tests/test_strategy.py`, `tests/test_backtest.py`)
+        had assertions written against the real config's old
+        `contract_size=1`/`max_stop_dollars=200`/`reward_risk_ratio=2.0`
+        without pinning them explicitly -- fixed by pinning those values
+        in each file's own `load_test_config()`, the same isolation
+        pattern already used there for `min_stop_dollars`/
+        `entry_retracement_pct`, so this file's own test math stays
+        correct regardless of further live tuning.
     - The template's "Bot activity" section gained a candlestick chart
       (`buildLiveChart`, a simpler sibling of the backtest's `buildChart`
       -- no anchor-zone/previous-day-zone overlays, since those are day-

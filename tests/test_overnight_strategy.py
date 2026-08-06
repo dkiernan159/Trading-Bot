@@ -275,11 +275,16 @@ def test_anchor_is_abandoned_as_stale_once_price_runs_too_far_without_filling():
     night" on the first anchor found -- a real overnight session sat in
     WAIT_FILL for hours while price ran ~52 points past a SHORT anchor's
     own entry with no fresher FVG ever qualifying to supersede it. Once
-    price moves more than half the $200 stop budget (50 points, at this
-    config's point_value=2.0/contract_size=1) past the pending entry
-    without retracing to fill it, the anchor is dropped and the strategy
-    goes back to plain hunting instead of waiting on a now-stale level
-    indefinitely."""
+    price moves more than half the max_stop_dollars stop budget past the
+    pending entry without retracing to fill it, the anchor is dropped and
+    the strategy goes back to plain hunting instead of waiting on a
+    now-stale level indefinitely. Uses a 60-point runaway here specifically
+    because it clears that half-budget threshold at any real config's
+    max_stop_dollars/point_value/contract_size combination the project has
+    used so far ($200/2.0/1=50pt half-budget originally; $300/2.0/3=25pt
+    since 2026-07-31's contract_size scale-up) -- not testing the exact
+    threshold value, just that a sufficiently large runaway triggers
+    abandonment."""
     cfg = load_test_config()
     strategy = OvernightMomentumStrategy(cfg)
     strategy.on_bar(flat_bar(NIGHT_START, 100.0))

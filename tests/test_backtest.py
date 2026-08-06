@@ -55,6 +55,13 @@ def load_test_config():
     # See tests/test_strategy.py: this file's fixtures assume the exact
     # midpoint too, since the real config's default is now loosened.
     cfg.strategy.entry_retracement_pct = 0.5
+    # This file's target-price math (e.g. test_backtest_records_a_win's
+    # 141.6 = 107.2 + 2*(107.2-90.0)) was written against the real config's
+    # reward_risk_ratio=2.0 and contract_size=1 -- both changed 2026-07-31
+    # alongside max_stop_dollars/min_stop_dollars, so pin them here to keep
+    # this file's own math isolated from that change.
+    cfg.strategy.reward_risk_ratio = 2.0
+    cfg.position_sizing.contract_size = 1
     return cfg
 
 
