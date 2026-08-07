@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from src.config import BotConfig, SessionConfig
 from src.fvg import FairValueGap, FvgDetector
 from src.models import Bar, Direction
-from src.risk import compute_stop_target, find_structural_stop_price
+from src.risk import compute_stop_target, find_structural_stop_price, round_to_tick
 from src.session_levels import SessionLevels, SessionLevelSet
 from src.strategy import AnchorRecord
 from src.swing_points import SwingPointTracker
@@ -151,12 +151,16 @@ class OvernightMomentumStrategy:
     def _entry_price(self, gap: FairValueGap) -> float:
         """Same retracement rule as the day strategy (strategy.py's
         _entry_price) -- see there for why any fraction strictly between 0
-        and 1 stays provably safe from "mitigated before it could fill"."""
+        and 1 stays provably safe from "mitigated before it could fill",
+        and for why the result is rounded to tick_size (confirmed live
+        2026-08-07 -- see risk.py's round_to_tick)."""
         pct = self.cfg.strategy.entry_retracement_pct
         width = gap.gap_high - gap.gap_low
         if gap.direction is Direction.LONG:
-            return gap.gap_high - pct * width
-        return gap.gap_low + pct * width
+            price = gap.gap_high - pct * width
+        else:
+            price = gap.gap_low + pct * width
+        return round_to_tick(price, self.cfg.instrument.tick_size)
 
     def _candidate_fvgs(self, direction: Direction) -> list[FairValueGap]:
         candidates = self.fvg_detector_5m.unmitigated_in_direction(
@@ -331,6 +335,7 @@ class OvernightMomentumStrategy:
                     point_value=self.cfg.instrument.point_value,
                     contracts=self.cfg.position_sizing.contract_size,
                     reward_risk_ratio=self.cfg.strategy.reward_risk_ratio,
+                    tick_size=self.cfg.instrument.tick_size,
                 )
                 if bracket is None:
                     self._close_anchor("no_valid_stop", bar.timestamp)

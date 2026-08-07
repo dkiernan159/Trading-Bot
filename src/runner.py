@@ -94,6 +94,7 @@ class _StrategySlot:
             point_value=cfg.instrument.point_value,
             contracts=cfg.position_sizing.contract_size,
             reward_risk_ratio=cfg.strategy.reward_risk_ratio,
+            tick_size=cfg.instrument.tick_size,
         )
         contracts = cfg.position_sizing.contract_size
 

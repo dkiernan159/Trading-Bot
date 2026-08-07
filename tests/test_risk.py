@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 from src.fvg import FairValueGap
 from src.models import Direction
-from src.risk import compute_stop_target, find_structural_stop_price
+from src.risk import compute_stop_target, find_structural_stop_price, round_to_tick
 
 TZ = ZoneInfo("America/New_York")
 NOW = datetime(2026, 7, 6, 10, 0, tzinfo=TZ)
@@ -32,6 +32,7 @@ def test_returns_none_when_stop_price_is_none():
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
+        tick_size=0.01,
     )
     assert result is None
 
@@ -46,6 +47,7 @@ def test_long_computes_stop_and_target_from_a_given_stop_price():
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
+        tick_size=0.01,
     )
     assert result.stop_points == 5.0
     assert result.stop_price == 95.0
@@ -63,6 +65,7 @@ def test_short_computes_stop_and_target_from_a_given_stop_price():
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
+        tick_size=0.01,
     )
     assert result.stop_points == 10.0
     assert result.stop_price == 110.0
@@ -81,6 +84,7 @@ def test_returns_none_when_stop_price_too_far():
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
+        tick_size=0.01,
     )
     assert result is None
 
@@ -100,6 +104,7 @@ def test_returns_none_when_stop_price_too_close():
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
+        tick_size=0.01,
     )
     assert result is None
 
@@ -118,6 +123,7 @@ def test_dollar_cap_shrinks_in_points_as_contract_size_scales_up():
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
+        tick_size=0.01,
     )
     assert at_one_contract.stop_points == 50.0
     assert at_one_contract.stop_price == 50.0
@@ -131,6 +137,7 @@ def test_dollar_cap_shrinks_in_points_as_contract_size_scales_up():
         point_value=2.0,
         contracts=4,
         reward_risk_ratio=2.0,
+        tick_size=0.01,
     )
     assert at_four_contracts is None
 
@@ -149,6 +156,7 @@ def test_dollar_floor_grows_in_points_as_contract_size_scales_up():
         point_value=2.0,
         contracts=1,
         reward_risk_ratio=2.0,
+        tick_size=0.01,
     )
     assert at_one_contract is None
 
@@ -161,6 +169,7 @@ def test_dollar_floor_grows_in_points_as_contract_size_scales_up():
         point_value=2.0,
         contracts=4,
         reward_risk_ratio=2.0,
+        tick_size=0.01,
     )
     assert at_four_contracts.stop_points == 10.0
 
@@ -340,3 +349,82 @@ def test_prefer_swing_false_still_falls_back_to_swing_when_no_fvg_qualifies():
     )
     assert stop.price == 93.0
     assert stop.source == "swing"
+
+
+# ---------- round_to_tick / compute_stop_target's tick-alignment rounding ----------
+# (added 2026-08-07 -- see round_to_tick's own docstring for the real bot.log
+# evidence: entry/target prices routinely landed off the exchange's tick
+# grid, silently rejected by the gateway and swallowed as an ordinary "not
+# filled" case, costing roughly half of every real entry signal in the
+# affected window)
+
+
+def test_round_to_tick_snaps_to_the_nearest_multiple_of_tick_size():
+    """The exact real-world case that surfaced this bug: a gap's midpoint
+    of 29573.375 (from bot.log, 2026-08-06) is not a multiple of MNQ's
+    real 0.25 tick_size -- the gateway rejected it outright with "Invalid
+    limit price. Price is not aligned to tick size." 29573.375 is exactly
+    equidistant between 29573.25 and 29573.5, so this isn't testing which
+    way a tie breaks (not what the real bug was about) -- only that
+    whichever way it goes, the result actually lands on the tick grid."""
+    result = round_to_tick(29573.375, 0.25)
+    assert result in (29573.25, 29573.5)
+
+
+def test_round_to_tick_leaves_an_already_aligned_price_unchanged():
+    assert round_to_tick(28602.0, 0.25) == 28602.0
+    assert round_to_tick(100.0, 0.25) == 100.0
+
+
+def test_round_to_tick_rounds_down_and_up_correctly():
+    assert round_to_tick(100.1, 0.25) == 100.0  # closer to 100.0 than 100.25
+    assert round_to_tick(100.2, 0.25) == 100.25  # closer to 100.25 than 100.0
+
+
+def test_compute_stop_target_rounds_target_price_to_tick_size():
+    """target_price is entry_price +/- a floating-point points distance --
+    even with a clean entry_price and stop_price, the multiplication by
+    reward_risk_ratio routinely produces a sub-tick result. Confirmed
+    real bug: this was sent straight to the gateway unrounded and
+    rejected."""
+    result = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        stop_price=93.25,  # already tick-aligned, isolating this test to target_price's own rounding
+        max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
+        point_value=2.0,
+        contracts=1,
+        reward_risk_ratio=1.67,  # the real config's current ratio
+        tick_size=0.25,
+    )
+    # stop_points = 6.75, target_points = 6.75*1.67 = 11.2725, target_price
+    # = 111.2725 unrounded -- not a multiple of 0.25, confirming this case
+    # would have hit the real bug without the fix. 111.2725/0.25=445.09,
+    # rounds to 445 -> 111.25 (a hardcoded expected value, not
+    # round_to_tick itself, so this actually verifies the rounding rather
+    # than restating it).
+    assert result.target_price == 111.25
+
+
+def test_compute_stop_target_rounds_stop_price_to_tick_size_too():
+    """stop_price is normally real-market-derived and already aligned, but
+    rounded defensively regardless -- and stop_points/target_points must
+    reflect the *rounded* stop_price, not the original, so they stay
+    internally consistent with what's actually sent to the broker."""
+    result = compute_stop_target(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        stop_price=93.37,  # deliberately not tick-aligned
+        max_stop_dollars=200.0,
+        min_stop_dollars=0.0,
+        point_value=2.0,
+        contracts=1,
+        reward_risk_ratio=2.0,
+        tick_size=0.25,
+    )
+    # 93.37 / 0.25 = 373.48 -> rounds to 373 -> 373 * 0.25 = 93.25 (a
+    # hardcoded expected value, not round_to_tick itself, so this
+    # actually verifies the rounding rather than restating it).
+    assert result.stop_price == 93.25
+    assert result.stop_points == 100.0 - 93.25

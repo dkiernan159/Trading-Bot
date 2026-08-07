@@ -149,6 +149,7 @@ def run_backtest(
                 point_value=cfg.instrument.point_value,
                 contracts=cfg.position_sizing.contract_size,
                 reward_risk_ratio=cfg.strategy.reward_risk_ratio,
+                tick_size=cfg.instrument.tick_size,
             )
             levels = strategy.current_session_levels
             open_trade = {
@@ -232,6 +233,7 @@ def run_overnight_backtest(
                 point_value=cfg.instrument.point_value,
                 contracts=cfg.position_sizing.contract_size,
                 reward_risk_ratio=cfg.strategy.reward_risk_ratio,
+                tick_size=cfg.instrument.tick_size,
             )
             levels = strategy.current_session_levels
             open_trade = {

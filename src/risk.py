@@ -36,6 +36,29 @@ class StopCandidate:
         return self.fvg_gap_high - self.fvg_gap_low
 
 
+def round_to_tick(price: float, tick_size: float) -> float:
+    """Confirmed live 2026-08-07: entry_price (an FVG retracement --
+    gap_high - pct*width) and target_price (entry_price +/- stop_points*
+    reward_risk_ratio) are both plain float arithmetic with no rounding,
+    so they routinely land on sub-tick values (e.g. a gap 29568.75-29578.00
+    at the exact midpoint retraces to 29573.375 -- not a multiple of MNQ's
+    0.25 tick_size). The gateway rejects these outright with "Invalid
+    limit price. Price is not aligned to tick size," caught by
+    _enter_trade's existing try/except and silently treated as an
+    ordinary "not filled" case -- indistinguishable from a normal missed
+    fill. Real bot.log tracebacks showed this had been happening since at
+    least 2026-08-04 (predates the 2026-08-06 contract-size scale-up, so
+    it isn't related to that change) -- roughly half of every real
+    "anchor ended (filled)" signal in the affected window, since a real
+    gap's exact midpoint is only tick-aligned when its width happens to
+    be an even number of ticks. An exact half-tick tie is rare (entry is
+    a fraction of a real gap's width, not a value chosen to land exactly
+    on one) and Python's round() ties-to-even behavior is an
+    unremarkable, defensible choice either way -- not worth a custom
+    tie-break for this."""
+    return round(price / tick_size) * tick_size
+
+
 def find_structural_stop_price(
     direction: Direction,
     entry_price: float,
@@ -138,6 +161,7 @@ def compute_stop_target(
     point_value: float,
     contracts: int,
     reward_risk_ratio: float,
+    tick_size: float,
 ) -> BracketLevels | None:
     """Validates a candidate stop_price (see find_structural_stop_price)
     against the $min-$max stop budget and computes the target at
@@ -240,6 +264,14 @@ def compute_stop_target(
     if stop_price is None:
         return None
 
+    # Confirmed live 2026-08-07 (see round_to_tick's own docstring):
+    # round stop_price to the exchange's tick grid before computing
+    # anything from it, so stop_points/target_points/target_price below
+    # are all internally consistent with the actual price sent to the
+    # broker -- stop_price is real-market-derived and should already be
+    # aligned, but rounding defensively costs nothing.
+    stop_price = round_to_tick(stop_price, tick_size)
+
     max_stop_points = max_stop_dollars / (point_value * contracts)
     min_stop_points = min_stop_dollars / (point_value * contracts)
     stop_points = abs(entry_price - stop_price)
@@ -253,6 +285,14 @@ def compute_stop_target(
         target_price = entry_price + target_points
     else:
         target_price = entry_price - target_points
+
+    # target_price is entry_price +/- a floating-point points distance, so
+    # it routinely lands off the tick grid even when entry_price and
+    # stop_price are both clean -- the gateway rejects an unaligned LIMIT
+    # price outright, and that failure was being silently swallowed as an
+    # ordinary "not filled" case, costing roughly half of every real entry
+    # signal in the affected window (see round_to_tick's own docstring).
+    target_price = round_to_tick(target_price, tick_size)
 
     return BracketLevels(
         stop_price=stop_price,

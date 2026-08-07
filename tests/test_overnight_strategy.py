@@ -24,6 +24,10 @@ def load_test_config():
     # floor, which isn't what these tests are about.
     cfg.strategy.min_stop_dollars = 0.0
     cfg.strategy.entry_retracement_pct = 0.5
+    # See tests/test_strategy.py: prices are now rounded to tick_size --
+    # use a much finer one here so this file's exact-value gap-math
+    # fixtures aren't shifted by the real 0.25 tick.
+    cfg.instrument.tick_size = 0.01
     return cfg
 
 

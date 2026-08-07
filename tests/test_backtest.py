@@ -62,6 +62,10 @@ def load_test_config():
     # this file's own math isolated from that change.
     cfg.strategy.reward_risk_ratio = 2.0
     cfg.position_sizing.contract_size = 1
+    # See tests/test_strategy.py: prices are now rounded to tick_size --
+    # use a much finer one here so this file's exact-value target-price
+    # math (e.g. 141.6 above) isn't shifted by the real 0.25 tick.
+    cfg.instrument.tick_size = 0.01
     return cfg
 
 

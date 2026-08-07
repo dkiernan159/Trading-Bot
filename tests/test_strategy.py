@@ -73,6 +73,15 @@ def load_test_config():
     # keep those tests isolated from that change.
     cfg.position_sizing.contract_size = 1
     cfg.strategy.max_stop_dollars = 200.0
+    # Confirmed live 2026-08-07: entry/target prices are now rounded to
+    # tick_size (see risk.py's round_to_tick) so the gateway doesn't
+    # reject an unaligned LIMIT price. The real config's 0.25 tick_size
+    # would shift many of this file's synthetic gap-math fixtures (e.g.
+    # 107.2 -> 107.25) in ways unrelated to what each test actually
+    # exercises -- use a much finer tick here so those exact-value
+    # assertions keep passing through unaffected; the rounding behavior
+    # itself is covered separately in tests/test_risk.py.
+    cfg.instrument.tick_size = 0.01
     return cfg
 
 

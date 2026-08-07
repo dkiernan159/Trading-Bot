@@ -1137,6 +1137,65 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   broker instance and asserts its customTags never overlap with an
   earlier instance's -- confirmed to fail against the old counter-based
   code and pass against the fix.
+
+  **A fourth version of the same failure shape, unrelated cause this
+  time (found and fixed 2026-08-07):** the user noticed no trades for 2
+  days after scaling to 3 contracts and asked why. `systemctl status`
+  confirmed both services healthy with no restart-storm recurrence.
+  `bot.log`'s anchor-outcome breakdown (`grep -oE "anchor ended
+  \([a-z_]+\)" | sort | uniq -c`) showed 14 `filled` outcomes but
+  `trades.csv` had exactly 1 new row in that whole window -- the same
+  "real signal, no logged trade" shape as the customTag bug, but that
+  fix (uuid4 bracket_id) was still in place and unrelated. Lining up
+  each `filled` anchor's timestamp against `grep -n "order placement
+  raised\|did not fill within the timeout"` accounted for all but one:
+  4 legitimate 20-second fill timeouts (price moved on, working as
+  designed) and 8 exceptions inside `place_bracket_order` -- and
+  crucially, **3 of those 8 predated the 2026-08-06 contract-size
+  deploy** (as early as 2026-08-04), ruling out the 3-contract change as
+  the cause before it was ever seriously considered. The actual
+  traceback:
+  ```
+  RuntimeError: /Order/place failed: Invalid limit price. Price is not
+  aligned to tick size.
+  ```
+  Root cause: neither `entry_price` (`_entry_price` in strategy.py/
+  overnight_strategy.py -- `gap_high - pct*width`, a plain float
+  retracement into a real FVG) nor `target_price`
+  (`compute_stop_target` -- `entry_price +/- stop_points*reward_risk_ratio`)
+  was ever rounded to the instrument's `tick_size` (0.25 for MNQ, already
+  present in `config.yaml` but never once referenced anywhere in `src/`)
+  before being sent to the gateway as a LIMIT price. A gap's exact
+  midpoint is only tick-aligned when the gap's own width happens to be an
+  even number of ticks -- roughly half the time by chance -- which
+  matches the observed failure rate almost exactly (8 of 14, ~57%).
+  Confirmed with the real numbers: gap `29568.75`-`29578.00`'s midpoint
+  is `29573.375`, not a multiple of `0.25`; the one anchor that *did* log
+  a trade (gap `28591.00`-`28613.00`) has a cleanly aligned midpoint of
+  `28602.0`. This bug predates the contract-size scale-up entirely and
+  had likely been silently costing roughly half of every real entry
+  signal, on both strategies, since whenever the retracement/target math
+  was first written -- not something introduced by any recent change.
+  Fixed with a new `round_to_tick(price, tick_size)` helper in `risk.py`
+  (`round(price / tick_size) * tick_size`), applied at both source
+  points: `_entry_price` in both strategy files now rounds its result
+  before returning, and `compute_stop_target` (now taking `tick_size` as
+  a required parameter, threaded through all 5 call sites --
+  `runner.py`, `backtest.py` x2, `strategy.py`, `overnight_strategy.py`)
+  rounds `stop_price` before computing `stop_points`/`target_points` from
+  it (so those stay internally consistent with what's actually sent to
+  the broker) and rounds `target_price` itself before returning. Five new
+  regression tests in `tests/test_risk.py` cover `round_to_tick` directly
+  plus `compute_stop_target`'s rounding of both stop and target --
+  confirmed to fail against a reverted (`return price`, unchanged)
+  version of `round_to_tick` and pass against the fix. Existing tests in
+  `test_strategy.py`/`test_backtest.py`/`test_overnight_strategy.py` use
+  synthetic prices that aren't real-tick-aligned by coincidence (e.g.
+  `107.2`) -- pinned `cfg.instrument.tick_size = 0.01` in each file's own
+  `load_test_config()` (same isolation pattern already used there for
+  `min_stop_dollars`/`contract_size`/etc.) so those files' own exact-value
+  math stays isolated from the real `0.25` tick, which is covered
+  specifically in `test_risk.py` instead.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover

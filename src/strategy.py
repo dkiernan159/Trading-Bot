@@ -9,7 +9,7 @@ from src.config import BotConfig
 from src.fvg import FairValueGap, FvgDetector
 from src.models import Bar, Direction
 from src.opening_range import OpeningRangeBox
-from src.risk import compute_stop_target, find_structural_stop_price
+from src.risk import compute_stop_target, find_structural_stop_price, round_to_tick
 from src.session_levels import SessionLevels, SessionLevelSet
 from src.swing_points import SwingPointTracker
 
@@ -175,12 +175,21 @@ class OpeningRangeStrategy:
         low/high having already reached any point *closer* to where
         price is coming from, which this always is -- so no separate
         mitigation check is needed here, only that the fraction stays
-        inside (0, 1)."""
+        inside (0, 1).
+
+        Confirmed live 2026-08-07: this fraction-of-width retracement is
+        plain float arithmetic, so it routinely landed off the exchange's
+        tick grid -- rounded to tick_size (see risk.py's round_to_tick)
+        so the resulting LIMIT order price is always one the gateway will
+        actually accept, instead of being silently rejected and treated
+        as an ordinary missed fill."""
         pct = self.cfg.strategy.entry_retracement_pct
         width = gap.gap_high - gap.gap_low
         if gap.direction is Direction.LONG:
-            return gap.gap_high - pct * width
-        return gap.gap_low + pct * width
+            price = gap.gap_high - pct * width
+        else:
+            price = gap.gap_low + pct * width
+        return round_to_tick(price, self.cfg.instrument.tick_size)
 
     def _candidate_anchors(self, direction: Direction) -> list[FairValueGap]:
         """Unmitigated FVGs in `direction` from *either* detector -- the 5m
@@ -380,6 +389,7 @@ class OpeningRangeStrategy:
                     point_value=self.cfg.instrument.point_value,
                     contracts=self.cfg.position_sizing.contract_size,
                     reward_risk_ratio=self.cfg.strategy.reward_risk_ratio,
+                    tick_size=self.cfg.instrument.tick_size,
                 )
                 if bracket is None:
                     self._close_anchor("no_valid_stop", bar.timestamp)
