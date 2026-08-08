@@ -64,6 +64,12 @@ class MockBroker(Broker):
             if order["status"] == "open":
                 order["status"] = "cancelled"
 
+    def fetch_net_position(self, symbol: str) -> int:
+        # Backtests replay a fixed, known bar list -- there's no real
+        # broker-side state that could surprise the bot with an orphaned
+        # position, so always flat from this method's point of view.
+        return 0
+
     def _check_fills(self, bar: Bar) -> None:
         for order in self._open_orders.values():
             if order["status"] != "open":

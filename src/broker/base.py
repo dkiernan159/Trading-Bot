@@ -42,3 +42,15 @@ class Broker(ABC):
     @abstractmethod
     def flatten_all(self, symbol: str) -> None:
         """Close any open position immediately (hard safety stop / EOD flatten)."""
+
+    @abstractmethod
+    def fetch_net_position(self, symbol: str) -> int:
+        """Confirmed live 2026-08-05: a real order can fill and then vanish
+        from the bot's own tracking entirely (a connection-instability
+        episode left one orphaned, unlogged and unprotected, with real
+        money on the line) -- the bot only ever knew about an open trade
+        through its own in-memory state, with no way to check that against
+        reality. Returns the account's actual net position in this symbol
+        (positive = long, negative = short, 0 = flat), so Runner can
+        periodically reconcile the broker's own truth against what every
+        strategy slot believes, and flatten anything unaccounted for."""

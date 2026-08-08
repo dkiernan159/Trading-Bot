@@ -1196,6 +1196,77 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   `min_stop_dollars`/`contract_size`/etc.) so those files' own exact-value
   math stays isolated from the real `0.25` tick, which is covered
   specifically in `test_risk.py` instead.
+
+  **A fifth version of the same failure shape, plus a new structural gap
+  behind it (found 2026-08-07 while reconciling against TopstepX's own
+  account statement):** cross-checking `trades.csv` day-by-day against
+  the account's real stats page turned up 5 real trades that week with no
+  record in the bot's own log at all, not even an anchor-outcome line
+  suggesting a signal was ever found. 2 of the 5 (2026-08-06T06:31 and
+  2026-08-07T00:51, both before the tick-size fix deployed) matched the
+  exact `"entry {id} filled but placing its stop/target failed --
+  flattening immediately"` path already visible in the code (see the fix
+  above -- the entry itself was tick-aligned by luck, but the stop or
+  target leg wasn't, so a real position opened and flattened again with
+  no logging). The remaining one traced (2026-08-05T06:05) was different
+  again: the entry filled for real (a real order id, a tick-aligned
+  price), and then the log floods with hundreds of `"Connection closed
+  Socket closed by the the server"` lines -- a **pre-existing,
+  already-documented quirk** in the `signalrcore` library's own internal
+  reconnect-failure handling (see `_start_realtime_refresh_thread`'s own
+  docstring, from long before this session -- this project already added
+  an hourly proactive hub-rebuild after hitting it once before) -- with
+  no success, timeout, or exception message ever printed for that order
+  again. The main processing thread most likely got starved or delayed
+  for over an hour while the background hub thread spun on reconnects;
+  the exact mechanism isn't fully reconstructable from static log
+  evidence alone, and it wasn't the 5-6pm ET CME daily maintenance halt
+  either (this fired at ~2am ET).
+
+  The real, general gap this exposed: `current_trade` is purely
+  in-memory, per `_StrategySlot`. Whatever the specific cause -- this
+  one, or a future bug nothing here anticipated -- anything that breaks
+  that bookkeeping leaves a real position invisible, unprotected, and
+  untracked indefinitely, with nothing to ever notice. At your explicit
+  instruction ("flatten it immediately") once this was diagnosed: added
+  `Runner._reconcile_open_positions` (`src/runner.py`), which periodically
+  (`RECONCILE_INTERVAL_SECONDS`, 5 minutes -- not every bar, since the new
+  broker method hits an unverified endpoint and this project has hit real
+  rate limits on other endpoints before) checks the broker's own reported
+  net position against what every strategy slot believes it holds, but
+  **only when every slot believes it's flat** -- in that state the
+  expected position is unambiguously zero, so any nonzero real position
+  is unambiguously an orphan, safe to flatten without risking a
+  legitimate open trade. Deliberately does *not* attempt to reconcile
+  while a slot believes it's in a trade: telling "this IS the tracked
+  trade" apart from "there's ALSO an orphan on top of it" would need
+  per-position detail this account's API hasn't been confirmed to expose,
+  and flattening everything in that case could kill a real,
+  correctly-tracked trade instead of just cleaning up a stray one.
+
+  New `Broker.fetch_net_position(symbol) -> int` abstract method
+  (positive = long, negative = short, 0 = flat), implemented in
+  `ProjectXGatewayBroker` via `/Position/searchOpen` (UNVERIFIED
+  endpoint/envelope/field names -- same defensive raw-response-printing
+  pattern as `/Order/searchOpen`; assumed `"positions"` envelope with
+  signed `"size"` per position, filtered to the resolved contract) and
+  trivially in `MockBroker` (always `0` -- a backtest replays a fixed,
+  known bar list, so there's no real broker-side state that could
+  surprise it). Deliberately **not logged to `trades.csv`** -- there's no
+  known entry price/time for an orphan, and a fabricated P&L number would
+  corrupt the win-rate stats this project has been careful to keep
+  honest; a loud `[LIVE] WARNING` plus the account statement are the
+  record instead, the same "leave it for manual review rather than guess"
+  choice already made for `poll_order_status`'s "both legs disappeared,
+  can't tell which filled first" case. New regression tests in
+  `tests/test_runner.py` (flattens when orphaned and every slot is flat;
+  does nothing when the broker reports flat; skipped while a slot
+  believes it's in a trade; throttled to the configured interval; doesn't
+  crash the rest of bar processing if the check itself raises) and
+  `tests/test_projectx_gateway.py` (`fetch_net_position` sums signed size
+  for the resolved contract only, returns 0 when flat, short-circuits in
+  dry run) -- confirmed the flatten test fails against a broken
+  (`pass  # forgot to flatten`) version and passes against the fix.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover

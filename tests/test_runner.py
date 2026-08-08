@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -7,7 +7,7 @@ from src.broker.base import Broker
 from src.config import load_config
 from src.fvg import FairValueGap
 from src.logger import TradeLogger
-from src.models import Bar, Direction
+from src.models import Bar, Direction, Trade
 from src.runner import Runner
 from src.strategy import AnchorRecord, EntrySignal, State
 
@@ -26,6 +26,9 @@ class FakeBroker(Broker):
         self.raise_on_place = raise_on_place
         self.placed_orders: list[dict] = []
         self.flatten_calls: list[str] = []
+        self.net_position = 0
+        self.raise_on_fetch_net_position: Exception | None = None
+        self.fetch_net_position_calls = 0
 
     def connect(self) -> None:
         pass
@@ -44,6 +47,12 @@ class FakeBroker(Broker):
 
     def flatten_all(self, symbol: str) -> None:
         self.flatten_calls.append(symbol)
+
+    def fetch_net_position(self, symbol: str) -> int:
+        self.fetch_net_position_calls += 1
+        if self.raise_on_fetch_net_position is not None:
+            raise self.raise_on_fetch_net_position
+        return self.net_position
 
 
 def load_test_config():
@@ -402,3 +411,100 @@ def test_recent_bars_survive_concurrent_append_and_read(tmp_path):
         sys.setswitchinterval(original_switch_interval)
 
     assert errors == []
+
+
+# ---------- _reconcile_open_positions ----------
+# (added 2026-08-07: a real order filled for real on the exchange during a
+# connection-instability episode, then vanished from the bot's own tracking
+# entirely -- no success/timeout/exception message ever printed, never
+# logged, never protected. TopstepX's own account statement confirmed a
+# real, unaccounted-for loss the bot had no way to have known about. See
+# Runner._reconcile_open_positions's own docstring for the full story.)
+
+
+def make_open_trade() -> Trade:
+    return Trade(
+        direction=Direction.LONG,
+        entry_price=100.0,
+        stop_price=90.0,
+        target_price=120.0,
+        contracts=1,
+        entry_time=DAY,
+    )
+
+
+def test_reconcile_flattens_an_orphaned_position_when_every_slot_is_flat(tmp_path, capsys):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    broker.net_position = 2  # a real position the bot has no record of
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))
+
+    assert broker.flatten_calls == [cfg.instrument.symbol]
+    assert "orphaned position detected" in capsys.readouterr().out
+
+
+def test_reconcile_does_nothing_when_the_broker_reports_flat(tmp_path):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")  # net_position defaults to 0
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))
+
+    assert broker.flatten_calls == []
+
+
+def test_reconcile_is_skipped_while_the_day_slot_believes_it_is_in_a_trade(tmp_path):
+    """Deliberately doesn't reconcile while any slot believes it's in a
+    trade -- distinguishing "this IS the tracked trade" from "there's ALSO
+    an orphan on top of it" needs per-position detail this account's API
+    hasn't confirmed it exposes; flattening everything here could kill a
+    real, correctly-tracked trade instead of just cleaning up a stray one."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    broker.net_position = 2
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "existing"
+    runner.day_slot.current_trade = make_open_trade()
+
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))
+
+    assert broker.flatten_calls == []
+    assert broker.fetch_net_position_calls == 0
+
+
+def test_reconcile_is_throttled_to_the_configured_interval(tmp_path):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))
+    assert broker.fetch_net_position_calls == 1
+
+    soon_after = DAY + timedelta(minutes=1)
+    runner.on_bar(Bar(timestamp=soon_after, open=100.0, high=100.5, low=99.5, close=100.0))
+    assert broker.fetch_net_position_calls == 1  # still within the interval -- not checked again
+
+    well_after = DAY + timedelta(minutes=10)
+    runner.on_bar(Bar(timestamp=well_after, open=100.0, high=100.5, low=99.5, close=100.0))
+    assert broker.fetch_net_position_calls == 2
+
+
+def test_reconcile_tolerates_fetch_net_position_raising(tmp_path, capsys):
+    """A failure checking the broker must never take down the rest of bar
+    processing (same principle as on_bar's own outer try/except) -- the
+    status file must still get written even if this specific check fails."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    broker.raise_on_fetch_net_position = RuntimeError("network blip")
+    status_path = tmp_path / "status.json"
+    runner = Runner(
+        cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")), status_path=str(status_path)
+    )
+
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))  # must not raise
+
+    assert broker.flatten_calls == []
+    assert status_path.exists()
+    assert "position reconciliation check raised" in capsys.readouterr().out

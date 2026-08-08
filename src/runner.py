@@ -23,6 +23,14 @@ from src.strategy import EntrySignal, OpeningRangeStrategy
 # bound. Purely a display window; has no effect on trading decisions.
 RECENT_CANDLES_MAXLEN = 180
 
+# How often Runner checks the broker's real position against what every
+# strategy slot believes it holds (see _reconcile_open_positions) -- not
+# every bar, since fetch_net_position hits an unverified endpoint and this
+# project has hit real rate limits on other endpoints before (see
+# dashboard.backtest_days' own history). 5 minutes balances catching a real
+# orphaned position reasonably promptly against hammering the API.
+RECONCILE_INTERVAL_SECONDS = 300
+
 
 class _StrategySlot:
     """Wraps one strategy instance with its own independent in-flight-trade
@@ -243,6 +251,10 @@ class Runner:
         # never corrupt the dashboard snapshot again, regardless of why
         # more than one thread ends up calling on_bar.
         self._recent_bars_lock = threading.Lock()
+        # See _reconcile_open_positions -- None means "never checked yet,"
+        # so the very first bar after startup always checks immediately
+        # rather than waiting a full RECONCILE_INTERVAL_SECONDS first.
+        self._last_reconcile_check: datetime | None = None
 
         self.day_slot = _StrategySlot("day", OpeningRangeStrategy(cfg), cfg.session.flatten_by, self)
         self.overnight_slot: _StrategySlot | None = None
@@ -276,7 +288,79 @@ class Runner:
         self.day_slot.on_bar(bar, local.time())
         if self.overnight_slot is not None:
             self.overnight_slot.on_bar(bar, local.time())
+        self._reconcile_open_positions(bar)
         self._write_status(bar)
+
+    def _reconcile_open_positions(self, bar: Bar) -> None:
+        """Confirmed live 2026-08-05: a real order filled for real on the
+        exchange during a connection-instability episode (signalrcore's
+        own reconnect-failure spam, "Connection closed Socket closed by
+        the the server" -- see projectx_gateway.py's
+        _start_realtime_refresh_thread) and then the process lost track of
+        it completely -- no success, timeout, or exception message ever
+        printed for it, so it was never logged to trades.csv, never
+        protected with a stop/target, and every strategy slot went right
+        on believing it was flat. TopstepX's own account statement
+        confirmed a real, unaccounted-for loss that day; the bot had no
+        way to have known.
+
+        Since current_trade is purely in-memory, any cause -- this one, or
+        a future bug -- that breaks that bookkeeping leaves a real
+        position invisible and unprotected indefinitely, with nothing to
+        ever notice. This periodically checks the broker's own reported
+        position against what the bot believes it holds, but ONLY when
+        every slot believes it's flat -- in that state the expected
+        position is unambiguously zero, so any nonzero real position is
+        unambiguously an orphan, safe to flatten without risking a
+        legitimate open trade. Deliberately does NOT attempt to reconcile
+        while a slot believes it's in a trade: distinguishing "this IS the
+        tracked trade" from "there's ALSO an orphan on top of it" would
+        need per-position detail this account's API hasn't been confirmed
+        to expose, and flattening everything in that case could kill a
+        real, correctly-tracked trade instead of just cleaning up a stray
+        one. At the user's explicit instruction ("flatten it immediately"
+        when this exact scenario was found and diagnosed): closes it right
+        away rather than leave it resting unprotected while a human
+        decides what to do. Not logged to trades.csv -- there's no known
+        entry price/time to log, and a fabricated P&L number would corrupt
+        the win-rate stats this project has been careful to keep honest;
+        the loud warning below plus the account statement are the record
+        of what happened, same as any other case this codebase has
+        deliberately left for manual review over guessing (see
+        poll_order_status's "can't tell which filled first" case)."""
+        now = bar.timestamp
+        if (
+            self._last_reconcile_check is not None
+            and (now - self._last_reconcile_check).total_seconds() < RECONCILE_INTERVAL_SECONDS
+        ):
+            return
+        self._last_reconcile_check = now
+
+        day_flat = self.day_slot.current_trade is None
+        overnight_flat = self.overnight_slot is None or self.overnight_slot.current_trade is None
+        if not (day_flat and overnight_flat):
+            return
+
+        try:
+            net_position = self.broker.fetch_net_position(self.cfg.instrument.symbol)
+        except Exception:
+            print(
+                f"[LIVE] WARNING: position reconciliation check raised, skipping this "
+                f"cycle:\n{traceback.format_exc()}"
+            )
+            return
+
+        if net_position == 0:
+            return
+
+        print(
+            f"[LIVE] WARNING: orphaned position detected -- broker reports {net_position} "
+            f"net contracts of {self.cfg.instrument.symbol} but every strategy slot "
+            f"believes it's flat. Flattening immediately. This was never tracked by the "
+            f"bot, so trades.csv has no record of it -- check the account statement for "
+            f"the exact entry/exit price and P&L."
+        )
+        self.broker.flatten_all(self.cfg.instrument.symbol)
 
     def _write_status(self, bar: Bar) -> None:
         """Dashboard-only visibility into what each strategy is currently

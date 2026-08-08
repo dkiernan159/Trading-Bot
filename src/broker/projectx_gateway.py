@@ -114,6 +114,7 @@ class ProjectXGatewayBroker(Broker):
         # (see _on_trade_event / _fetch_open_order_ids).
         self._trade_event_log_count = 0
         self._order_search_log_count = 0
+        self._position_search_log_count = 0
 
     # -- auth / setup ------------------------------------------------------
 
@@ -608,3 +609,26 @@ class ProjectXGatewayBroker(Broker):
             return
         contract_id = self._resolve_contract(symbol)
         self._post("/Position/closeContract", {"accountId": self.account_id, "contractId": contract_id})
+
+    def fetch_net_position(self, symbol: str) -> int:
+        """UNVERIFIED endpoint/shape, same defensive pattern as
+        _fetch_open_order_ids (/Order/searchOpen) -- prints the raw
+        response the first few times so a wrong field-name guess is
+        immediately visible rather than silently misreporting flat when a
+        real position is open (see Broker.fetch_net_position's own
+        docstring for why this exists at all -- a real orphaned position
+        went completely undetected on 2026-08-05). Assumed envelope
+        ("positions") and per-position fields ("contractId", signed
+        "size" where positive is long / negative is short) match this
+        project's other /*/searchOpen endpoints' confirmed shape closely
+        enough to be the reasonable first guess; verify against the
+        printed raw response on first live use."""
+        if self.dry_run:
+            return 0
+        contract_id = self._resolve_contract(symbol)
+        data = self._post("/Position/searchOpen", {"accountId": self.account_id})
+        if self._position_search_log_count < 3:
+            self._position_search_log_count += 1
+            print(f"[LIVE] /Position/searchOpen raw response (verify envelope/field names): {data}")
+        positions = data.get("positions", [])
+        return sum(p.get("size", 0) for p in positions if p.get("contractId") == contract_id)

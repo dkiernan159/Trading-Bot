@@ -384,6 +384,50 @@ def test_bracket_id_customtag_survives_a_process_restart_without_colliding():
     assert set(first_tags).isdisjoint(second_tags)
 
 
+def test_fetch_net_position_sums_signed_size_for_the_resolved_contract():
+    """Added 2026-08-07 -- see Broker.fetch_net_position's own docstring:
+    a real orphaned position went completely undetected on 2026-08-05
+    because the bot only ever knew about an open trade through its own
+    in-memory state. UNVERIFIED envelope/field names, same defensive
+    pattern as _fetch_open_order_ids -- assumed "positions" envelope with
+    signed "size" (positive long, negative short) filtered to the
+    resolved contract."""
+    broker = make_broker()
+    broker.dry_run = False
+    broker.account_id = "ACC1"
+    broker._contract_id = "CON.F.US.MNQ.U26"
+
+    response = {
+        "positions": [
+            {"contractId": "CON.F.US.MNQ.U26", "size": 3},
+            {"contractId": "CON.F.US.MNQ.U26", "size": -1},
+            {"contractId": "CON.F.US.ES.U26", "size": 5},  # a different contract -- must not count
+        ]
+    }
+    with patch.object(broker, "_post", return_value=response) as mock_post:
+        net = broker.fetch_net_position("MNQ")
+
+    assert net == 2
+    mock_post.assert_called_once_with("/Position/searchOpen", {"accountId": "ACC1"})
+
+
+def test_fetch_net_position_returns_zero_when_flat():
+    broker = make_broker()
+    broker.dry_run = False
+    broker.account_id = "ACC1"
+    broker._contract_id = "CON.F.US.MNQ.U26"
+
+    with patch.object(broker, "_post", return_value={"positions": []}):
+        assert broker.fetch_net_position("MNQ") == 0
+
+
+def test_fetch_net_position_short_circuits_in_dry_run():
+    broker = make_broker()  # dry_run=True by default (see make_broker)
+    with patch.object(broker, "_post") as mock_post:
+        assert broker.fetch_net_position("MNQ") == 0
+    mock_post.assert_not_called()
+
+
 def test_hub_generation_guard_ignores_events_from_a_superseded_hub():
     """Confirmed live 2026-07-08: a "deque mutated during iteration" error
     in Runner meant more than one realtime hub was alive and delivering
