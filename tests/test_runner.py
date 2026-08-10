@@ -29,6 +29,9 @@ class FakeBroker(Broker):
         self.net_position = 0
         self.raise_on_fetch_net_position: Exception | None = None
         self.fetch_net_position_calls = 0
+        self.orphaned_orders_to_cancel = 0
+        self.raise_on_cancel_orphaned_orders: Exception | None = None
+        self.cancel_orphaned_orders_calls = 0
 
     def connect(self) -> None:
         pass
@@ -53,6 +56,12 @@ class FakeBroker(Broker):
         if self.raise_on_fetch_net_position is not None:
             raise self.raise_on_fetch_net_position
         return self.net_position
+
+    def cancel_orphaned_orders(self, symbol: str) -> int:
+        self.cancel_orphaned_orders_calls += 1
+        if self.raise_on_cancel_orphaned_orders is not None:
+            raise self.raise_on_cancel_orphaned_orders
+        return self.orphaned_orders_to_cancel
 
 
 def load_test_config():
@@ -456,11 +465,14 @@ def test_reconcile_does_nothing_when_the_broker_reports_flat(tmp_path):
 
 
 def test_reconcile_is_skipped_while_the_day_slot_believes_it_is_in_a_trade(tmp_path):
-    """Deliberately doesn't reconcile while any slot believes it's in a
-    trade -- distinguishing "this IS the tracked trade" from "there's ALSO
-    an orphan on top of it" needs per-position detail this account's API
-    hasn't confirmed it exposes; flattening everything here could kill a
-    real, correctly-tracked trade instead of just cleaning up a stray one."""
+    """Deliberately doesn't reconcile *positions* while any slot believes
+    it's in a trade -- distinguishing "this IS the tracked trade" from
+    "there's ALSO an orphan on top of it" needs per-position detail this
+    account's API hasn't confirmed it exposes; flattening everything here
+    could kill a real, correctly-tracked trade instead of just cleaning up
+    a stray one. The orphaned-*order* sweep is unrelated to this and still
+    runs regardless -- a stale working order not belonging to any tracked
+    bracket is safe to cancel no matter what a strategy slot believes."""
     cfg = load_test_config()
     broker = FakeBroker(order_id_to_return="1")
     broker.net_position = 2
@@ -472,6 +484,55 @@ def test_reconcile_is_skipped_while_the_day_slot_believes_it_is_in_a_trade(tmp_p
 
     assert broker.flatten_calls == []
     assert broker.fetch_net_position_calls == 0
+    assert broker.cancel_orphaned_orders_calls == 1
+
+
+# ---------- _cancel_orphaned_orders ----------
+# (added 2026-08-07: a resting order can outlive the process life that
+# placed it if its own timeout-cancel silently fails -- see
+# ProjectXGatewayBroker._cancel_order's history -- and sit unfilled and
+# untracked for hours or days before finally executing on its own.)
+
+
+def test_cancel_orphaned_orders_runs_on_every_reconciliation_cycle(tmp_path, capsys):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    broker.orphaned_orders_to_cancel = 2
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))
+
+    assert broker.cancel_orphaned_orders_calls == 1
+    assert "cancelled 2 stale orphaned working order" in capsys.readouterr().out
+
+
+def test_cancel_orphaned_orders_prints_nothing_when_none_are_cancelled(tmp_path, capsys):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")  # orphaned_orders_to_cancel defaults to 0
+
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))
+
+    assert "orphaned working order" not in capsys.readouterr().out
+
+
+def test_cancel_orphaned_orders_tolerates_raising(tmp_path, capsys):
+    """Must never take down the rest of bar processing, same principle as
+    every other reconciliation failure mode in this file."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    broker.raise_on_cancel_orphaned_orders = RuntimeError("network blip")
+    broker.net_position = 2  # position reconciliation must still run afterward
+    status_path = tmp_path / "status.json"
+    runner = Runner(
+        cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")), status_path=str(status_path)
+    )
+
+    runner.on_bar(Bar(timestamp=DAY, open=100.0, high=100.5, low=99.5, close=100.0))  # must not raise
+
+    assert "orphaned-order cancellation sweep raised" in capsys.readouterr().out
+    assert status_path.exists()
+    assert broker.flatten_calls == [cfg.instrument.symbol]  # position check still ran despite this failing
 
 
 def test_reconcile_is_throttled_to_the_configured_interval(tmp_path):

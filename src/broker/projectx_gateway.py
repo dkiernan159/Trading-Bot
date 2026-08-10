@@ -47,6 +47,7 @@ end to end first.
 import os
 import threading
 import time as time_module
+import traceback
 import uuid
 from datetime import datetime, timezone
 from typing import Callable
@@ -65,6 +66,12 @@ REALTIME_MARKET_HUB = "/hubs/market"
 # watch logs/bot.log for how long a hub actually survives and shorten this
 # if it expires faster in practice.
 REALTIME_REFRESH_INTERVAL_SECONDS = 60 * 60
+
+# See cancel_orphaned_orders -- comfortably longer than _wait_for_fill's own
+# 20-second window, so a real order this process just placed a moment ago
+# (still legitimately mid-flight) is never mistaken for a stale orphan left
+# over from an earlier process life.
+MIN_ORPHAN_ORDER_AGE_SECONDS = 120
 
 ORDER_TYPE_LIMIT = 1
 ORDER_TYPE_MARKET = 2  # unused -- entry is a real LIMIT order, not MARKET; see place_bracket_order
@@ -601,7 +608,24 @@ class ProjectXGatewayBroker(Broker):
         try:
             self._post("/Order/cancel", {"accountId": self.account_id, "orderId": order_id})
         except Exception:
-            pass  # already filled or cancelled -- fine
+            # Confirmed live 2026-08-07: this used to silently swallow any
+            # exception here on the assumption "already filled or cancelled
+            # -- fine," but that assumption isn't always true. A real
+            # order's cancel attempt can genuinely fail (network blip, rate
+            # limit, whatever) and leave it resting live on the exchange
+            # indefinitely -- multiple real trades that week had zero trace
+            # in this process's own log (no "placing entry LIMIT" line, no
+            # anchor-outcome line, nothing) because they came from a resting
+            # order an *earlier* process life placed, tried to cancel on
+            # timeout, and silently failed to -- the order just sat there
+            # until price happened to fill it, hours or days later,
+            # completely disconnected from whatever the bot was doing by
+            # then. Loud now instead of silent; see cancel_orphaned_orders
+            # for the periodic sweep that catches exactly this.
+            print(
+                f"[LIVE] WARNING: failed to cancel order {order_id} -- it may still be "
+                f"resting live on the exchange:\n{traceback.format_exc()}"
+            )
 
     def flatten_all(self, symbol: str) -> None:
         if self.dry_run:
@@ -632,3 +656,57 @@ class ProjectXGatewayBroker(Broker):
             print(f"[LIVE] /Position/searchOpen raw response (verify envelope/field names): {data}")
         positions = data.get("positions", [])
         return sum(p.get("size", 0) for p in positions if p.get("contractId") == contract_id)
+
+    def cancel_orphaned_orders(self, symbol: str) -> int:
+        """Confirmed live 2026-08-07 (see Broker.cancel_orphaned_orders'
+        own docstring): a resting order can outlive the process life that
+        placed it, if _cancel_order's own timeout-cancel attempt silently
+        failed -- real trades that week had zero trace in their process's
+        own log because they came from an order an *earlier* process
+        instance placed, tried and failed to cancel, and left resting
+        until price happened to fill it, hours or days later.
+
+        Any order still open in this account that this broker instance
+        doesn't itself recognize as belonging to a currently-open bracket
+        (self._brackets) is a candidate. Confirmed live via
+        /Order/searchOpen's own raw response that each order carries a
+        creationTimestamp -- MIN_ORPHAN_AGE_SECONDS below is a safety
+        margin against ever touching an order this very process just
+        placed a moment ago and is still legitimately waiting on (the
+        bracket dict entry for a live order is only written after the
+        *entire* bracket succeeds, so a resting entry order -- or a stop/
+        target leg placed but not yet recorded -- would otherwise look
+        indistinguishable from a genuine orphan for a brief window)."""
+        if self.dry_run:
+            return 0
+        contract_id = self._resolve_contract(symbol)
+        data = self._post("/Order/searchOpen", {"accountId": self.account_id})
+        orders = data.get("orders", [])
+
+        tracked_ids = set()
+        for bracket in self._brackets.values():
+            if bracket.get("status") == "open":
+                tracked_ids.add(bracket.get("stop_order_id"))
+                tracked_ids.add(bracket.get("target_order_id"))
+
+        now = datetime.now(timezone.utc)
+        cancelled = 0
+        for order in orders:
+            if order.get("contractId") != contract_id:
+                continue
+            if order.get("id") in tracked_ids:
+                continue
+            created_raw = order.get("creationTimestamp")
+            try:
+                created = datetime.fromisoformat(created_raw) if created_raw else None
+            except ValueError:
+                created = None
+            if created is not None and (now - created).total_seconds() < MIN_ORPHAN_ORDER_AGE_SECONDS:
+                continue  # too new to safely assume orphaned -- leave it alone this cycle
+            print(
+                f"[LIVE] WARNING: cancelling a stale working order this process doesn't "
+                f"recognize (likely orphaned from an earlier process life): {order}"
+            )
+            self._cancel_order(order["id"])
+            cancelled += 1
+        return cancelled

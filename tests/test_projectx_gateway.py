@@ -1,9 +1,10 @@
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 
-from src.broker.projectx_gateway import ProjectXGatewayBroker
+from src.broker.projectx_gateway import MIN_ORPHAN_ORDER_AGE_SECONDS, ProjectXGatewayBroker
 from src.models import Direction
 
 
@@ -426,6 +427,127 @@ def test_fetch_net_position_short_circuits_in_dry_run():
     with patch.object(broker, "_post") as mock_post:
         assert broker.fetch_net_position("MNQ") == 0
     mock_post.assert_not_called()
+
+
+def _old_timestamp() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=MIN_ORPHAN_ORDER_AGE_SECONDS + 60)).isoformat()
+
+
+def _fresh_timestamp() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+
+
+def test_cancel_orphaned_orders_cancels_a_stale_untracked_order():
+    """Added 2026-08-07 -- see Broker.cancel_orphaned_orders' own
+    docstring: a resting order can outlive the process life that placed
+    it if its own timeout-cancel silently failed, and sit unfilled and
+    untracked for hours or days before finally executing on its own."""
+    broker = make_broker()
+    broker.dry_run = False
+    broker.account_id = "ACC1"
+    broker._contract_id = "CON.F.US.MNQ.U26"
+    # This broker instance has never placed a bracket -- self._brackets is
+    # empty, exactly like a freshly-started process that has no memory of
+    # any order an earlier process life left resting.
+    assert broker._brackets == {}
+
+    orphan = {"id": "orphan-1", "contractId": "CON.F.US.MNQ.U26", "creationTimestamp": _old_timestamp()}
+    response = {"orders": [orphan]}
+
+    with patch.object(broker, "_post", return_value=response) as mock_post, patch.object(
+        broker, "_cancel_order"
+    ) as mock_cancel:
+        cancelled = broker.cancel_orphaned_orders("MNQ")
+
+    assert cancelled == 1
+    mock_cancel.assert_called_once_with("orphan-1")
+    mock_post.assert_called_once_with("/Order/searchOpen", {"accountId": "ACC1"})
+
+
+def test_cancel_orphaned_orders_leaves_a_tracked_brackets_orders_alone():
+    broker = make_broker()
+    broker.dry_run = False
+    broker.account_id = "ACC1"
+    broker._contract_id = "CON.F.US.MNQ.U26"
+    broker._brackets["bracket-1"] = {
+        "status": "open",
+        "stop_order_id": "tracked-stop",
+        "target_order_id": "tracked-target",
+    }
+
+    response = {
+        "orders": [
+            {"id": "tracked-stop", "contractId": "CON.F.US.MNQ.U26", "creationTimestamp": _old_timestamp()},
+            {"id": "tracked-target", "contractId": "CON.F.US.MNQ.U26", "creationTimestamp": _old_timestamp()},
+        ]
+    }
+
+    with patch.object(broker, "_post", return_value=response), patch.object(broker, "_cancel_order") as mock_cancel:
+        cancelled = broker.cancel_orphaned_orders("MNQ")
+
+    assert cancelled == 0
+    mock_cancel.assert_not_called()
+
+
+def test_cancel_orphaned_orders_leaves_a_recently_created_order_alone():
+    """Safety margin against ever touching an order this same process just
+    placed a moment ago and is still legitimately waiting on -- the
+    bracket dict entry for a live order is only written after the entire
+    bracket succeeds, so a resting entry (or a stop/target leg placed but
+    not yet recorded) would otherwise look indistinguishable from a
+    genuine orphan for a brief window."""
+    broker = make_broker()
+    broker.dry_run = False
+    broker.account_id = "ACC1"
+    broker._contract_id = "CON.F.US.MNQ.U26"
+
+    fresh = {"id": "fresh-1", "contractId": "CON.F.US.MNQ.U26", "creationTimestamp": _fresh_timestamp()}
+    response = {"orders": [fresh]}
+
+    with patch.object(broker, "_post", return_value=response), patch.object(broker, "_cancel_order") as mock_cancel:
+        cancelled = broker.cancel_orphaned_orders("MNQ")
+
+    assert cancelled == 0
+    mock_cancel.assert_not_called()
+
+
+def test_cancel_orphaned_orders_ignores_a_different_contract():
+    broker = make_broker()
+    broker.dry_run = False
+    broker.account_id = "ACC1"
+    broker._contract_id = "CON.F.US.MNQ.U26"
+
+    other_contract = {"id": "other-1", "contractId": "CON.F.US.ES.U26", "creationTimestamp": _old_timestamp()}
+    response = {"orders": [other_contract]}
+
+    with patch.object(broker, "_post", return_value=response), patch.object(broker, "_cancel_order") as mock_cancel:
+        cancelled = broker.cancel_orphaned_orders("MNQ")
+
+    assert cancelled == 0
+    mock_cancel.assert_not_called()
+
+
+def test_cancel_orphaned_orders_short_circuits_in_dry_run():
+    broker = make_broker()  # dry_run=True by default
+    with patch.object(broker, "_post") as mock_post:
+        assert broker.cancel_orphaned_orders("MNQ") == 0
+    mock_post.assert_not_called()
+
+
+def test_cancel_order_logs_loudly_instead_of_silently_swallowing_a_failure(capsys):
+    """Confirmed live 2026-08-07: this used to silently pass on any
+    exception, assuming "already filled or cancelled -- fine" -- but a
+    genuine cancel failure looks identical and leaves a real order
+    resting live on the exchange indefinitely."""
+    broker = make_broker()
+    broker.dry_run = False
+    broker.account_id = "ACC1"
+
+    with patch.object(broker, "_post", side_effect=RuntimeError("cancel failed")) as mock_post:
+        broker._cancel_order("some-order-id")  # must not raise
+
+    mock_post.assert_called_once_with("/Order/cancel", {"accountId": "ACC1", "orderId": "some-order-id"})
+    assert "failed to cancel order some-order-id" in capsys.readouterr().out
 
 
 def test_hub_generation_guard_ignores_events_from_a_superseded_hub():

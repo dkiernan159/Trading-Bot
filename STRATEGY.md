@@ -1267,6 +1267,78 @@ broker (data + orders)  --->  strategy state machine  --->  risk (stop/target/si
   for the resolved contract only, returns 0 when flat, short-circuits in
   dry run) -- confirmed the flatten test fails against a broken
   (`pass  # forgot to flatten`) version and passes against the fix.
+
+  **A sixth version, and the actual root cause behind two of the
+  "connection instability" incidents above (found 2026-08-07 while
+  reconciling every real trade that week against TopstepX's own trade
+  log, not just daily totals):** two of the real gaps traced to entries
+  with genuinely zero trace anywhere in `bot.log` -- no `anchor ended
+  (filled)` line, no `placing entry LIMIT` line, nothing -- which by
+  itself rules out this *process* ever having called
+  `place_bracket_order` for them at all. `ps aux` confirmed no duplicate
+  `src.runner` process, and the user confirmed no manual trading, ruling
+  out the two obvious explanations. What's left: a resting order placed
+  by an *earlier* process life (a prior deploy, a prior crash-restart --
+  this bot has restarted many times across its history) that was never
+  actually cancelled, and sat working on the exchange until price
+  happened to fill it naturally, hours or days later, fully disconnected
+  from whatever the bot was doing by then. One of the two even produced
+  visible over-exposure: the account held 6 contracts (double the
+  intended 3) for about two hours on 2026-08-07 while an untracked
+  00:52:59 fill and the bot's own legitimate 04:26 entry were open
+  simultaneously -- and `trades.csv`'s own row for that window ended up
+  with the right entry but the wrong exit (borrowed from the untracked
+  position's own close, since the bot's polling just saw *a* target-side
+  order disappear from the open-orders list around then).
+
+  Root cause identified: `_cancel_order` used to silently swallow *any*
+  exception on a timeout-cancel attempt --
+  ```python
+  except Exception:
+      pass  # already filled or cancelled -- fine
+  ```
+  -- on the assumption that a failure here always means the order
+  resolved on its own. That assumption isn't always true; a genuine
+  cancel failure (network blip, rate limit, anything) looks identical and
+  leaves a real order resting indefinitely. Fixed to print a loud
+  `[LIVE] WARNING` with the full traceback instead of silently passing,
+  so a future recurrence at least leaves a trace.
+
+  At your explicit direction ("fix the silent swallow + extend
+  reconciliation to orders too"), also added
+  `Broker.cancel_orphaned_orders(symbol) -> int`: implemented in
+  `ProjectXGatewayBroker` via `/Order/searchOpen` (already used
+  elsewhere, so the envelope/field shape is already confirmed, unlike
+  the newer `/Position/searchOpen`), cancelling any open order for the
+  resolved contract that doesn't belong to a bracket this broker instance
+  currently tracks as open (`self._brackets`) -- with a
+  `MIN_ORPHAN_ORDER_AGE_SECONDS` (120s) safety margin against ever
+  touching an order this same process just placed a moment ago and is
+  still legitimately waiting on (a live bracket's dict entry is only
+  written *after* the whole bracket succeeds, so a resting entry -- or a
+  stop/target leg placed but not yet recorded -- would otherwise look
+  indistinguishable from a genuine orphan for a brief window; confirmed
+  120s is comfortably longer than `_wait_for_fill`'s own 20-second
+  window). `MockBroker` implements it as a no-op (always 0) -- a
+  backtest replays a fixed, known bar list, so there's no real
+  broker-side working-order state to leak between runs.
+
+  Wired into `Runner` as `_cancel_orphaned_orders`, called from
+  `_reconcile_open_positions` on the same throttled cadence, but
+  deliberately **not** gated behind the "every slot is flat" check that
+  guards the position-flatten logic -- a stale working order not
+  belonging to any tracked bracket is safe to cancel regardless of what
+  any strategy slot currently believes, unlike an orphaned *position*
+  where acting on the wrong assumption could kill a real, correctly-
+  tracked trade. New regression tests in `tests/test_projectx_gateway.py`
+  (cancels a stale untracked order; leaves a tracked bracket's own
+  orders alone; leaves a recently-created order alone; ignores a
+  different contract; short-circuits in dry run; `_cancel_order` prints
+  loudly instead of swallowing) and `tests/test_runner.py` (runs on
+  every reconciliation cycle regardless of slot state; prints only when
+  something was actually cancelled; tolerates raising without taking
+  down the rest of bar processing) -- confirmed the age-safety-margin
+  test fails when that check is removed and passes with it restored.
 - `src/strategy.py` -- the state machine implementing steps 1-10 above.
 - Note: `src/session_levels.py` also computes a 15-minute-candle "zone"
   around each level (`previous_day_high_zone`, etc.) -- this is a leftover

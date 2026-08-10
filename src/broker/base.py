@@ -54,3 +54,18 @@ class Broker(ABC):
         (positive = long, negative = short, 0 = flat), so Runner can
         periodically reconcile the broker's own truth against what every
         strategy slot believes, and flatten anything unaccounted for."""
+
+    @abstractmethod
+    def cancel_orphaned_orders(self, symbol: str) -> int:
+        """Confirmed live 2026-08-07: a resting order can outlive the
+        process life that placed it -- a timeout-cancel that itself
+        silently fails (see _cancel_order's history) leaves it working on
+        the exchange indefinitely, invisible to whatever process is
+        running by the time it eventually fills on its own, hours or days
+        later, with zero trace in that process's own log. Cancels any
+        working order for this symbol that doesn't belong to a bracket
+        this broker instance currently considers open, and returns how
+        many it cancelled. Implementations should apply a minimum-age
+        safety margin before touching an order, so a real order this same
+        process just placed a moment ago (still legitimately mid-flight)
+        is never mistaken for an orphan."""

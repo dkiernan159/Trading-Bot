@@ -304,6 +304,14 @@ class Runner:
         confirmed a real, unaccounted-for loss that day; the bot had no
         way to have known.
 
+        Also runs _cancel_orphaned_orders on the same throttled cadence
+        (see its own docstring) -- confirmed live 2026-08-07 that a
+        resting order left over from an *earlier* process life is a
+        related but distinct risk from an orphaned position: it can sit
+        unfilled and untracked for hours or days before finally executing
+        on its own, with zero trace in whatever process happens to be
+        running by then.
+
         Since current_trade is purely in-memory, any cause -- this one, or
         a future bug -- that breaks that bookkeeping leaves a real
         position invisible and unprotected indefinitely, with nothing to
@@ -336,6 +344,8 @@ class Runner:
             return
         self._last_reconcile_check = now
 
+        self._cancel_orphaned_orders()
+
         day_flat = self.day_slot.current_trade is None
         overnight_flat = self.overnight_slot is None or self.overnight_slot.current_trade is None
         if not (day_flat and overnight_flat):
@@ -361,6 +371,31 @@ class Runner:
             f"the exact entry/exit price and P&L."
         )
         self.broker.flatten_all(self.cfg.instrument.symbol)
+
+    def _cancel_orphaned_orders(self) -> None:
+        """Confirmed live 2026-08-07: an orphaned position (see
+        _reconcile_open_positions above) is only half the risk -- a
+        resting order that never fills at all can also outlive the
+        process life that placed it, if its own timeout-cancel silently
+        failed (see ProjectXGatewayBroker._cancel_order's history), and
+        sit there until price happens to fill it, hours or days later,
+        completely disconnected from whatever the bot is doing by then.
+        Runs on the same throttled cadence as the position check (called
+        right alongside it in _on_bar), but independently of whether
+        every slot is flat -- a stale working order is a broker-level
+        concern regardless of what any strategy slot currently believes,
+        unlike an orphaned *position* where flattening could accidentally
+        kill a real, correctly-tracked trade."""
+        try:
+            cancelled = self.broker.cancel_orphaned_orders(self.cfg.instrument.symbol)
+        except Exception:
+            print(
+                f"[LIVE] WARNING: orphaned-order cancellation sweep raised, skipping this "
+                f"cycle:\n{traceback.format_exc()}"
+            )
+            return
+        if cancelled:
+            print(f"[LIVE] WARNING: cancelled {cancelled} stale orphaned working order(s).")
 
     def _write_status(self, bar: Bar) -> None:
         """Dashboard-only visibility into what each strategy is currently

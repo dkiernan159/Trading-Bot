@@ -70,6 +70,11 @@ class MockBroker(Broker):
         # position, so always flat from this method's point of view.
         return 0
 
+    def cancel_orphaned_orders(self, symbol: str) -> int:
+        # Same rationale as fetch_net_position -- no real broker-side
+        # working orders exist to leak between backtest runs.
+        return 0
+
     def _check_fills(self, bar: Bar) -> None:
         for order in self._open_orders.values():
             if order["status"] != "open":
