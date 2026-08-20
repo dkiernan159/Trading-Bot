@@ -550,6 +550,36 @@ def test_cancel_order_logs_loudly_instead_of_silently_swallowing_a_failure(capsy
     assert "failed to cancel order some-order-id" in capsys.readouterr().out
 
 
+def test_modify_stop_price_resolves_the_brackets_stop_leg_and_posts_the_new_price():
+    """Added 2026-08-20 at the user's explicit request (breakeven-stop
+    feature). order_id is the client-facing bracket id, not the
+    broker-internal stop leg's own id -- must resolve via self._brackets
+    rather than passing the bracket id straight through to the gateway."""
+    broker = make_broker()
+    broker.dry_run = False
+    broker.account_id = "ACC1"
+    broker._brackets["bracket-1"] = {
+        "status": "open",
+        "stop_order_id": "real-stop-order-id",
+        "target_order_id": "real-target-order-id",
+    }
+
+    with patch.object(broker, "_post", return_value={"success": True}) as mock_post:
+        broker.modify_stop_price("bracket-1", 110.0)
+
+    mock_post.assert_called_once_with(
+        "/Order/modify", {"accountId": "ACC1", "orderId": "real-stop-order-id", "stopPrice": 110.0}
+    )
+
+
+def test_modify_stop_price_short_circuits_in_dry_run():
+    broker = make_broker()  # dry_run=True by default
+    broker._brackets["bracket-1"] = {"status": "open", "stop_order_id": "x", "target_order_id": "y"}
+    with patch.object(broker, "_post") as mock_post:
+        broker.modify_stop_price("bracket-1", 110.0)
+    mock_post.assert_not_called()
+
+
 def test_hub_generation_guard_ignores_events_from_a_superseded_hub():
     """Confirmed live 2026-07-08: a "deque mutated during iteration" error
     in Runner meant more than one realtime hub was alive and delivering

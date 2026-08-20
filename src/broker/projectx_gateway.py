@@ -122,6 +122,7 @@ class ProjectXGatewayBroker(Broker):
         self._trade_event_log_count = 0
         self._order_search_log_count = 0
         self._position_search_log_count = 0
+        self._order_modify_log_count = 0
 
     # -- auth / setup ------------------------------------------------------
 
@@ -710,3 +711,33 @@ class ProjectXGatewayBroker(Broker):
             self._cancel_order(order["id"])
             cancelled += 1
         return cancelled
+
+    def modify_stop_price(self, order_id: str, new_stop_price: float) -> None:
+        """Added 2026-08-20 at the user's explicit request (breakeven-stop
+        feature -- see Broker.modify_stop_price's own docstring and
+        runner.py's _maybe_move_stop_to_breakeven). `/Order/modify` is a
+        confirmed real endpoint (see STRATEGY.md's source list -- public
+        ProjectX docs), but the request body shape here is UNVERIFIED --
+        guessed as {"accountId", "orderId", "stopPrice"} matching
+        /Order/place's own field naming for the STOP leg; prints the raw
+        response the first few times, same defensive pattern as every
+        other unverified call in this file, so a wrong guess is caught
+        immediately rather than silently leaving the original stop in
+        place while the bot believes it moved.
+
+        order_id is the client-facing bracket id (the same one
+        place_bracket_order returned and poll_order_status takes), not the
+        broker-internal stop leg's own id -- resolved via self._brackets
+        here so callers never need to know that distinction exists."""
+        if self.dry_run:
+            print(f"[DRY RUN] would modify stop for bracket {order_id} to {new_stop_price}")
+            return
+        bracket = self._brackets[order_id]
+        stop_order_id = bracket["stop_order_id"]
+        data = self._post(
+            "/Order/modify",
+            {"accountId": self.account_id, "orderId": stop_order_id, "stopPrice": new_stop_price},
+        )
+        if self._order_modify_log_count < 3:
+            self._order_modify_log_count += 1
+            print(f"[LIVE] /Order/modify raw response (verify shape/success field): {data}")

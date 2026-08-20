@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from src.broker.base import Broker
 from src.config import load_config
 from src.fvg import FairValueGap
@@ -32,6 +34,8 @@ class FakeBroker(Broker):
         self.orphaned_orders_to_cancel = 0
         self.raise_on_cancel_orphaned_orders: Exception | None = None
         self.cancel_orphaned_orders_calls = 0
+        self.modify_stop_price_calls: list[tuple[str, float]] = []
+        self.raise_on_modify_stop_price: Exception | None = None
 
     def connect(self) -> None:
         pass
@@ -62,6 +66,11 @@ class FakeBroker(Broker):
         if self.raise_on_cancel_orphaned_orders is not None:
             raise self.raise_on_cancel_orphaned_orders
         return self.orphaned_orders_to_cancel
+
+    def modify_stop_price(self, order_id: str, new_stop_price: float) -> None:
+        self.modify_stop_price_calls.append((order_id, new_stop_price))
+        if self.raise_on_modify_stop_price is not None:
+            raise self.raise_on_modify_stop_price
 
 
 def load_test_config():
@@ -569,3 +578,152 @@ def test_reconcile_tolerates_fetch_net_position_raising(tmp_path, capsys):
     assert broker.flatten_calls == []
     assert status_path.exists()
     assert "position reconciliation check raised" in capsys.readouterr().out
+
+
+# ---------- _maybe_move_stop_to_breakeven ----------
+# (added 2026-08-20 at the user's explicit request: "when we're in a trade
+# and it looks like take profit will be hit, move stop loss above breakeven
+# so that the trade doesn't swing down and hit stop loss." Real config:
+# breakeven.trigger_pct=0.5, breakeven.buffer_dollars=20, point_value=2.0.)
+
+
+def make_short_open_trade() -> Trade:
+    return Trade(
+        direction=Direction.SHORT,
+        entry_price=100.0,
+        stop_price=110.0,
+        target_price=80.0,
+        contracts=1,
+        entry_time=DAY,
+    )
+
+
+def test_moves_stop_to_breakeven_once_halfway_to_target_long(tmp_path):
+    """entry=100, target=120 -- halfway is 110. buffer_dollars=20 /
+    (point_value=2.0 * 1 contract) = 10 points -- new stop = 100+10 = 110."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()
+    runner.day_slot.current_trade = trade
+
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY, open=105.0, high=110.0, low=104.5, close=109.5))
+
+    assert broker.modify_stop_price_calls == [("bracket-1", 110.0)]
+    assert trade.stop_price == 110.0
+    assert trade.breakeven_moved is True
+
+
+def test_moves_stop_to_breakeven_once_halfway_to_target_short(tmp_path):
+    """entry=100, target=80 -- halfway is 90. buffer_dollars=20 /
+    (point_value=2.0 * 1 contract) = 10 points -- new stop = 100-10 = 90."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_short_open_trade()
+    runner.day_slot.current_trade = trade
+
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY, open=95.0, high=95.5, low=90.0, close=90.5))
+
+    assert broker.modify_stop_price_calls == [("bracket-1", 90.0)]
+    assert trade.stop_price == 90.0
+    assert trade.breakeven_moved is True
+
+
+def test_does_not_move_stop_before_the_trigger_threshold(tmp_path):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()
+    runner.day_slot.current_trade = trade
+
+    # High of 109.0 is short of the 110.0 halfway point.
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY, open=105.0, high=109.0, low=104.5, close=108.5))
+
+    assert broker.modify_stop_price_calls == []
+    assert trade.breakeven_moved is False
+    assert trade.stop_price == 90.0  # untouched
+
+
+def test_only_moves_the_stop_once(tmp_path):
+    """Fires once per trade -- doesn't keep tightening further as price
+    keeps running (that would be an actual trailing stop, a different,
+    larger feature this wasn't asked for)."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()
+    runner.day_slot.current_trade = trade
+
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY, open=105.0, high=110.0, low=104.5, close=109.5))
+    runner.day_slot._check_open_trade(
+        Bar(timestamp=DAY + timedelta(minutes=1), open=115.0, high=118.0, low=114.5, close=117.5)
+    )
+
+    assert broker.modify_stop_price_calls == [("bracket-1", 110.0)]  # only the first call
+
+
+def test_breakeven_disabled_in_config_never_moves_the_stop(tmp_path):
+    cfg = load_test_config()
+    cfg.strategy.breakeven.enabled = False
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()
+    runner.day_slot.current_trade = trade
+
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY, open=115.0, high=120.0, low=114.5, close=119.5))
+
+    assert broker.modify_stop_price_calls == []
+    assert trade.breakeven_moved is False
+
+
+def test_tolerates_the_broker_raising_and_leaves_the_original_stop_tracked(tmp_path, capsys):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    broker.raise_on_modify_stop_price = RuntimeError("modify failed")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()
+    runner.day_slot.current_trade = trade
+
+    runner.day_slot._check_open_trade(
+        Bar(timestamp=DAY, open=105.0, high=110.0, low=104.5, close=109.5)
+    )  # must not raise
+
+    assert trade.breakeven_moved is False
+    assert trade.stop_price == 90.0  # unchanged -- still the real, original stop
+    assert "failed to move stop to breakeven" in capsys.readouterr().out
+
+
+def test_a_stop_hit_after_breakeven_was_moved_logs_as_breakeven_not_stop(tmp_path):
+    """Confirmed this matters for real: _close_current_trade's stop-side
+    exit_price comes from trade.stop_price, which is the *new* breakeven
+    level once moved -- logging it as a plain "stop" would misleadingly
+    suggest the original, larger loss instead of the small real win it
+    actually is."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    logger = TradeLogger(path=str(tmp_path / "trades.csv"))
+    runner = Runner(cfg, broker, logger=logger)
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()
+    runner.day_slot.current_trade = trade
+
+    # Move to breakeven first.
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY, open=105.0, high=110.0, low=104.5, close=109.5))
+    assert trade.breakeven_moved is True
+
+    # Now the (moved) stop gets hit.
+    broker.poll_order_status = lambda order_id: "filled_stop"
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY + timedelta(minutes=1), open=109.0, high=109.5, low=109.0, close=109.0))
+
+    assert runner.day_slot.current_trade is None  # closed
+    logged = logger.path.read_text()
+    assert ",breakeven," in logged
+    assert trade.exit_price == 110.0  # the moved stop, not the original 90.0
+    assert trade.pnl_dollars(cfg.instrument.point_value) == pytest.approx(20.0)  # a small real win, not a loss

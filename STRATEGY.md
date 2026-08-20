@@ -594,6 +594,96 @@ review these and adjust `config.yaml` before running live.
     `null` in `config.yaml` means no cap (`DailyRiskState.can_take_new_trade`
     skips the count check entirely when it's `None`).
 
+## Breakeven stop-loss management (added 2026-08-20, your explicit request)
+
+"When we're in a trade and it looks like take profit will be hit, move stop
+loss above breakeven so that the trade doesn't swing down and hit stop
+loss." Shared by both strategies (day and overnight both go through the
+same `_StrategySlot` code path in `src/runner.py`), live trading only --
+`src/backtest.py`'s own simulation is a separate, independent code path
+that doesn't currently model this; a backtest run still reflects the
+strategy's behavior *before* this feature, not after. Revisit if backtest
+results and live results start diverging in a way this would explain.
+
+**Trigger** (`config.yaml`'s `strategy.breakeven`, both values your
+explicit choice after being shown the tradeoffs): once a bar's most
+favorable price toward target (`bar.high` for a LONG, `bar.low` for a
+SHORT -- the actual peak reached that bar, not just its close) has moved
+`trigger_pct` (0.5, i.e. halfway from entry to target) of the way there,
+the resting stop moves to `entry_price +/- buffer_dollars` (converted to
+points the same way `max_stop_dollars` is,
+`buffer_dollars / point_value / contract_size`) -- $20 by default, a small
+real win rather than exact breakeven, since commissions/fees (confirmed
+real, ~$0.50-2.16/side from the account's own trade log) would otherwise
+turn an exact-breakeven stop-out into a small real loss. Both values are
+ASSUMPTIONS, untested against real data -- watch results and retune; a
+lower `trigger_pct` locks in breakeven sooner (less giveback on reversals)
+but risks stopping out trades that would have gone on to hit full target.
+
+**Fires once per trade, not a true trailing stop:** `Trade.breakeven_moved`
+guards it -- once moved, it doesn't keep tightening further as price keeps
+running toward target. A real trailing stop (continuously ratcheting the
+stop as price advances) is a different, larger feature this wasn't asked
+for; don't conflate the two if revisiting this.
+
+**Mechanics** (`Runner._StrategySlot._maybe_move_stop_to_breakeven`,
+called from `_check_open_trade` whenever `poll_order_status` still reports
+`"open"`): computes the new stop, rounds it to `tick_size` (same
+`round_to_tick` helper as the entry/target-price fix, see the "third
+version of the same failure shape" entry above -- a stop modification is
+just as capable of landing off the tick grid as a fresh order), then calls
+`Broker.modify_stop_price(order_id, new_stop_price)` -- a new abstract
+method, keeping the *same* resting order in place (not cancel-and-replace,
+so `poll_order_status`'s existing fill-detection logic needs no changes at
+all: it just watches whether the stop/target order ids disappear from
+`_fetch_open_order_ids()`'s open-orders list, unaffected by the order's
+own price having changed). On success, updates `trade.stop_price` to the
+new level and sets `breakeven_moved = True`; on failure, logs a loud
+warning and leaves the original stop tracked/untouched -- the trade stays
+protected by its original, real stop rather than the bot believing a move
+happened that didn't.
+
+`ProjectXGatewayBroker.modify_stop_price` calls `/Order/modify` -- a
+**confirmed** real ProjectX Gateway endpoint (see the "Before going live"
+API source list below), unlike some earlier additions this session that
+had to guess the endpoint itself too. The **request body shape** is still
+UNVERIFIED, though: guessed as `{"accountId", "orderId", "stopPrice"}`
+matching `/Order/place`'s own field naming for a STOP leg, resolving
+`order_id` (the client-facing bracket id) to the broker-internal
+`stop_order_id` via `self._brackets` first. Prints the raw response the
+first few times, same defensive pattern as every other unverified call in
+this file -- verify against it on first live use.
+
+**Exit-reason correctness, confirmed to matter for real:** once the stop
+has moved, `_close_current_trade`'s stop-side exit is logged as
+`exit_reason="breakeven"`, not `"stop"` -- `Trade.exit_reason`'s allowed
+values are now `"target" | "stop" | "breakeven" | "flatten"`. This isn't
+cosmetic: `_close_current_trade`'s exit price for a stop-side close comes
+from `trade.stop_price`, which by then holds the *moved* breakeven+buffer
+level, not the original structural stop -- logging it as a plain `"stop"`
+would misleadingly suggest the trade took its original, larger loss
+instead of the small real win it actually is. `src/dashboard.py`'s own
+aggregate stats (`_stats_for`) were already keyed off `pnl_dollars`, not
+`exit_reason`, so those needed no change -- but
+`dashboard_template.html`'s live-trades table was grouping wins/losses
+and coloring the result pill by `exit_reason === "target"` specifically,
+which would have wrongly bucketed a real, positive-P&L breakeven exit into
+the Losses section with a red pill. Fixed to key off `pnl_dollars > 0`
+instead, matching `dashboard.py`'s own convention (the separate backtest-
+results table a few lines down uses its own `won` boolean from
+`backtest.py` and is unaffected either way).
+
+New regression tests in `tests/test_runner.py` (moves the stop at the
+right price for both LONG and SHORT once the threshold is crossed; does
+nothing before the threshold; fires only once per trade even as price
+keeps running; respects `breakeven.enabled: false`; tolerates the broker
+raising without losing track of the real original stop; a stop hit after
+the move logs `"breakeven"` with the correct, small positive P&L, not
+`"stop"` with the original loss) and `tests/test_projectx_gateway.py`
+(resolves the bracket's real stop-leg id rather than passing the bracket
+id straight through; short-circuits in dry run) -- confirmed the trigger
+tests fail when the threshold check is broken and pass with it restored.
+
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 
 A second, parallel strategy (`src/overnight_strategy.py`, `OvernightMomentumStrategy`)

@@ -576,8 +576,14 @@ async function loadLiveTrades() {
     return;
   }
 
-  const winTrades = trades.filter(t => t.exit_reason === "target");
-  const lossTrades = trades.filter(t => t.exit_reason !== "target");
+  // Added 2026-08-20 alongside the breakeven-stop feature: a "breakeven"
+  // exit is a real, positive-P&L win (stop moved to entry+buffer before
+  // being hit), so grouping/coloring by exit_reason === "target" alone
+  // would wrongly bucket it as a loss -- pnl_dollars is what actually
+  // determines win/loss, same as dashboard.py's own aggregate stats
+  // already do.
+  const winTrades = trades.filter(t => t.pnl_dollars > 0);
+  const lossTrades = trades.filter(t => t.pnl_dollars <= 0);
 
   const rowsFor = list => list.map(t => `
     <tr>
@@ -588,7 +594,7 @@ async function loadLiveTrades() {
       <td>${fmt(t.stop_price)}</td>
       <td>${fmt(t.target_price)}</td>
       <td>${fmt(t.exit_price)}</td>
-      <td><span class="pill ${t.exit_reason === "target" ? "pill-win" : "pill-loss"}">${t.exit_reason}</span></td>
+      <td><span class="pill ${t.pnl_dollars > 0 ? "pill-win" : "pill-loss"}">${t.exit_reason}</span></td>
       <td class="pnl ${t.pnl_dollars >= 0 ? "good" : "bad"}">${fmtMoney(t.pnl_dollars)}</td>
     </tr>
   `).join("");

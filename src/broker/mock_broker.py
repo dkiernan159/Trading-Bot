@@ -75,6 +75,12 @@ class MockBroker(Broker):
         # working orders exist to leak between backtest runs.
         return 0
 
+    def modify_stop_price(self, order_id: str, new_stop_price: float) -> None:
+        # Backtest/isolated-Runner tests don't exercise the breakeven-move
+        # feature through this broker -- update the order's own stop_price
+        # so _check_fills honors the new level if anything does call this.
+        self._open_orders[order_id]["stop_price"] = new_stop_price
+
     def _check_fills(self, bar: Bar) -> None:
         for order in self._open_orders.values():
             if order["status"] != "open":

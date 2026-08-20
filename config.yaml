@@ -135,6 +135,20 @@ strategy:
                                     # (allow_reentry_after_stop). max_daily_loss_dollars and kill_switch
                                     # remain the real safety net regardless of how many trades happen.
 
+  breakeven:                       # Added 2026-08-20 at your explicit request -- once a trade looks like it's
+                                    # heading for target, move the stop above breakeven so it can't swing back
+                                    # down and hit the original stop. Applies to both day and overnight
+                                    # strategies (shared, same as everything else in this strategy: section).
+    enabled: true
+    trigger_pct: 0.5                # ASSUMPTION, your explicit choice: move the stop once price has moved
+                                    # halfway from entry to target. Untested -- watch real results and retune;
+                                    # a lower value locks in breakeven sooner (less giveback on reversals) but
+                                    # risks stopping out trades that would have gone on to hit full target.
+    buffer_dollars: 20               # your explicit choice: small positive buffer beyond exact breakeven, same
+                                    # $-to-points conversion as max_stop_dollars (buffer_dollars / point_value /
+                                    # contract_size) -- so a breakeven stop-out is still a small real win after
+                                    # the buffer, not a guaranteed net loss once commissions/fees are counted.
+
   overnight:                       # ASSUMPTION (added 2026-07-05): a second, parallel strategy for the
                                     # Asia (19:00-23:59 ET prior evening) / London (02:00-05:00 ET) hours,
                                     # per your explicit request to trade overnight while you sleep. Unlike

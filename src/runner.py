@@ -12,9 +12,9 @@ from zoneinfo import ZoneInfo
 from src.broker.base import Broker
 from src.config import BotConfig, load_config
 from src.logger import TradeLogger
-from src.models import Bar, Trade
+from src.models import Bar, Direction, Trade
 from src.overnight_strategy import EntrySignal as OvernightEntrySignal, OvernightMomentumStrategy
-from src.risk import DailyRiskState, compute_stop_target
+from src.risk import DailyRiskState, compute_stop_target, round_to_tick
 from src.strategy import EntrySignal, OpeningRangeStrategy
 
 # How many recent 1-minute bars Runner keeps in memory for the dashboard's
@@ -156,13 +156,67 @@ class _StrategySlot:
         assert self.current_trade is not None and self.current_order_id is not None
         status = self.runner.broker.poll_order_status(self.current_order_id)
         if status == "open":
+            self._maybe_move_stop_to_breakeven(bar)
             return
 
         won = status == "filled_target"
         self._close_current_trade(
             exit_price=self.current_trade.target_price if won else self.current_trade.stop_price,
             exit_time=bar.timestamp,
-            exit_reason="target" if won else "stop",
+            exit_reason="target" if won else ("breakeven" if self.current_trade.breakeven_moved else "stop"),
+        )
+
+    def _maybe_move_stop_to_breakeven(self, bar: Bar) -> None:
+        """Added 2026-08-20 at the user's explicit request: "when we're in
+        a trade and it looks like take profit will be hit, move stop loss
+        above breakeven so that the trade doesn't swing down and hit stop
+        loss." Once this bar's most favorable price (high for a LONG, low
+        for a SHORT -- the actual peak this bar reached toward target, not
+        just its close) has moved cfg.strategy.breakeven.trigger_pct of the
+        way from entry to target, moves the resting stop to
+        entry +/- a small dollar buffer (breakeven.buffer_dollars) so a
+        later reversal scratches the trade near-flat instead of taking the
+        full original loss. Only ever fires once per trade (breakeven_moved
+        guards it) -- doesn't keep tightening further as price keeps
+        running; that would be an actual trailing stop, a different, larger
+        feature this wasn't asked for. Shared by both strategies (day and
+        overnight both go through this same _StrategySlot code path)."""
+        cfg = self.runner.cfg.strategy.breakeven
+        trade = self.current_trade
+        assert trade is not None
+        if not cfg.enabled or trade.breakeven_moved:
+            return
+
+        entry = trade.entry_price
+        target = trade.target_price
+        if trade.direction is Direction.LONG:
+            favorable_price = bar.high
+            progress = (favorable_price - entry) / (target - entry)
+        else:
+            favorable_price = bar.low
+            progress = (entry - favorable_price) / (entry - target)
+        if progress < cfg.trigger_pct:
+            return
+
+        instrument = self.runner.cfg.instrument
+        buffer_points = cfg.buffer_dollars / (instrument.point_value * trade.contracts)
+        raw_new_stop = entry + buffer_points if trade.direction is Direction.LONG else entry - buffer_points
+        new_stop = round_to_tick(raw_new_stop, instrument.tick_size)
+
+        try:
+            self.runner.broker.modify_stop_price(self.current_order_id, new_stop)
+        except Exception:
+            print(
+                f"[LIVE] WARNING: failed to move stop to breakeven for {self.name}, leaving "
+                f"the original stop in place:\n{traceback.format_exc()}"
+            )
+            return
+
+        trade.stop_price = new_stop
+        trade.breakeven_moved = True
+        print(
+            f"[LIVE] {self.name}: moved stop to breakeven+buffer ({new_stop}) after price "
+            f"reached {progress:.0%} of the way to target"
         )
 
     def _flatten_current_trade(self, bar: Bar) -> None:

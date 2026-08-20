@@ -54,6 +54,18 @@ class OvernightConfig:
 
 
 @dataclass
+class BreakevenConfig:
+    """Added 2026-08-20 at the user's explicit request ("move stop loss
+    above breakeven so the trade doesn't swing down and hit stop loss"
+    once it looks like target will be hit) -- see runner.py's
+    _maybe_move_stop_to_breakeven for the actual trigger/move logic."""
+
+    enabled: bool
+    trigger_pct: float  # ASSUMPTION: move stop once price reaches this fraction of the way to target; untested, retune with real data
+    buffer_dollars: float  # small positive buffer beyond exact breakeven, same $-to-points conversion as max_stop_dollars
+
+
+@dataclass
 class StrategyConfig:
     reward_risk_ratio: float
     target_dollars_at_reference_size: float
@@ -65,6 +77,7 @@ class StrategyConfig:
     entry_fvg: FvgConfig
     reentry: ReentryConfig
     overnight: OvernightConfig
+    breakeven: BreakevenConfig
 
 
 @dataclass
@@ -141,6 +154,7 @@ def load_config(path: str | Path = "config.yaml") -> BotConfig:
             enabled=strat["overnight"]["enabled"],
             max_trades_per_night=strat["overnight"]["max_trades_per_night"],
         ),
+        breakeven=BreakevenConfig(**strat["breakeven"]),
     )
 
     position_sizing = PositionSizingConfig(**raw["position_sizing"])

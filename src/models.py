@@ -33,9 +33,15 @@ class Trade:
     entry_time: datetime
     exit_price: float | None = None
     exit_time: datetime | None = None
-    exit_reason: str | None = None  # "target" | "stop" | "flatten"
+    exit_reason: str | None = None  # "target" | "stop" | "breakeven" | "flatten"
     stop_source: str = "unknown"  # "fvg" | "swing" | "cap" | "unknown" -- see risk.StopCandidate
     stop_fvg_size: float | None = None
+    # Added 2026-08-20 (see runner.py's _maybe_move_stop_to_breakeven): once
+    # true, stop_price has been moved from its original structural level to
+    # breakeven+buffer -- a later stop-side exit is logged as "breakeven"
+    # (a small real win) rather than "stop" (the original, larger loss it
+    # would otherwise be mistaken for).
+    breakeven_moved: bool = False
 
     @property
     def stop_points(self) -> float:

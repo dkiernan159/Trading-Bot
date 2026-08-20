@@ -69,3 +69,14 @@ class Broker(ABC):
         safety margin before touching an order, so a real order this same
         process just placed a moment ago (still legitimately mid-flight)
         is never mistaken for an orphan."""
+
+    @abstractmethod
+    def modify_stop_price(self, order_id: str, new_stop_price: float) -> None:
+        """Added 2026-08-20 at the user's explicit request: move a bracket's
+        resting protective stop to a new price in place, keeping the same
+        order (not cancel-and-replace) -- used to lock in breakeven+buffer
+        once a trade looks like it's heading for target (see runner.py's
+        _maybe_move_stop_to_breakeven). order_id is the same client-facing
+        bracket id place_bracket_order returned and poll_order_status takes,
+        not any broker-internal leg id. Raise on failure; callers must not
+        assume the stop moved unless this returns without raising."""
