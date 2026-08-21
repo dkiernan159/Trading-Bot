@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from src.models import Bar
 
 
@@ -29,6 +31,16 @@ class SwingPointTracker:
         self._bars: list[Bar] = []
         self.most_recent_swing_high: float | None = None
         self.most_recent_swing_low: float | None = None
+        # Added 2026-08-20 (see runner.py's _maybe_move_stop_to_breakeven):
+        # the breakeven-hold-if-structure-supports-it feature needs to tell
+        # a swing point that formed *during* a given trade (real, fresh
+        # structure) apart from one that already existed before entry
+        # (stale, not evidence of anything new) -- confirmed the candidate
+        # bar itself (not "now") since a pivot lags PIVOT_WIDTH bars behind
+        # confirmation, and the pivot's own formation time is what actually
+        # matters here, not when the tracker happened to notice it.
+        self.most_recent_swing_high_at: datetime | None = None
+        self.most_recent_swing_low_at: datetime | None = None
 
     def add_bar(self, bar: Bar) -> None:
         self._bars.append(bar)
@@ -48,8 +60,10 @@ class SwingPointTracker:
         others = window[:w] + window[w + 1 :]
         if all(candidate.high > o.high for o in others):
             self.most_recent_swing_high = candidate.high
+            self.most_recent_swing_high_at = candidate.timestamp
         if all(candidate.low < o.low for o in others):
             self.most_recent_swing_low = candidate.low
+            self.most_recent_swing_low_at = candidate.timestamp
 
     def reset(self) -> None:
         """Called at day/night session boundaries, same as the FVG
@@ -58,3 +72,5 @@ class SwingPointTracker:
         self._bars = []
         self.most_recent_swing_high = None
         self.most_recent_swing_low = None
+        self.most_recent_swing_high_at = None
+        self.most_recent_swing_low_at = None

@@ -727,3 +727,106 @@ def test_a_stop_hit_after_breakeven_was_moved_logs_as_breakeven_not_stop(tmp_pat
     assert ",breakeven," in logged
     assert trade.exit_price == 110.0  # the moved stop, not the original 90.0
     assert trade.pnl_dollars(cfg.instrument.point_value) == pytest.approx(20.0)  # a small real win, not a loss
+
+
+# ---------- structure-aware breakeven hold ----------
+# (added 2026-08-20 at the user's explicit follow-up request, after real
+# data showed one of four breakeven exits on the first live day cost a real
+# win: "let the bot intelligently choose if it should set a hard breakeven
+# stop or not and let the trade swing down below breakeven if there's
+# market structure to support a bounce back." make_open_trade(): LONG,
+# entry=100, original stop=90, target=120.)
+
+
+def test_holds_the_original_stop_when_fresh_supporting_structure_exists(tmp_path, capsys):
+    """A swing low at 95 (above the original stop of 90) that formed after
+    this trade's own entry_time (DAY) is real, fresh structure -- must hold
+    the original stop instead of hardening to breakeven."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()
+    runner.day_slot.current_trade = trade
+    runner.day_slot.strategy.swing_tracker.most_recent_swing_low = 95.0
+    runner.day_slot.strategy.swing_tracker.most_recent_swing_low_at = DAY + timedelta(minutes=5)
+
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY + timedelta(minutes=10), open=105.0, high=110.0, low=104.5, close=109.5))
+
+    assert broker.modify_stop_price_calls == []
+    assert trade.breakeven_moved is False
+    assert trade.stop_price == 90.0  # untouched
+    assert "holding the original stop" in capsys.readouterr().out
+
+
+def test_does_not_hold_for_a_swing_point_that_predates_entry(tmp_path):
+    """A swing low that already existed *before* this trade opened isn't
+    evidence of anything happening during this trade -- stale, not fresh
+    structure. Breakeven must proceed normally."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()  # entry_time == DAY
+    runner.day_slot.current_trade = trade
+    runner.day_slot.strategy.swing_tracker.most_recent_swing_low = 95.0
+    runner.day_slot.strategy.swing_tracker.most_recent_swing_low_at = DAY - timedelta(minutes=5)  # before entry
+
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY + timedelta(minutes=10), open=105.0, high=110.0, low=104.5, close=109.5))
+
+    assert broker.modify_stop_price_calls == [("bracket-1", 110.0)]
+    assert trade.breakeven_moved is True
+
+
+def test_does_not_hold_for_a_swing_point_on_the_wrong_side_of_the_original_stop(tmp_path):
+    """A fresh swing low at 85 -- below the original stop of 90 -- isn't a
+    tighter, more favorable level than the stop the trade was actually
+    entered against; doesn't count as supporting structure."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()
+    runner.day_slot.current_trade = trade
+    runner.day_slot.strategy.swing_tracker.most_recent_swing_low = 85.0
+    runner.day_slot.strategy.swing_tracker.most_recent_swing_low_at = DAY + timedelta(minutes=5)
+
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY + timedelta(minutes=10), open=105.0, high=110.0, low=104.5, close=109.5))
+
+    assert broker.modify_stop_price_calls == [("bracket-1", 110.0)]
+    assert trade.breakeven_moved is True
+
+
+def test_does_not_hold_when_no_swing_point_exists_at_all(tmp_path):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_open_trade()
+    runner.day_slot.current_trade = trade
+    # swing_tracker's most_recent_swing_low/_at default to None -- nothing to feed.
+
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY, open=105.0, high=110.0, low=104.5, close=109.5))
+
+    assert broker.modify_stop_price_calls == [("bracket-1", 110.0)]
+    assert trade.breakeven_moved is True
+
+
+def test_holds_the_original_stop_for_a_short_with_fresh_supporting_structure(tmp_path):
+    """A swing high at 95 (below the original stop of 110) that formed
+    after entry supports holding for a SHORT the same way a swing low
+    does for a LONG."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+    runner.day_slot.current_order_id = "bracket-1"
+    trade = make_short_open_trade()  # entry=100, stop=110, target=80
+    runner.day_slot.current_trade = trade
+    runner.day_slot.strategy.swing_tracker.most_recent_swing_high = 95.0
+    runner.day_slot.strategy.swing_tracker.most_recent_swing_high_at = DAY + timedelta(minutes=5)
+
+    runner.day_slot._check_open_trade(Bar(timestamp=DAY + timedelta(minutes=10), open=95.0, high=95.5, low=90.0, close=90.5))
+
+    assert broker.modify_stop_price_calls == []
+    assert trade.breakeven_moved is False
+    assert trade.stop_price == 110.0  # untouched

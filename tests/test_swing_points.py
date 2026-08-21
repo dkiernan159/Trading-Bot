@@ -98,7 +98,53 @@ def test_reset_clears_history_and_confirmed_points():
 
     assert tracker.most_recent_swing_high is None
     assert tracker.most_recent_swing_low is None
+    assert tracker.most_recent_swing_high_at is None
+    assert tracker.most_recent_swing_low_at is None
     # Feeding fewer than 2*PIVOT_WIDTH+1 bars post-reset must not resurrect
     # anything from before the reset.
     feed(tracker, [(101, 99), (102, 100)])
     assert tracker.most_recent_swing_high is None
+
+
+# ---------- formation-time tracking ----------
+# (added 2026-08-20: the breakeven-hold-if-structure-supports-it feature
+# needs to tell a swing point that formed *during* a given trade apart from
+# one that already existed before entry -- see runner.py's
+# _maybe_move_stop_to_breakeven)
+
+
+def test_swing_high_records_the_confirming_bars_own_timestamp():
+    """The candidate bar's own timestamp (index 2, k=2), not "now"/the
+    timestamp of whichever later bar happened to confirm it -- a pivot
+    lags PIVOT_WIDTH bars behind confirmation, and it's the pivot's own
+    formation time that matters for "did this form after entry", not when
+    the tracker happened to notice it."""
+    tracker = SwingPointTracker()
+    highs_lows = [(101, 99), (103, 100), (105, 101), (102, 98), (100, 97)]
+    feed(tracker, highs_lows)
+    assert tracker.most_recent_swing_high_at == START + timedelta(minutes=2)
+
+
+def test_swing_low_records_the_confirming_bars_own_timestamp():
+    tracker = SwingPointTracker()
+    highs_lows = [(103, 99), (102, 97), (101, 95), (102, 96), (103, 98)]
+    feed(tracker, highs_lows)
+    assert tracker.most_recent_swing_low_at == START + timedelta(minutes=2)
+
+
+def test_swing_high_timestamp_updates_alongside_a_newer_swing_high():
+    tracker = SwingPointTracker()
+    highs_lows = [
+        (101, 99),
+        (103, 100),
+        (105, 101),  # swing high at k=2
+        (102, 98),
+        (100, 97),
+        (108, 96),
+        (110, 95),  # newer swing high at k=6
+        (109, 94),
+        (107, 93),
+    ]
+    feed(tracker, highs_lows)
+    assert tracker.most_recent_swing_high == 110
+    assert tracker.most_recent_swing_high_at == START + timedelta(minutes=6)

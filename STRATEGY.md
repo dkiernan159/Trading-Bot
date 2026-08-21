@@ -684,6 +684,79 @@ the move logs `"breakeven"` with the correct, small positive P&L, not
 id straight through; short-circuits in dry run) -- confirmed the trigger
 tests fail when the threshold check is broken and pass with it restored.
 
+### Structure-aware hold (added 2026-08-21, your explicit follow-up)
+
+After a day of live trades where breakeven was firing "a lot," you asked
+to check whether it was actually needed before trusting it further:
+"lets look at these trades to see if we really needed to put the 'break
+even' stop in place or if we could have let these run to the full take
+profit." A read-only diagnostic script (`fetch_historical_bars`, dry-run
+broker, run directly on the VPS) reconstructed what would have happened
+to each breakeven-exit trade that day without the feature -- scanning
+1-minute bars chronologically (not just min/max over the window, which
+can't tell you *which* level got hit first) to find whether the original
+stop or the original target would have been reached first. Result: 3 of
+4 trades were correctly saved from swinging back down to the original
+stop -- breakeven did its job. The 4th trade swung below the breakeven
+level but never reached the original stop, then ran on to the original
+target -- costing a full win for a small breakeven gain.
+
+Your follow-up ask: "I want the bot to intelligently choose if it should
+set a hard 'break even' stop loss or not and let the trade swing down
+below break even if theres market structure to support a bounce back
+ultimately hitting our full take profit." You picked the specific rule
+via AskUserQuestion: "Any swing point formed after entry, on the
+favorable side of breakeven" -- i.e. hold the *original* stop instead of
+hardening to breakeven when there's fresh, genuine evidence (not stale
+structure that already existed before the trade was even taken) that
+price has carved out a level to bounce from.
+
+**Mechanics** (`Runner._StrategySlot._fresh_supporting_structure`, called
+from `_maybe_move_stop_to_breakeven` right after the trigger threshold is
+crossed but before the stop is actually moved): reuses the *same*
+`swing_tracker` each strategy already trusts for its own initial
+structural stop placement (`find_structural_stop_price` in `risk.py`) --
+no new detection logic, just a new use of an existing, already-tested
+one. For a LONG, checks `swing_tracker.most_recent_swing_low`: if it sits
+above the trade's *original* stop price (the favorable side) AND its
+formation timestamp is after `trade.entry_time`, that's treated as fresh
+supporting structure and the original stop is held untouched for that
+bar -- re-checked on every subsequent bar, so a later bar with no fresh
+structure (or after the swing point stops qualifying) will still move to
+breakeven once triggered. SHORT is the mirror image using
+`most_recent_swing_high`.
+
+This needed `SwingPointTracker` to start recording *when* each swing
+point actually formed, not just its price -- added
+`most_recent_swing_high_at`/`most_recent_swing_low_at`
+(`src/swing_points.py`), set to the confirming candidate bar's own
+timestamp. Important subtlety: a pivot is confirmed `PIVOT_WIDTH` (2)
+bars after it actually formed (`add_bar` needs the bars *after* a
+candidate to know it was a real peak/trough) -- the timestamp recorded is
+the candidate bar's own timestamp, not the later bar that confirmed it,
+since it's the swing point's real formation time that matters for "did
+this form after entry," not when the tracker happened to notice it.
+
+Deliberately compares against the trade's *original* structural stop
+(captured before any breakeven move), not whatever `trade.stop_price`
+currently holds -- this check only ever runs before `breakeven_moved` is
+set, so at the point it runs `trade.stop_price` is still the original
+value; noted explicitly in the code so a future edit that reorders things
+doesn't accidentally compare against an already-moved stop.
+
+New regression tests in `tests/test_swing_points.py` (the confirming
+bar's own timestamp is recorded, not the tracker's "now"; the timestamp
+updates alongside a newer swing point overwriting an older one) and
+`tests/test_runner.py` (holds the original stop when fresh, favorable
+structure exists; does *not* hold for a swing point that predates entry;
+does *not* hold for a swing point on the wrong side of the original stop;
+does *not* hold when no swing point exists at all; SHORT direction holds
+correctly using the swing high) -- confirmed via revert-and-confirm that
+dropping the "formed after entry" comparison makes
+`test_does_not_hold_for_a_swing_point_that_predates_entry` fail
+(`pytest tests/test_runner.py -k "predates_entry"`), then restored the
+real check and reran the full suite (164 passed).
+
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 
 A second, parallel strategy (`src/overnight_strategy.py`, `OvernightMomentumStrategy`)

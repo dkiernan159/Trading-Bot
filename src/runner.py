@@ -180,7 +180,23 @@ class _StrategySlot:
         guards it) -- doesn't keep tightening further as price keeps
         running; that would be an actual trailing stop, a different, larger
         feature this wasn't asked for. Shared by both strategies (day and
-        overnight both go through this same _StrategySlot code path)."""
+        overnight both go through this same _StrategySlot code path).
+
+        Extended 2026-08-20, same day, at the user's explicit follow-up
+        after reviewing real data on the first live day: reconciling
+        against real historical bars showed 3 of 4 breakeven exits that day
+        genuinely saved a real loss (the original stop would have been hit
+        before target ever was), but one cost a real win outright (target
+        hit at 06:05, the original stop never even threatened until 08:00).
+        The user's own framing: "let the bot intelligently choose if it
+        should set a hard breakeven stop or not and let the trade swing
+        down below breakeven if there's market structure to support a
+        bounce back." See _fresh_supporting_structure_exists -- if a fresh
+        swing point has formed *since this trade's own entry* on the
+        favorable side of the original stop, that's real evidence of
+        buyers/sellers stepping back in during this specific trade, not
+        just "price hasn't fallen far yet" -- hold the original stop
+        instead of hardening to breakeven, and re-check again next bar."""
         cfg = self.runner.cfg.strategy.breakeven
         trade = self.current_trade
         assert trade is not None
@@ -196,6 +212,15 @@ class _StrategySlot:
             favorable_price = bar.low
             progress = (entry - favorable_price) / (entry - target)
         if progress < cfg.trigger_pct:
+            return
+
+        supporting_level = self._fresh_supporting_structure(trade)
+        if supporting_level is not None:
+            print(
+                f"[LIVE] {self.name}: holding the original stop ({trade.stop_price}) instead "
+                f"of moving to breakeven -- fresh structure at {supporting_level} has formed "
+                f"since entry on the favorable side of it"
+            )
             return
 
         instrument = self.runner.cfg.instrument
@@ -218,6 +243,38 @@ class _StrategySlot:
             f"[LIVE] {self.name}: moved stop to breakeven+buffer ({new_stop}) after price "
             f"reached {progress:.0%} of the way to target"
         )
+
+    def _fresh_supporting_structure(self, trade: Trade) -> float | None:
+        """Added 2026-08-20 at the user's explicit request, after real data
+        showed one of four breakeven exits on the first live day cost a
+        real win the trade would otherwise have gone on to hit cleanly.
+        Reuses the same swing_tracker every strategy already trusts for its
+        own initial stop placement (see risk.py's find_structural_stop_price)
+        -- if a swing point has formed there *since this trade's own entry*
+        (real, fresh structure from this specific trade's run, not a stale
+        pre-entry level) and sits on the favorable side of the original
+        stop (a real higher low for a LONG, a real lower high for a SHORT),
+        that's genuine evidence of buyers/sellers stepping back in during
+        this trade -- returns that level so the caller can hold the
+        original stop instead of hardening to breakeven. Returns None if no
+        such structure exists, in which case breakeven proceeds normally.
+
+        Deliberately does NOT use the *moved* stop_price for the favorable-
+        side comparison -- this only ever runs before breakeven_moved is
+        set, so trade.stop_price here is always still the original,
+        structural stop the trade was actually entered against."""
+        tracker = self.strategy.swing_tracker
+        if trade.direction is Direction.LONG:
+            level = tracker.most_recent_swing_low
+            formed_at = tracker.most_recent_swing_low_at
+            favorable = level is not None and level > trade.stop_price
+        else:
+            level = tracker.most_recent_swing_high
+            formed_at = tracker.most_recent_swing_high_at
+            favorable = level is not None and level < trade.stop_price
+        if favorable and formed_at is not None and formed_at > trade.entry_time:
+            return level
+        return None
 
     def _flatten_current_trade(self, bar: Bar) -> None:
         self.runner.broker.flatten_all(self.runner.cfg.instrument.symbol)
