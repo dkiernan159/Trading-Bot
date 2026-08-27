@@ -395,7 +395,7 @@ def test_compute_stop_target_rounds_target_price_to_tick_size():
         min_stop_dollars=0.0,
         point_value=2.0,
         contracts=1,
-        reward_risk_ratio=1.67,  # the real config's current ratio
+        reward_risk_ratio=1.67,  # an example ratio that lands off the tick grid -- not tied to config.yaml's value
         tick_size=0.25,
     )
     # stop_points = 6.75, target_points = 6.75*1.67 = 11.2725, target_price

@@ -24,13 +24,21 @@ session:
                                        # cutoff above)
 
 strategy:
-  reward_risk_ratio: 1.67   # Changed from 2.0 2026-07-31 alongside scaling contract_size 1->3 (your explicit
-                             # instruction: "scale the TP up to $500 and the stop loss up to $300 as maximums
-                             # for both"). 500/300 ~= 1.67 -- a max-sized real structural stop now produces a
-                             # target close to $500 rather than $600 at the old 2:1 ratio. Target is still
-                             # always exactly this multiple of whatever the real per-trade stop distance is
-                             # (see risk.py's compute_stop_target) -- there's no independent target cap, so a
-                             # tighter real stop still produces a proportionally smaller target, not a flat $500.
+  reward_risk_ratio: 2.0   # Raised back from 1.67 2026-08-27, your explicit instruction after a real losing
+                             # stretch (2026-08-14 to 2026-08-26, net -$1,500 across 14 trades, 36% win rate).
+                             # At 1.67, breakeven win rate is 1/(1+1.67) = 37.5% before commissions -- both
+                             # "normal" (non-hot-streak) samples on record ran ~36% (25 trades before the
+                             # 07-31 scale-up at the old 2.0 ratio, and these 14 slump trades at 1.67), right
+                             # at or under that line. The one profitable window (2026-08-03 to 08-13, 80% win
+                             # rate) was only 10 trades -- too small to trust as the new baseline instead of a
+                             # hot streak. At 2.0, breakeven win rate drops to 33.3%, comfortably under the
+                             # observed ~36% baseline -- real margin again, at the cost of needing a bigger move
+                             # to reach target per trade. Changed from 2.0 2026-07-31 alongside scaling
+                             # contract_size 1->3 ("scale the TP up to $500 and the stop loss up to $300 as
+                             # maximums for both"); target is still always exactly this multiple of whatever the
+                             # real per-trade stop distance is (see risk.py's compute_stop_target) -- there's no
+                             # independent target cap, so a tighter real stop still produces a proportionally
+                             # smaller target, not a flat dollar figure.
   target_dollars_at_reference_size: 300   # your usual $300 target
   reference_contracts: 5                  # ...at your usual 5-contract size
   max_stop_dollars: 300   # Raised from 200 2026-07-31 alongside contract_size 1->3, your explicit instruction.

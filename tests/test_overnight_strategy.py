@@ -341,6 +341,80 @@ def test_stale_anchor_is_not_immediately_re_picked_after_being_abandoned():
     assert abandoned_gap_id in strategy._rejected_anchor_ids
 
 
+def test_anchor_invalidated_by_a_fresh_break_of_structure_against_it():
+    """Added 2026-08-27, after a real losing stretch (this strategy ran 43
+    of the lifetime's 49 trades) and the same-day question "why did we go
+    long when market clearly shows a break of structure downwards": unlike
+    the stale-abandonment check above (price running away in the anchor's
+    own favor without ever retracing), this is price breaking fresh
+    structure *against* the anchor's own direction while still waiting to
+    fill -- a swing low that forms after this LONG anchor set the
+    direction, then gets closed through, is real, live evidence the
+    "pullback" the anchor bet on may be a genuine reversal instead of a
+    retracement, and taking the entry would mean buying straight into it."""
+    cfg = load_test_config()
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+
+    feed_large_5m_fvg(strategy, NIGHT_START)  # LONG anchor, gap 105.3-109.1
+    direction_confirmed_at = strategy._direction_confirmed_at
+    pending_limit_price = strategy._pending_limit_price
+    assert pending_limit_price == pytest.approx(107.2)
+
+    # A genuine confirmed swing low at 108.0 -- above the anchor's own
+    # entry level (107.2), so this never coincides with a fill -- formed
+    # after the anchor set the direction. Same safe-from-contaminating-
+    # FVG-detection magnitude as feed_swing_low_after_window_opens.
+    swing_start = NIGHT_START + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    lows = [111.0, 109.5, 108.0, 109.5, 111.0]
+    for i, low in enumerate(lows):
+        signal = strategy.on_bar(bar_at(swing_start + timedelta(minutes=i), low + 0.3, low + 0.6, low, low + 0.3))
+        assert signal is None
+    assert strategy.swing_tracker.most_recent_swing_low == 108.0
+    assert strategy.swing_tracker.most_recent_swing_low_at > direction_confirmed_at
+
+    # Price closes below that fresh swing low -- still well above the
+    # anchor's own entry level (107.2) -- without the resting entry ever
+    # filling.
+    reversal_time = swing_start + timedelta(minutes=10)
+    signal = strategy.on_bar(bar_at(reversal_time, 108.0, 108.0, 107.5, 107.6))
+    assert signal is None
+    assert strategy.state is State.WAIT_FVG
+    assert strategy.stats["bos_invalidated"] == 1
+    assert strategy._direction is None
+    assert strategy._direction_confirmed_at is None
+    assert strategy._anchor_fvg is None
+    invalidated = [a for a in strategy.anchor_history if a.outcome == "invalidated"]
+    assert len(invalidated) == 1
+
+
+def test_anchor_not_invalidated_by_a_swing_point_that_predates_it():
+    """A swing point that already existed *before* this anchor set the
+    direction is stale, not fresh evidence of the thesis weakening --
+    closing back through it must not abandon the anchor (only a swing
+    point that formed after the anchor does)."""
+    cfg = load_test_config()
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+
+    # A confirmed swing low at 108.0, formed *before* any anchor exists --
+    # above the eventual entry level (107.2), so a later close through it
+    # doesn't also coincide with a fill.
+    anchor_start = feed_swing_low_after_window_opens(strategy, NIGHT_START, swing_low=108.0)
+    assert strategy._direction is None  # no anchor/direction set yet
+
+    feed_large_5m_fvg(strategy, anchor_start)  # LONG anchor, gap 105.3-109.1
+    direction_confirmed_at = strategy._direction_confirmed_at
+    assert strategy.swing_tracker.most_recent_swing_low_at < direction_confirmed_at
+
+    reversal_time = anchor_start + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    signal = strategy.on_bar(bar_at(reversal_time, 108.0, 108.0, 107.5, 107.6))
+    assert signal is None
+    assert strategy.state is State.WAIT_FILL
+    assert strategy.stats["bos_invalidated"] == 0
+    assert strategy._direction is Direction.LONG
+
+
 def test_no_real_structural_stop_within_budget_rejects_and_keeps_hunting():
     """Same rule as the day strategy (risk.py's find_structural_stop_price)
     -- if the fill has no strong 5m FVG or break-of-structure swing point

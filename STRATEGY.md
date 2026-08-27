@@ -757,6 +757,123 @@ dropping the "formed after entry" comparison makes
 (`pytest tests/test_runner.py -k "predates_entry"`), then restored the
 real check and reran the full suite (164 passed).
 
+## Break-of-structure invalidation + reward:risk restore (2026-08-27)
+
+"I'm seeing too many consistent losses with only small wins, lets look
+into this and iterate to correct even if it means removing or altering
+the 'break even' stop loss... do everything needed to fix the issue and
+get PnL back positive, we need to aim for the types of trades that got us
++$1,800 a few weeks ago." Investigated with the real trade log rather than
+guessing:
+
+**Breakeven wasn't the cause.** 5 breakeven exits, all +$19.50, summed to
++$97.50 -- a rounding error next to what was actually happening. The real
+finding: from 2026-08-14 to 2026-08-26 (14 trades), there were **zero**
+full target hits -- every win was a $19.50 breakeven, every loss a full
+stop between -$129 and -$247.50, net -$1,500. `git log` on `config.yaml`
+confirmed nothing had changed since 2026-07-31 (contract_size 1->3,
+max_stop_dollars 200->300, reward_risk_ratio 2.0->1.67) -- the profitable
+2026-08-03 to 08-13 stretch (80% win rate, 10 trades, the source of the
+"+$1,800" days) already ran under that same config, ruling out a
+config regression as the cause.
+
+**Finding #1 -- the math stopped favoring the strategy.** At
+`reward_risk_ratio: 1.67`, breakeven win rate is `1/(1+1.67) = 37.5%`
+before commissions. Both "normal" (non-hot-streak) samples on record --
+the 25 trades before the 07-31 scale-up (36% win rate, old 2.0 ratio) and
+the 14-trade slump (36% win rate, current 1.67 ratio) -- ran right at or
+under that line. The 80%-win-rate hot stretch was only 10 trades, too
+small a sample to trust as the new baseline over a real ~36% baseline
+seen twice. Distance-based analysis (`entry_price`/`stop_price`/
+`target_price` in `trades/trades.csv`) confirmed the slump's stop/target
+sizes (points) matched the hot stretch's typical range -- this wasn't
+setups getting worse, it was the strategy's true win rate sitting below
+what a 1.67:1 ratio needs to break even.
+
+Your explicit choice, after being shown this math via AskUserQuestion:
+raised `reward_risk_ratio` back to **2.0** (breakeven win rate 33.3%,
+comfortably under the observed ~36% baseline) -- at the cost of needing a
+bigger move to reach target per trade, since target is always
+`reward_risk_ratio` times whatever the real per-trade structural stop
+distance is (there's no independent target cap -- see risk.py's
+`compute_stop_target`).
+
+**Finding #2 -- a real structural gap, directly tied to the same-day
+question "why did we go long when market clearly shows a break of
+structure downwards."** `OpeningRangeStrategy`'s breakout thesis (see the
+"How ambiguous points were resolved" section above) only invalidated on a
+full bar *close* through the box's *opposite* edge -- a potentially big,
+slow move. `OvernightMomentumStrategy` (43 of the lifetime's 49 trades)
+had *no* invalidation check at all once an anchor set the direction --
+nothing made it bail early if price broke structure against that anchor
+while still waiting to fill. Both strategies already track swing points
+for stop placement (`SwingPointTracker`, shared with the breakeven
+structure-hold above) -- this reuses that same tracker for the
+entry/thesis decision instead.
+
+Your explicit choice: apply this to **both** strategies (the day-only
+option was on the table, but overnight took the bulk of the slump's
+trades and had zero protection at all).
+
+**Day strategy (`OpeningRangeStrategy`, `src/strategy.py`):** a new
+`self._breakout_confirmed_at` timestamp, set alongside
+`self._breakout_direction` the moment a breakout is confirmed, and
+cleared everywhere `_breakout_direction` is reset to `None`
+(`notify_trade_closed`, `_start_new_day`, and the invalidation branch
+itself). The existing box-edge invalidation check (`WAIT_5M_FVG`/
+`WAIT_FILL`) now also invalidates when a swing point that formed *after*
+`_breakout_confirmed_at` gets closed through against the breakout
+direction -- a fresh swing low closed beneath (for a LONG breakout), or a
+fresh swing high closed above (for SHORT). Checked with `or` alongside the
+original box-edge condition, so either one still triggers the same reset
+to `WAIT_BREAKOUT`.
+
+**Overnight strategy (`OvernightMomentumStrategy`,
+`src/overnight_strategy.py`):** no box/breakout step exists here at all --
+direction is set the instant an anchor is first picked in `WAIT_FVG`, so a
+new `self._direction_confirmed_at` timestamp is set at that same moment
+instead (not on every supersede -- only the first pick, since the
+direction itself doesn't change on a same-direction supersede). A new
+check in `WAIT_FILL`, placed *before* the existing stale-abandonment
+check (a different concept -- price running away in the anchor's own
+favor without retracing, not price breaking structure against it): if a
+swing point formed after `_direction_confirmed_at` has been closed
+through against `_direction`, the anchor is abandoned (`_close_anchor`
+outcome `"invalidated"`, tracked via `_rejected_anchor_ids` like every
+other rejection path, back to `WAIT_FVG`) rather than waiting on a fill
+that would mean buying/selling straight into a live reversal. New
+`stats["bos_invalidated"]` counter alongside the existing funnel counters.
+Placed before the fill check in `on_bar`'s execution order, so on a bar
+where both conditions would fire, invalidation wins -- the entry is never
+taken.
+
+Both checks are gated on the swing point having formed *after* the
+breakout/direction was confirmed, using the same `most_recent_swing_low_at`/
+`most_recent_swing_high_at` timestamps added for the breakeven
+structure-hold above -- a swing point that already existed beforehand is
+stale, not fresh evidence the thesis is weakening.
+
+New regression tests: `tests/test_strategy.py`
+(`test_breakout_invalidated_by_a_fresh_break_of_structure_against_it`,
+`test_breakout_not_invalidated_by_a_swing_point_that_predates_it`) and
+`tests/test_overnight_strategy.py`
+(`test_anchor_invalidated_by_a_fresh_break_of_structure_against_it`,
+`test_anchor_not_invalidated_by_a_swing_point_that_predates_it`).
+Confirmed via revert-and-confirm on both strategies (short-circuiting the
+new condition made the corresponding test fail, e.g.
+`strategy.state is State.WAIT_FILL` instead of the expected
+`WAIT_BREAKOUT`/`WAIT_FVG`) before restoring the real check; full suite at
+168 passing.
+
+**What this doesn't fix:** neither change addresses the underlying
+question of whether this strategy has a durable edge at all -- the ~36%
+baseline win rate is itself a small-sample estimate (39 trades total
+across both non-hot samples), and a real market-regime shift (a choppier,
+more mean-reverting period versus the 08-03/08-13 trending window) can't
+be ruled out or fixed by a parameter change. Watch the next stretch of
+live trades against this same win-rate/R:R math before assuming the
+problem is fully solved.
+
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 
 A second, parallel strategy (`src/overnight_strategy.py`, `OvernightMomentumStrategy`)

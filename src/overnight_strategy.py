@@ -92,6 +92,12 @@ class OvernightMomentumStrategy:
         self.state = State.IDLE
         self._night_date: date | None = None
         self._direction: Direction | None = None
+        # Added 2026-08-27, same rationale/pattern as the day strategy's
+        # _breakout_confirmed_at (see strategy.py): lets the new
+        # break-of-structure-against-thesis check below tell a swing point
+        # that formed *after* this anchor set the trade direction apart
+        # from one that predates it (stale, not real evidence of anything).
+        self._direction_confirmed_at: datetime | None = None
         self._anchor_fvg: FairValueGap | None = None
         self._anchor_started_at: datetime | None = None
         self._pending_limit_price: float | None = None
@@ -123,6 +129,7 @@ class OvernightMomentumStrategy:
             "large_fvgs": 0,
             "fills": 0,
             "stale_abandoned": 0,
+            "bos_invalidated": 0,
         }
         self.anchor_history: list[AnchorRecord] = []
 
@@ -190,6 +197,7 @@ class OvernightMomentumStrategy:
 
     def _reset_hunt_state(self) -> None:
         self._direction = None
+        self._direction_confirmed_at = None
         self._anchor_fvg = None
         self._anchor_started_at = None
         self._pending_limit_price = None
@@ -246,6 +254,7 @@ class OvernightMomentumStrategy:
             if candidates:
                 self._anchor_fvg = _nearest_then_largest(candidates, bar.close)
                 self._direction = self._anchor_fvg.direction
+                self._direction_confirmed_at = bar.timestamp
                 self._anchor_started_at = bar.timestamp
                 self._pending_limit_price = self._entry_price(self._anchor_fvg)
                 self.stats["large_fvgs"] += 1
@@ -268,6 +277,48 @@ class OvernightMomentumStrategy:
                     self._anchor_started_at = bar.timestamp
                     self._pending_limit_price = self._entry_price(best)
                     self.stats["large_fvgs"] += 1
+
+            # Added 2026-08-27, after a real losing stretch (2026-08-14 to
+            # 2026-08-26, net -$1,500 across 14 trades, 43 of the 49
+            # lifetime trades run through this strategy) prompted a review,
+            # alongside the same-day question "why did we go long when
+            # market clearly shows a break of structure downwards": this
+            # strategy locks onto whichever direction's FVG anchors first
+            # and had no way to bail out early if price then broke fresh
+            # structure *against* that direction while still waiting to
+            # fill. A LONG anchor's resting limit sits below current price,
+            # betting a pullback down into the gap is a retracement, not a
+            # reversal -- if a swing point that formed *after* this anchor
+            # set the direction has since been closed through, that's real,
+            # live evidence the "pullback" may just be a continuing decline
+            # instead, and taking the entry means buying straight into it.
+            # Reuses the same swing_tracker already trusted for stop
+            # placement (see find_structural_stop_price below).
+            if self._direction is Direction.LONG:
+                swing_level = self.swing_tracker.most_recent_swing_low
+                swing_at = self.swing_tracker.most_recent_swing_low_at
+                bos_against_thesis = (
+                    swing_level is not None
+                    and swing_at is not None
+                    and swing_at > self._direction_confirmed_at
+                    and bar.close < swing_level
+                )
+            else:
+                swing_level = self.swing_tracker.most_recent_swing_high
+                swing_at = self.swing_tracker.most_recent_swing_high_at
+                bos_against_thesis = (
+                    swing_level is not None
+                    and swing_at is not None
+                    and swing_at > self._direction_confirmed_at
+                    and bar.close > swing_level
+                )
+            if bos_against_thesis:
+                self._close_anchor("invalidated", bar.timestamp)
+                self._rejected_anchor_ids.add(id(self._anchor_fvg))
+                self._reset_hunt_state()
+                self.stats["bos_invalidated"] += 1
+                self.state = State.WAIT_FVG
+                return None
 
             # User's explicit instruction, 2026-07-09: don't "hedge the
             # whole night" on the first anchor found -- if price keeps

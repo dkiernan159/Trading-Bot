@@ -114,6 +114,19 @@ class OpeningRangeStrategy:
         self.state = State.MARKING_LEVELS
         self._trading_date: date | None = None
         self._breakout_direction: Direction | None = None
+        # Added 2026-08-27, after a real losing stretch (2026-08-14 to
+        # 2026-08-26, net -$1,500 across 14 trades) prompted a review of
+        # what changed: nothing in config or code, but a user question the
+        # same day ("why did we go long when market clearly shows a break
+        # of structure downwards") pointed at a real gap -- the invalidation
+        # check below only fired on a full bar *close* through the box's
+        # opposite edge, so a same-direction anchor kept getting hunted
+        # even after price had already broken fresh, post-breakout
+        # structure against the thesis. This timestamp lets that check
+        # tell a swing point that formed *after* this breakout was
+        # confirmed apart from one that predates it (same "formed after X"
+        # pattern as runner.py's breakeven structure-hold).
+        self._breakout_confirmed_at: datetime | None = None
         self._levels: SessionLevelSet | None = None
         self._anchor_fvg: FairValueGap | None = None
         self._anchor_started_at: datetime | None = None
@@ -272,10 +285,42 @@ class OpeningRangeStrategy:
                 if self._breakout_direction is Direction.LONG
                 else bar.close > self.box.high
             )
-            if breakout_failed:
+            # Added 2026-08-27: the box-edge check above can be a long way
+            # off from where the breakout actually happened, so it can take
+            # a big adverse move to ever trip -- meanwhile a *closer*, fresh
+            # break of structure against the thesis (a swing point that
+            # formed after this breakout was confirmed, then got closed
+            # through) is exactly the kind of real-time evidence a
+            # discretionary trader would already be reading as "this
+            # breakout is losing steam," well before price round-trips all
+            # the way back through the box. Reuses the same swing_tracker
+            # already trusted for stop placement -- see
+            # find_structural_stop_price below -- just applied to the
+            # entry/thesis decision instead of the stop.
+            assert self._breakout_confirmed_at is not None
+            if self._breakout_direction is Direction.LONG:
+                swing_level = self.swing_tracker.most_recent_swing_low
+                swing_at = self.swing_tracker.most_recent_swing_low_at
+                bos_against_thesis = (
+                    swing_level is not None
+                    and swing_at is not None
+                    and swing_at > self._breakout_confirmed_at
+                    and bar.close < swing_level
+                )
+            else:
+                swing_level = self.swing_tracker.most_recent_swing_high
+                swing_at = self.swing_tracker.most_recent_swing_high_at
+                bos_against_thesis = (
+                    swing_level is not None
+                    and swing_at is not None
+                    and swing_at > self._breakout_confirmed_at
+                    and bar.close > swing_level
+                )
+            if breakout_failed or bos_against_thesis:
                 self.stats["breakouts_invalidated"] += 1
                 self._close_anchor("invalidated", bar.timestamp)
                 self._breakout_direction = None
+                self._breakout_confirmed_at = None
                 self._anchor_fvg = None
                 self._anchor_started_at = None
                 self._pending_limit_price = None
@@ -296,10 +341,12 @@ class OpeningRangeStrategy:
         if self.state is State.WAIT_BREAKOUT:
             if self.box.high is not None and bar.close > self.box.high:
                 self._breakout_direction = Direction.LONG
+                self._breakout_confirmed_at = bar.timestamp
                 self.state = State.WAIT_5M_FVG
                 self.stats["breakouts"] += 1
             elif self.box.low is not None and bar.close < self.box.low:
                 self._breakout_direction = Direction.SHORT
+                self._breakout_confirmed_at = bar.timestamp
                 self.state = State.WAIT_5M_FVG
                 self.stats["breakouts"] += 1
             return None
@@ -431,6 +478,7 @@ class OpeningRangeStrategy:
             return
 
         self._breakout_direction = None
+        self._breakout_confirmed_at = None
         self._anchor_fvg = None
         self._anchor_started_at = None
         self._pending_limit_price = None
@@ -480,6 +528,7 @@ class OpeningRangeStrategy:
         self._rejected_anchor_ids = set()
         self.state = State.MARKING_LEVELS
         self._breakout_direction = None
+        self._breakout_confirmed_at = None
         self._levels = None
         self._anchor_fvg = None
         self._anchor_started_at = None

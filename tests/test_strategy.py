@@ -482,6 +482,79 @@ def test_breakout_invalidated_when_price_closes_back_through_opposite_box_edge()
     assert strategy.anchor_history[0].ended_at == reversal_time
 
 
+def test_breakout_invalidated_by_a_fresh_break_of_structure_against_it():
+    """Added 2026-08-27: the box-edge check alone can take a big adverse
+    move to ever trip -- this is the real gap behind the user's question
+    "why did we go long when market clearly shows a break of structure
+    downwards." A swing low that forms *after* the breakout was confirmed,
+    then gets closed through, invalidates the thesis immediately -- well
+    before price has round-tripped all the way back through the box's own
+    low (99.5)."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    feed_box_and_breakout(strategy)  # LONG breakout; box.low=99.5, box.high=101.0
+    breakout_confirmed_at = strategy._breakout_confirmed_at
+    feed_large_5m_fvg(strategy, DAY + timedelta(minutes=45))  # anchors -> WAIT_FILL, gap 105.3-109.1
+    assert strategy._anchor_fvg is not None
+    pending_limit_price = strategy._pending_limit_price
+    assert pending_limit_price == pytest.approx(107.2)
+
+    # A genuine confirmed swing low at 108.0 -- above the anchor's own
+    # entry level (107.2), so this never coincides with a fill -- formed
+    # after the breakout was confirmed. Same safe-from-contaminating-FVG-
+    # detection magnitude as feed_premarket_swing_low.
+    swing_start = DAY + timedelta(minutes=101)
+    lows = [111.0, 109.5, 108.0, 109.5, 111.0]
+    for i, low in enumerate(lows):
+        signal = strategy.on_bar(bar_at(swing_start + timedelta(minutes=i), low + 0.3, low + 0.6, low, low + 0.3))
+        assert signal is None
+    assert strategy.swing_tracker.most_recent_swing_low == 108.0
+    assert strategy.swing_tracker.most_recent_swing_low_at > breakout_confirmed_at
+
+    # Price closes below that fresh swing low -- still well above the
+    # anchor's own entry level (107.2) and nowhere near the box low (99.5)
+    # -- without the resting entry ever filling.
+    reversal_time = swing_start + timedelta(minutes=10)
+    signal = strategy.on_bar(bar_at(reversal_time, 108.0, 108.0, 107.5, 107.6))
+    assert signal is None
+    assert strategy.stats["breakouts_invalidated"] == 1
+    assert strategy.state is State.WAIT_BREAKOUT
+    assert strategy._breakout_direction is None
+    assert strategy._breakout_confirmed_at is None
+    assert strategy._anchor_fvg is None
+    assert strategy._pending_limit_price is None
+
+
+def test_breakout_not_invalidated_by_a_swing_point_that_predates_it():
+    """A swing point that already existed *before* this breakout was even
+    confirmed is stale, not fresh evidence of the thesis weakening --
+    closing back through it must not trip the new check (only a swing
+    point that formed after the breakout does)."""
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+
+    feed_previous_day_levels(strategy)
+    # A confirmed swing low at 100.0, well before 9:30 -- predates the
+    # breakout entirely.
+    swing_start = DAY - timedelta(hours=1)
+    lows = [103.0, 101.5, 100.0, 101.5, 103.0]
+    for i, low in enumerate(lows):
+        strategy.on_bar(bar_at(swing_start + timedelta(minutes=i), low + 0.3, low + 0.6, low, low + 0.3))
+    assert strategy.swing_tracker.most_recent_swing_low == 100.0
+
+    feed_box_and_breakout(strategy)  # LONG breakout; box.low=99.5, box.high=101.0
+
+    # Price closes below that stale (pre-breakout) swing low of 100.0, but
+    # not below the box's own low (99.5) -- must not invalidate.
+    signal = strategy.on_bar(bar_at(DAY + timedelta(minutes=31), 100.5, 100.5, 99.7, 99.8))
+    assert signal is None
+    assert strategy.stats["breakouts_invalidated"] == 0
+    assert strategy.state is State.WAIT_5M_FVG
+    assert strategy._breakout_direction is Direction.LONG
+
+
 def test_anchor_recorded_as_session_ended_when_cutoff_hits_before_it_fills():
     """An anchor that's still live (never filled, never superseded, never
     invalidated) when the no-new-entries cutoff arrives shows up in the
