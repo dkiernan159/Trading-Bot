@@ -360,22 +360,31 @@ class OvernightMomentumStrategy:
                 else bar.high >= self._pending_limit_price
             )
             if filled:
-                # Stop is the most recent 1m break-of-structure swing
-                # point on the stop side of entry, or (if none qualifies)
-                # the nearest strong 5m FVG's outer edge on that same side
-                # -- see risk.py's find_structural_stop_price for the full
-                # rule. swing-first (prefer_swing=True) specifically for
-                # this (overnight) strategy: a real 32-trade backtest
-                # showed swing-based stops winning 50% (+$55/trade) versus
-                # FVG-based stops winning only 35% (+$12/trade) here --
-                # the opposite holds for the day strategy, see strategy.py.
+                # Stop is the nearest strong 5m FVG's outer edge on the
+                # stop side of entry, or (if none qualifies) the most
+                # recent 1m break-of-structure swing point on that same
+                # side -- see risk.py's find_structural_stop_price for the
+                # full rule. FVG-first (prefer_swing=False) since 2026-09-01
+                # -- this strategy used to be swing-first based on a real
+                # 32-trade backtest that showed swing-based stops winning
+                # 50% (+$55/trade) versus FVG-based stops winning only 35%
+                # (+$12/trade) here. Live data has since roughly doubled
+                # that sample (35 swing-stop trades vs 15 fvg-stop trades)
+                # and shown the opposite: fvg-based stops won 60%
+                # (net +$1,114.50) against swing-based stops' 40%
+                # (net -$701.50), consistently in both directions (fvg/long
+                # +$684.50, fvg/short +$430.00 vs swing/long -$134.50,
+                # swing/short -$567.00). Your explicit choice, after being
+                # shown this, was to flip to match what the live data now
+                # shows rather than trust the smaller, older backtest --
+                # revisit if a larger live sample says otherwise again.
                 stop_candidate = find_structural_stop_price(
                     direction=self._direction,
                     entry_price=self._pending_limit_price,
                     fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._direction),
                     swing_high=self.swing_tracker.most_recent_swing_high,
                     swing_low=self.swing_tracker.most_recent_swing_low,
-                    prefer_swing=True,
+                    prefer_swing=False,
                 )
                 bracket = compute_stop_target(
                     direction=self._direction,

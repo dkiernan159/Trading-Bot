@@ -98,8 +98,18 @@ def find_structural_stop_price(
     support/resistance gap nearby, and swing-first let in a lot of
     marginal setups that used to get skipped as no_valid_stop. So each
     strategy passes its own `prefer_swing` based on its own real data
-    (see strategy.py: prefer_swing=False; overnight_strategy.py:
-    prefer_swing=True) rather than sharing one global priority order.
+    (see strategy.py: prefer_swing=False) rather than sharing one global
+    priority order.
+
+    **overnight_strategy.py flipped to prefer_swing=False on 2026-09-01:**
+    the 32-trade backtest above was the original basis for its
+    prefer_swing=True, but live data had since roughly doubled that sample
+    (35 swing-stop trades vs 15 fvg-stop trades) and shown the opposite --
+    fvg-based stops won 60% (net +$1,114.50) against swing-based stops'
+    40% (net -$701.50), consistently in both directions. Your explicit
+    choice, after being shown this, was to trust the larger live sample
+    over the smaller backtest -- revisit if a larger live sample says
+    otherwise again.
 
     **Cap fallback added 2026-07-10, then reverted 2026-07-14:** briefly
     fell back to the max_stop_dollars budget as a last-resort stop

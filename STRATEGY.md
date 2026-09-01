@@ -929,6 +929,50 @@ regression test in `tests/test_dashboard.py`
 (`test_read_live_trades_tolerates_a_blank_stop_or_target_price`),
 confirmed via revert-and-confirm; full suite at 169 passing.
 
+## Overnight stop preference flipped to FVG-first (2026-09-01)
+
+"I want to learn from winning trades as we've seen a spike in loss rate."
+With the August 5-7 backfill in place, a full breakdown of all 62 closed
+trades by every dimension available in trades.csv (exit_reason,
+stop_source, direction, strategy, session window, duration) turned up one
+clear, consistent, actionable pattern: trades whose stop came from a real
+5m FVG edge won 60% of the time (net +$1,114.50 across 15 trades);
+trades whose stop came from a 1m break-of-structure swing point won only
+40% (net -$701.50 across 35 trades -- the majority of all trades). This
+held in both directions independently (fvg/long +$684.50, fvg/short
++$430.00 vs swing/long -$134.50, swing/short -$567.00), ruling out "it's
+just a directional artifact."
+
+This directly contradicts the overnight strategy's own configured
+preference: `find_structural_stop_price(..., prefer_swing=True)`, chosen
+2026-07-08 based on a real but much smaller 32-trade backtest that found
+the opposite (swing 50%/+$55 per trade vs fvg 35%/+$12 per trade -- see
+risk.py's `find_structural_stop_price` docstring for the full history).
+Flagged this contradiction directly rather than silently trusting either
+number; your explicit choice was to flip `prefer_swing` to `False` for
+this strategy (matching what the day strategy has always used, and now
+also what the larger live sample shows) rather than keep trusting the
+smaller, older backtest. `risk.py`'s docstring and
+`overnight_strategy.py`'s call-site comment both updated with the real
+numbers and the reasoning; if a larger live sample reverses this again,
+revisit the same way.
+
+Also surfaced by the same breakdown, not acted on: day strategy remains
+badly underperforming (7 lifetime trades, 14% win rate, -$776.00) --
+flagged and discussed, but left running since 7 trades is still too small
+a sample to call it structurally broken rather than unlucky; asia session
+(19:00-02:00 ET) is the single strongest slice of the whole dataset
+(+$1,487.00, largest sample); london (02:00-05:00 ET) is roughly flat.
+
+New regression test in `tests/test_overnight_strategy.py`
+(`test_stop_prefers_the_fvg_edge_over_a_qualifying_swing_point` -- builds
+a real qualifying swing point *and* a real qualifying fvg edge
+simultaneously via the same two-anchor-supersede construction as
+`test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill`,
+confirms the nearer fvg edge wins the stop, not the swing point), verified
+via revert-and-confirm (flipping back to `prefer_swing=True` makes it fail
+with the expected `'swing' == 'fvg'` mismatch); full suite at 170 passing.
+
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 
 A second, parallel strategy (`src/overnight_strategy.py`, `OvernightMomentumStrategy`)

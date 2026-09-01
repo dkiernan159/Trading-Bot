@@ -176,6 +176,41 @@ def test_full_fvg_then_fill_at_its_own_midpoint_sets_long_direction_directly():
     assert strategy.anchor_history[0].outcome == "filled"
 
 
+def test_stop_prefers_the_fvg_edge_over_a_qualifying_swing_point():
+    """Added 2026-09-01, your explicit choice after being shown the real
+    numbers: prefer_swing flipped from True to False for this strategy --
+    live data (35 swing-stop trades vs 15 fvg-stop trades) showed fvg-based
+    stops winning 60% (net +$1,114.50) against swing-based stops' 40%
+    (net -$701.50), the opposite of the older 32-trade backtest this
+    strategy's swing-first default used to be based on. Builds a real
+    swing low at 90.0 plus a first FVG anchor that then gets superseded by
+    a second, higher one (same construction as
+    test_anchor_stays_live_and_moves_the_resting_price_while_waiting_to_fill)
+    -- the superseded first FVG stays unmitigated and sits below the
+    second FVG's own entry price, so at fill time there's a real qualifying
+    FVG *and* a real qualifying swing point on the stop side. With
+    prefer_swing=False the nearer fvg edge must win, not the far-away
+    swing low a prefer_swing=True config would have used instead."""
+    cfg = load_test_config()
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy.on_bar(flat_bar(NIGHT_START, 100.0))
+
+    anchor_start = feed_swing_low_after_window_opens(strategy, NIGHT_START, swing_low=90.0)
+    first_low, first_high = feed_large_5m_fvg(strategy, anchor_start)
+
+    second_start = anchor_start + timedelta(minutes=5 * 8) + timedelta(minutes=20)
+    second_low, second_high = feed_large_5m_fvg(strategy, second_start, quiet_price=109.6, c1_end=113.3)
+    assert second_low > first_high  # the superseded FVG sits below the new anchor's own entry
+
+    fill_time = second_start + timedelta(minutes=5 * 8) + timedelta(minutes=16)
+    signal = strategy.on_bar(bar_at(fill_time, second_high, second_high + 0.1, second_low, second_low + 0.1))
+
+    assert signal is not None
+    assert signal.stop_source == "fvg"
+    assert signal.stop_price == pytest.approx(first_low)
+    assert signal.stop_price != pytest.approx(90.0)
+
+
 def test_full_fvg_then_fill_sets_short_direction_directly():
     """Same as above but a bearish FVG -- confirms the pooled-both-
     directions search (new in this strategy, since the day strategy never
