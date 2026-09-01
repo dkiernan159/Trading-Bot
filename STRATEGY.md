@@ -874,6 +874,61 @@ be ruled out or fixed by a parameter change. Watch the next stretch of
 live trades against this same win-rate/R:R math before assuming the
 problem is fully solved.
 
+## trades.csv August 5-7 gap, backfilled (2026-09-01)
+
+"Dashboard isnt showing the same as the server side trades look." You
+shared TopstepX's own August stats page; its weekly subtotals summed to
+roughly +$2,200 across 37 trades, against trades.csv's +$819.50 across 31
+-- a real ~$1,380/6-trade gap. Investigated by matching every TopstepX row
+individually against trades.csv (by entry/exit time within about a
+minute, same direction) rather than trusting the aggregate numbers alone:
+
+- **Every trade from 2026-08-10 onward matched cleanly** (small
+  point-level differences from normal stop-order slippage, nothing
+  structural) -- confirming the position-reconciliation (2026-08-08) and
+  orphaned-order-cancellation (2026-08-10) fixes are holding; nothing has
+  gone missing since.
+- **The entire gap is confined to 2026-08-05 through 08-07** -- the ~48
+  hours immediately *before* those fixes shipped. Six real trades never
+  made it into trades.csv at all (including a +$988.50 winner with zero
+  trace anywhere), and one existing row (2026-08-07T04:26, logged as a
+  +$448.50 target hit) had picked up a *different* real trade's exit
+  fill (a coincidentally-timed target/stop leg from a second, entirely
+  untracked position) instead of its own real close -- its actual exit
+  was $760.50, over two hours later than what was logged. This is the
+  same lost-position failure mode already fixed, just caught mid-flight
+  right before the fix landed -- not a new, currently-live bug.
+
+**Backfilled** using real fills recovered from TopstepX's own trade log
+(a `share=` link -- `topstepx.com` itself is blocked by this project's
+own execution environment's egress proxy when Claude tries to fetch it
+directly, so this required you to paste the table). A one-off script
+(not part of the codebase -- run directly against the live
+`trades/trades.csv`, backed up first, with an entry/exit-price match
+check before touching the one existing row so it refuses to run twice or
+against an unexpected file state) added the 6 missing rows and corrected
+the 1 mismatched one. `stop_price`/`target_price`/`stop_fvg_size` are
+left blank on every touched row -- the real structural levels aren't
+recoverable this far after the fact, and guessing them would corrupt the
+same stop-source win-rate analysis this backfill was meant to support.
+`exit_reason` is set to a new `"backfilled"` value (not `"target"`/
+`"stop"`) for the same reason -- we know the real P&L, not which bracket
+leg actually closed each one.
+
+**Second-order bug this surfaced:** `dashboard.py`'s `read_live_trades`
+called `float(row["stop_price"])`/`float(row["target_price"])`
+unconditionally -- fine for every real bot-generated row (always
+populated) but not for a blank backfilled one, raising uncaught and
+taking down the whole Performance/Live trades section (Backtest, a
+separate code path hitting the TopstepX API directly, kept working,
+which is why only *some* of the dashboard went blank). Fixed to tolerate
+a blank the same way `stop_fvg_size` already did (`float(...) if
+row.get(...) else None`) -- `dashboard_template.html`'s `fmt()` already
+renders `null` as `"n/a"`, so no template change was needed. New
+regression test in `tests/test_dashboard.py`
+(`test_read_live_trades_tolerates_a_blank_stop_or_target_price`),
+confirmed via revert-and-confirm; full suite at 169 passing.
+
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 
 A second, parallel strategy (`src/overnight_strategy.py`, `OvernightMomentumStrategy`)

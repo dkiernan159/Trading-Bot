@@ -72,6 +72,30 @@ def test_read_live_trades_defaults_stop_source_to_unknown_for_old_rows(tmp_path)
     assert rows[0]["stop_fvg_size"] is None
 
 
+def test_read_live_trades_tolerates_a_blank_stop_or_target_price(tmp_path):
+    """Added 2026-09-01: a manually backfilled historical row (real broker
+    fills recovered from TopstepX's own trade log, entry/exit prices known
+    but the actual stop/target levels lost to time -- see STRATEGY.md) left
+    stop_price/target_price blank, same convention already used for a
+    missing stop_fvg_size. float("") raised uncaught here, taking down the
+    whole Performance/Live trades section of the dashboard (Backtest, a
+    separate code path, kept working) -- confirmed live the moment such a
+    row was appended."""
+    csv_path = tmp_path / "trades.csv"
+    csv_path.write_text(
+        _HEADER.rstrip("\n")
+        + ",stop_source,stop_fvg_size\n"
+        + "2026-08-07T09:02:22+00:00,long,3,29648.75,,,29813.5,2026-08-07T20:12:21+00:00,backfilled,164.75,988.5,overnight,unknown,\n"
+    )
+
+    rows = read_live_trades(str(csv_path))
+
+    assert len(rows) == 1
+    assert rows[0]["stop_price"] is None
+    assert rows[0]["target_price"] is None
+    assert rows[0]["pnl_dollars"] == 988.5
+
+
 def test_read_status_returns_none_when_file_missing(tmp_path):
     missing_path = tmp_path / "does_not_exist.json"
     assert read_status(str(missing_path)) is None
