@@ -74,7 +74,17 @@ class FakeBroker(Broker):
 
 
 def load_test_config():
-    return load_config(Path(__file__).resolve().parents[1] / "config.yaml")
+    cfg = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
+    # The breakeven tests below (added 2026-08-20) were written against a
+    # clean 50%-of-the-way-to-target trigger so the bar prices in each
+    # fixture ("high=110.0" for an entry=100/target=120 trade, etc.) land
+    # exactly on the threshold being tested -- pin it here so a later
+    # real-world retune of config.yaml's own trigger_pct (raised to 0.8
+    # 2026-09-03, see STRATEGY.md) doesn't silently break this file's
+    # "halfway" math. Same isolation rationale as test_strategy.py/
+    # test_backtest.py pinning contract_size/max_stop_dollars.
+    cfg.strategy.breakeven.trigger_pct = 0.5
+    return cfg
 
 
 def make_signal(entry_price: float = 100.0) -> EntrySignal:

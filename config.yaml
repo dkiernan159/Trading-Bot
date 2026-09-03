@@ -148,10 +148,20 @@ strategy:
                                     # down and hit the original stop. Applies to both day and overnight
                                     # strategies (shared, same as everything else in this strategy: section).
     enabled: true
-    trigger_pct: 0.5                # ASSUMPTION, your explicit choice: move the stop once price has moved
-                                    # halfway from entry to target. Untested -- watch real results and retune;
-                                    # a lower value locks in breakeven sooner (less giveback on reversals) but
-                                    # risks stopping out trades that would have gone on to hit full target.
+    trigger_pct: 0.8                # Raised from 0.5 2026-09-03, your explicit instruction ("Id rather we just
+                                    # let the trade run at this point than take $20 wins here and there"). At
+                                    # 0.5, every single qualifying trade got capped at breakeven+buffer -- the
+                                    # structure-aware hold below (runner.py's _fresh_supporting_structure) never
+                                    # once fired in the entire bot.log history (10 breakeven moves, 0 holds):
+                                    # a confirmed fresh swing point takes more bars to form and confirm than
+                                    # most trades take to run halfway to target, so the "let it run if structure
+                                    # supports it" exception was effectively dead code at this trigger point.
+                                    # 0.8 guards only very late in a trade -- fewer trades get capped early, and
+                                    # the ones that do are close enough to target that giving up the remaining
+                                    # upside for safety is a smaller trade-off. Still untested at this value --
+                                    # watch real results and retune; a lower value locks in breakeven sooner
+                                    # (less giveback on reversals) but risks stopping out trades that would have
+                                    # gone on to hit full target -- which is exactly what was happening at 0.5.
     buffer_dollars: 20               # your explicit choice: small positive buffer beyond exact breakeven, same
                                     # $-to-points conversion as max_stop_dollars (buffer_dollars / point_value /
                                     # contract_size) -- so a breakeven stop-out is still a small real win after

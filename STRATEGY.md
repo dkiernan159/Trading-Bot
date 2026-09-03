@@ -973,6 +973,45 @@ confirms the nearer fvg edge wins the stop, not the swing point), verified
 via revert-and-confirm (flipping back to `prefer_swing=True` makes it fail
 with the expected `'swing' == 'fvg'` mismatch); full suite at 170 passing.
 
+## Breakeven trigger raised to 80% (2026-09-03)
+
+"Why are we hitting so many break even stops? Id rather we just let the
+trade run at this point than take $20 wins here and there." Checked the
+structure-aware hold (added 2026-08-20, see the breakeven section above)
+before changing anything, since it was built for exactly this complaint:
+grepped every rotated `bot.log` back to 2026-07-12 for both
+`"moved stop to breakeven"` and `"holding the original stop"`. Result:
+**10 breakeven moves, 0 holds, ever.** Confirmed the deploy was live
+(you'd pulled after every push this session) -- the hold isn't broken, it
+was just structurally too strict to matter at the old 50% trigger: a
+confirmed swing point needs several bars to form *and* confirm after
+entry, which usually hasn't happened yet by the time a trade has already
+run halfway to target. The "let it run if structure supports it"
+exception was, in practice, dead code at that trigger point -- every
+single qualifying trade got capped regardless.
+
+Weighed against the original 4-trade historical review (see the
+breakeven section above), which found breakeven was the *correct* call 3
+times out of 4 -- real protective value, not something to just delete.
+Your explicit choice, given both facts: raise `strategy.breakeven.trigger_pct`
+from 0.5 to **0.8** rather than disable breakeven outright. Guards only
+very late in a trade now (80% of the way to target) -- far fewer trades
+get capped early, and the ones that do are close enough to target that
+giving up the remaining upside for safety is a smaller trade-off than it
+was at 50%. Still an ASSUMPTION/untested at this exact value -- watch
+real results and retune; the structure-aware hold code is left in place
+(not removed) even though it's likely to remain rarely-firing at 80% too,
+since it's purely additive and does no harm sitting dormant.
+
+`tests/test_runner.py`'s breakeven/structure-aware-hold tests (7 of them)
+were written against a clean 50%-of-the-way math and broke when
+config.yaml's real value changed -- pinned `trigger_pct = 0.5` in that
+file's own `load_test_config()` (same isolation pattern already used by
+`test_strategy.py`/`test_backtest.py` for `contract_size`/
+`max_stop_dollars`), so they keep testing the mechanism itself
+independent of whatever the live-tuned config value is. Full suite at
+170 passing.
+
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 
 A second, parallel strategy (`src/overnight_strategy.py`, `OvernightMomentumStrategy`)
