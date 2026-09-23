@@ -123,6 +123,7 @@ class ProjectXGatewayBroker(Broker):
         self._order_search_log_count = 0
         self._position_search_log_count = 0
         self._order_modify_log_count = 0
+        self._contract_search_log_count = 0
 
     # -- auth / setup ------------------------------------------------------
 
@@ -232,9 +233,36 @@ class ProjectXGatewayBroker(Broker):
         # what contract resolution needs (it can run any time of day).
         data = self._post("/Contract/search", {"searchText": symbol, "live": False})
         contracts = data.get("contracts") or []
+        if self._contract_search_log_count < 3:
+            self._contract_search_log_count += 1
+            print(f"[LIVE] /Contract/search raw response for searchText={symbol!r} (verify field names): {contracts}")
         if not contracts:
             raise RuntimeError(f"No contract found for symbol '{symbol}'")
-        self._contract_id = contracts[0]["id"]
+
+        # Confirmed live 2026-09-23: contracts[0] used to be trusted blindly
+        # -- searchText is a loose text search, not guaranteed to rank an
+        # exact-symbol match first, and mixing up a real symbol with a
+        # related one is exactly the kind of mistake that matters here
+        # (MNQ vs NQ is the same trade at 10x the position size for the
+        # same configured contract_size, at your explicit request to make
+        # sure this never silently happens). A contract's own id is
+        # confirmed live to follow "CON.F.US.<SYMBOL>.<MONTH><YEAR>" (e.g.
+        # "CON.F.US.MNQ.Z26") -- validate against that confirmed format
+        # instead of an unverified field name, and refuse to guess if
+        # nothing in the results actually matches the requested symbol.
+        def _symbol_segment(contract_id: str) -> str | None:
+            parts = contract_id.split(".")
+            return parts[3] if len(parts) > 3 else None
+
+        exact = [c for c in contracts if _symbol_segment(c.get("id", "")) == symbol.upper()]
+        if not exact:
+            raise RuntimeError(
+                f"/Contract/search for '{symbol}' returned {len(contracts)} contract(s), but "
+                f"none of their ids had a '{symbol.upper()}' symbol segment (ids seen: "
+                f"{[c.get('id') for c in contracts]}) -- refusing to silently trade whatever "
+                f"contracts[0] happened to be."
+            )
+        self._contract_id = exact[0]["id"]
         return self._contract_id
 
     def fetch_historical_bars(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:

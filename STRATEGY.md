@@ -1012,6 +1012,45 @@ file's own `load_test_config()` (same isolation pattern already used by
 independent of whatever the live-tuned config value is. Full suite at
 170 passing.
 
+## Contract resolution validated against MNQ, not just trusted (2026-09-23)
+
+Also this session: switched the live account to a new funded account
+(`PROJECTX_ACCOUNT_ID` in `.env`, resolved via the label-lookup path
+above -- `EXPRESS-V2-69346-93430259` -> numeric id `27880244`, confirmed
+via `bot.log`) and archived the old combine's `trades.csv` to
+`trades-combine-archive.csv` (still there for future analysis -- see the
+backfill section above for the same archive-don't-delete rationale) so
+the dashboard starts clean for the new account without losing history.
+
+"lets make sure the bot is trading MNQ (not NQ) so we're trading micro
+contracts not mini's" -- real bot.log evidence already confirmed the
+currently-resolved contract is `CON.F.US.MNQ.Z26` (Micro Nasdaq), and
+config.yaml's `point_value: 2.0` matches MNQ's own multiplier (NQ's is
+$20, 10x larger) -- so this was already working correctly. But
+`ProjectXGatewayBroker._resolve_contract` itself had zero test coverage
+and blindly trusted `contracts[0]` from `/Contract/search` with no
+validation at all that the first result was actually the requested
+symbol -- `searchText` is a loose text search, not guaranteed to rank an
+exact match first. Confirmed via revert-and-confirm that this was a real,
+not theoretical, gap: reverting the fix and feeding a synthetic
+NQ-before-MNQ result set through the exact same code path resolved to
+`CON.F.US.NQ.Z26` -- the E-mini, 10x the intended position size for the
+same configured `contract_size`, with nothing anywhere flagging it.
+
+Fixed to validate against the contract `id`'s own confirmed format
+(`CON.F.US.<SYMBOL>.<MONTH><YEAR>`, real evidence from `bot.log` rather
+than an unverified field-name guess) -- picks the contract whose id's
+symbol segment exactly matches the requested symbol, and raises a clear
+`RuntimeError` naming every id it actually saw if none match, rather than
+silently trading whatever happened to sort first. Same defensive
+raw-response-logging pattern as this file's other unverified endpoints
+(`_contract_search_log_count`, prints the first 3 times). New regression
+tests in `tests/test_projectx_gateway.py` (NQ-ranked-first still resolves
+to MNQ; no match raises with the real ids named; empty result still
+raises the original "no contract found" error; resolution is cached and
+only hits the API once) -- confirmed via revert-and-confirm; full suite
+at 174 passing.
+
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 
 A second, parallel strategy (`src/overnight_strategy.py`, `OvernightMomentumStrategy`)

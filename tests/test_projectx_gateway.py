@@ -129,6 +129,61 @@ def test_connect_resolves_account_id_via_account_search_when_not_numeric(monkeyp
     assert "Resolved PROJECTX_ACCOUNT_ID" in capsys.readouterr().out
 
 
+# ---------- _resolve_contract ----------
+# (added 2026-09-23, at the user's explicit request to confirm the bot
+# trades MNQ (Micro Nasdaq) and not NQ (the much larger E-mini) -- real
+# evidence from bot.log confirmed it currently resolves correctly
+# ("subscribing to contract CON.F.US.MNQ.Z26"), but _resolve_contract
+# itself blindly trusted contracts[0] with no validation at all, which is
+# exactly the kind of silent-mixup risk worth closing given a wrong
+# resolution here means trading 10x the intended position size on every
+# single trade, not a cosmetic bug.)
+
+
+def test_resolve_contract_picks_the_exact_symbol_match_not_just_the_first_result():
+    """searchText is a loose text search -- not guaranteed to rank an
+    exact-symbol match first. Feeds NQ ahead of MNQ in the results to
+    confirm contracts[0] is not blindly trusted."""
+    broker = make_broker()
+    contracts = {
+        "contracts": [
+            {"id": "CON.F.US.NQ.Z26", "name": "E-mini Nasdaq"},
+            {"id": "CON.F.US.MNQ.Z26", "name": "Micro Nasdaq"},
+        ]
+    }
+    with patch.object(broker, "_post", return_value=contracts) as mock_post:
+        contract_id = broker._resolve_contract("MNQ")
+
+    assert contract_id == "CON.F.US.MNQ.Z26"
+    mock_post.assert_called_once_with("/Contract/search", {"searchText": "MNQ", "live": False})
+
+
+def test_resolve_contract_raises_rather_than_guess_when_nothing_matches():
+    broker = make_broker()
+    contracts = {"contracts": [{"id": "CON.F.US.NQ.Z26", "name": "E-mini Nasdaq"}]}
+    with patch.object(broker, "_post", return_value=contracts):
+        with pytest.raises(RuntimeError, match="none of their ids had a 'MNQ' symbol segment"):
+            broker._resolve_contract("MNQ")
+
+
+def test_resolve_contract_raises_when_search_returns_nothing():
+    broker = make_broker()
+    with patch.object(broker, "_post", return_value={"contracts": []}):
+        with pytest.raises(RuntimeError, match="No contract found for symbol 'MNQ'"):
+            broker._resolve_contract("MNQ")
+
+
+def test_resolve_contract_caches_and_only_calls_the_api_once():
+    broker = make_broker()
+    contracts = {"contracts": [{"id": "CON.F.US.MNQ.Z26", "name": "Micro Nasdaq"}]}
+    with patch.object(broker, "_post", return_value=contracts) as mock_post:
+        first = broker._resolve_contract("MNQ")
+        second = broker._resolve_contract("MNQ")
+
+    assert first == second == "CON.F.US.MNQ.Z26"
+    mock_post.assert_called_once()
+
+
 def _make_builder_mock() -> MagicMock:
     """A HubConnectionBuilder mock whose chained with_url/with_automatic_reconnect
     calls all return itself, so .build() at the end of the chain is reachable --
