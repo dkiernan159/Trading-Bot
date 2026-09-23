@@ -5,7 +5,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from datetime import datetime, time as dtime, timezone
+from datetime import date, datetime, time as dtime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -366,6 +366,11 @@ class Runner:
         # so the very first bar after startup always checks immediately
         # rather than waiting a full RECONCILE_INTERVAL_SECONDS first.
         self._last_reconcile_check: datetime | None = None
+        # See _backfill_day_box_if_needed -- None means "not checked for
+        # any date yet"; set to the local date of the first bar processed
+        # each day, so the backfill attempt (and the fetch_historical_bars
+        # call it makes) only ever runs once per day, not on every bar.
+        self._day_box_backfill_checked_for: date | None = None
 
         self.day_slot = _StrategySlot("day", OpeningRangeStrategy(cfg), cfg.session.flatten_by, self)
         self.overnight_slot: _StrategySlot | None = None
@@ -375,6 +380,65 @@ class Runner:
     def start(self) -> None:
         self.broker.connect()
         self.broker.subscribe_bars(self.cfg.instrument.symbol, 1, self.on_bar)
+
+    def _backfill_day_box_if_needed(self, local: datetime) -> None:
+        """Confirmed live 2026-09-23: OpeningRangeBox (src/opening_range.py)
+        can only ever form from bars it personally observes live -- once
+        the real 9:30-9:45 ET window has passed with zero live bars landing
+        in it, box._high stays None forever and _formed can never flip
+        (see its own add_bar: the elif branch that sets _formed requires
+        self._high is not None). A process restart any time after 9:30 --
+        a deploy, a crash, anything -- permanently strands the day strategy
+        at BUILDING_BOX for the rest of that trading day. The 2026-07-09
+        fix for this same restart risk (see process_started_at above) only
+        added visibility, not recovery -- a real live restart today (to
+        deploy the MNQ contract-validation fix) hit exactly this, and
+        nothing caught it until the user noticed the dashboard stuck on
+        BUILDING_BOX.
+
+        Called from _on_bar, gated to the *first* bar processed for each
+        calendar date -- i.e. right after day_slot.on_bar has already run
+        for that same bar, so if this is a new day, OpeningRangeStrategy's
+        own _start_new_day has already reset the box for today (its
+        box.reset_for_day(trading_date) call) before this ever runs. Doing
+        this before that reset would just get silently wiped the instant
+        the first live bar of the day arrived. Only fires once per day
+        (see the caller) -- not every bar during a completely ordinary
+        9:30-9:45 window, where the box already forms correctly on its own.
+
+        Backfills the box directly from real historical bars via the
+        broker's own fetch_historical_bars -- not through the strategy's
+        on_bar/state machine, so a backfilled bar can never be mistaken for
+        a live one and trigger a real entry signal off stale data (only
+        box.add_bar is called here, nothing that can return an
+        EntrySignal). Only ProjectXGatewayBroker implements
+        fetch_historical_bars -- MockBroker (tests) doesn't and doesn't
+        need to, since backtest.py replays full history from its own start
+        and can never hit this in the first place -- so this is a no-op
+        there via the hasattr guard.
+        """
+        if not hasattr(self.broker, "fetch_historical_bars"):
+            return
+        if local.time() < self.cfg.session.ny_open or local.time() >= self.cfg.session.no_new_entries_after:
+            return  # too early for the box window to matter yet, or too late in the day for it to matter anymore
+        start = datetime.combine(local.date(), self.cfg.session.ny_open, tzinfo=self.tz)
+        try:
+            bars = self.broker.fetch_historical_bars(self.cfg.instrument.symbol, start, local)
+        except Exception:
+            print(
+                "[LIVE] WARNING: failed to backfill the day strategy's opening-range box -- "
+                f"it may stay stuck at BUILDING_BOX if the live 9:30-9:45 window was already "
+                f"missed:\n{traceback.format_exc()}"
+            )
+            return
+        box = self.day_slot.strategy.box
+        for bar in bars:
+            box.add_bar(bar)
+        if bars:
+            print(
+                f"[LIVE] day: backfilled {len(bars)} historical bar(s) for today's opening-range "
+                f"box (box_high={box.high}, box_low={box.low}, formed={box.is_formed})"
+            )
 
     def on_bar(self, bar: Bar) -> None:
         # Confirmed live 2026-07-08: an uncaught exception anywhere in
@@ -399,6 +463,9 @@ class Runner:
         self.day_slot.on_bar(bar, local.time())
         if self.overnight_slot is not None:
             self.overnight_slot.on_bar(bar, local.time())
+        if self._day_box_backfill_checked_for != local.date():
+            self._day_box_backfill_checked_for = local.date()
+            self._backfill_day_box_if_needed(local)
         self._reconcile_open_positions(bar)
         self._write_status(bar)
 

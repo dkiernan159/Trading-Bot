@@ -840,3 +840,123 @@ def test_holds_the_original_stop_for_a_short_with_fresh_supporting_structure(tmp
     assert broker.modify_stop_price_calls == []
     assert trade.breakeven_moved is False
     assert trade.stop_price == 110.0  # untouched
+
+
+# ---------- _backfill_day_box_if_needed ----------
+# (added 2026-09-23: a live restart after 9:30 ET -- to deploy the MNQ
+# contract-validation fix -- permanently stranded the day strategy at
+# BUILDING_BOX for the rest of that trading day. OpeningRangeBox can only
+# ever form from bars it personally observes live -- see opening_range.py's
+# own add_bar: once the real 9:30-9:45 window has passed with zero live
+# bars landing in it, _high stays None forever and _formed can never flip.
+# DAY (10:15 ET) is already well past the window -- the exact scenario.)
+
+
+def test_first_bar_past_the_box_window_backfills_and_unsticks_the_box(tmp_path):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    fetch_calls = []
+    historical_bars = [
+        Bar(timestamp=DAY.replace(hour=9, minute=30), open=100.0, high=101.0, low=99.5, close=100.5),
+        Bar(timestamp=DAY.replace(hour=9, minute=40), open=100.5, high=102.0, low=100.0, close=101.5),
+        # Past opening_range_end (9:45) -- this is what actually confirms
+        # the box, same as a live bar would.
+        Bar(timestamp=DAY.replace(hour=9, minute=46), open=101.5, high=101.7, low=101.2, close=101.4),
+    ]
+
+    def fake_fetch_historical_bars(symbol, start, end):
+        fetch_calls.append((symbol, start, end))
+        return historical_bars
+
+    broker.fetch_historical_bars = fake_fetch_historical_bars
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    runner.on_bar(Bar(timestamp=DAY, open=105.0, high=105.5, low=104.5, close=105.0))
+
+    box = runner.day_slot.strategy.box
+    assert box.is_formed is True
+    assert box.high == 102.0  # only the two in-window bars count toward the range itself
+    assert box.low == 99.5
+    assert len(fetch_calls) == 1
+    symbol, start, end = fetch_calls[0]
+    assert symbol == cfg.instrument.symbol
+    assert start.time() == cfg.session.ny_open
+    assert end == DAY
+
+
+def test_backfill_only_runs_once_per_day_even_across_many_bars(tmp_path):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    fetch_calls = []
+    broker.fetch_historical_bars = lambda symbol, start, end: fetch_calls.append(1) or []
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    runner.on_bar(Bar(timestamp=DAY, open=105.0, high=105.5, low=104.5, close=105.0))
+    runner.on_bar(Bar(timestamp=DAY + timedelta(minutes=1), open=105.0, high=105.5, low=104.5, close=105.0))
+    runner.on_bar(Bar(timestamp=DAY + timedelta(minutes=2), open=105.0, high=105.5, low=104.5, close=105.0))
+
+    assert len(fetch_calls) == 1
+
+
+def test_backfill_skipped_entirely_when_the_broker_has_no_historical_bars_support(tmp_path):
+    """MockBroker/backtest don't implement fetch_historical_bars -- and
+    don't need to, since backtest replays full history from its own start
+    and can never hit this. Must not raise (FakeBroker here has no such
+    method either, matching that)."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    assert not hasattr(broker, "fetch_historical_bars")
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    runner.on_bar(Bar(timestamp=DAY, open=105.0, high=105.5, low=104.5, close=105.0))  # must not raise
+
+    assert runner.day_slot.strategy.box.is_formed is False
+
+
+def test_backfill_tolerates_the_broker_raising(tmp_path, capsys):
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+
+    def raising_fetch(symbol, start, end):
+        raise RuntimeError("history API blip")
+
+    broker.fetch_historical_bars = raising_fetch
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    runner.on_bar(Bar(timestamp=DAY, open=105.0, high=105.5, low=104.5, close=105.0))  # must not raise
+
+    assert runner.day_slot.strategy.box.is_formed is False
+    assert "failed to backfill the day strategy's opening-range box" in capsys.readouterr().out
+
+
+def test_backfill_not_attempted_before_the_box_window_even_opens(tmp_path):
+    """A normal, un-stuck day: the first bar arrives well before 9:30 --
+    the box will build correctly from live bars as usual, no backfill
+    needed or wanted."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    fetch_calls = []
+    broker.fetch_historical_bars = lambda symbol, start, end: fetch_calls.append(1) or []
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    early = DAY.replace(hour=8, minute=0)
+    runner.on_bar(Bar(timestamp=early, open=105.0, high=105.5, low=104.5, close=105.0))
+
+    assert fetch_calls == []
+
+
+def test_backfill_not_attempted_after_the_no_new_entries_cutoff(tmp_path):
+    """First bar of the day arrives after the day session is already over
+    for entry purposes -- whether the box ever forms doesn't matter
+    anymore, so don't bother spending an API call on it."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    fetch_calls = []
+    broker.fetch_historical_bars = lambda symbol, start, end: fetch_calls.append(1) or []
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    late = DAY.replace(hour=14, minute=0)  # after the real config's no_new_entries_after (13:30)
+    runner.on_bar(Bar(timestamp=late, open=105.0, high=105.5, low=104.5, close=105.0))
+
+    assert fetch_calls == []
+

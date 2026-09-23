@@ -1051,6 +1051,67 @@ raises the original "no contract found" error; resolution is cached and
 only hits the API once) -- confirmed via revert-and-confirm; full suite
 at 174 passing.
 
+## Restart after 9:30 permanently stuck the day strategy (2026-09-23)
+
+"Why is the daytime session strategy stuck on 'building box'? Its past
+9:30 - 9:45 we just need to be hunting strong FVGs for entry." Same-day
+live incident: the `bot-pull` restart to deploy the MNQ contract-
+validation fix above happened mid-morning, after 9:30 ET. Confirmed via
+`status.json` (`"day": {"state": "BUILDING_BOX", "box_high": null,
+"box_low": null, ...}`) and `bot.log` (bars flowing fine right now, zero
+disconnect/reconnect/WARNING lines all day) that this wasn't a data
+outage -- the process was receiving live bars normally, it just started
+too late to ever see the 9:30-9:45 window live.
+
+Root cause in `src/opening_range.py`'s `OpeningRangeBox.add_bar`: the box
+is only ever built from bars it personally observes -- `_formed` only
+flips once a bar at/after `opening_range_end` arrives *and*
+`self._high is not None`. If literally zero bars land in
+`[ny_open, opening_range_end)` -- which is guaranteed for any process
+that starts (or restarts: a deploy, a crash, anything) after 9:45 -- the
+box can never form for the rest of that trading day, no matter how many
+bars arrive afterward. `Runner.__init__`'s own 2026-07-09 comment already
+flagged this general restart-during-market-hours risk once before, but
+that fix only added visibility (the dashboard's process-uptime badge),
+never actual recovery -- this is the first time it's caused a real,
+reported problem instead of just being a known risk.
+
+Fixed with `Runner._backfill_day_box_if_needed`, called from `_on_bar`
+once per calendar day (gated on `_day_box_backfill_checked_for`, right
+after `day_slot.on_bar` has already run for that same bar -- critical
+ordering, since `OpeningRangeStrategy._start_new_day` unconditionally
+calls `box.reset_for_day()` the moment the first live bar of a new day
+arrives; backfilling *before* that would just get silently wiped the
+instant a live bar showed up). If the broker supports
+`fetch_historical_bars` (only `ProjectXGatewayBroker` does -- checked via
+`hasattr`, a clean no-op for `MockBroker`/tests/backtest, which replays
+full history from its own start and can never hit this in the first
+place) and the first bar of the day arrives within
+`[ny_open, no_new_entries_after)`, fetches real historical bars for
+`[ny_open, now)` and feeds them **directly into `box.add_bar`** -- not
+through the strategy's own `on_bar`/state machine, so a backfilled bar
+can never be mistaken for a live one and fire a real entry signal off
+stale data. Tolerates the broker raising (loud warning, box just stays
+stuck as before -- no worse than the original bug).
+
+New regression tests in `tests/test_runner.py` (a first bar at 10:15 ET,
+well past the window, backfills and unsticks the box -- reproduces
+today's real incident exactly, confirmed via revert-and-confirm removing
+the wiring makes it fail with `box.is_formed` staying `False`; only
+fetches once per day across many bars; no-ops cleanly when the broker
+lacks the method; tolerates the broker raising; doesn't fire before the
+box window opens or after the entry cutoff, so an ordinary day never
+spends an extra API call). Full suite at 180 passing.
+
+Scoped to the day strategy's box specifically, not a general "recover all
+state after a restart" fix -- the overnight strategy has no equivalent
+permanently-stuck failure mode (a restart just costs it a fresh anchor
+hunt, degraded but not broken), and the FVG/swing detectors similarly
+just rebuild gradually from live bars after a restart rather than getting
+permanently wedged. Revisit if a similar "restart during market hours"
+symptom ever shows up somewhere else.
+
+
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 
 A second, parallel strategy (`src/overnight_strategy.py`, `OvernightMomentumStrategy`)
