@@ -1111,6 +1111,30 @@ just rebuild gradually from live bars after a restart rather than getting
 permanently wedged. Revisit if a similar "restart during market hours"
 symptom ever shows up somewhere else.
 
+**Follow-up, same day, confirmed against the real deploy:** `bot.log`
+showed the fix genuinely working --
+`[LIVE] day: backfilled 111 historical bar(s) for today's opening-range
+box (box_high=31013.0, box_low=30901.75, formed=True)` -- but
+`status.json` still reported `"state": "BUILDING_BOX"` right after it.
+Real gap, not a display quirk: `OpeningRangeStrategy`'s own
+`BUILDING_BOX -> WAIT_BREAKOUT` transition only happens inside its own
+`on_bar`, which already ran (and found the box still unformed) *earlier*
+in that same bar's processing, before the backfill above it had a chance
+to populate the box -- see `_on_bar`'s ordering, backfill has to run
+after `day_slot.on_bar` so `_start_new_day`'s reset happens first. Left
+alone this would have self-corrected within one more live bar (~a
+minute), but there was no reason to accept that delay given "we just need
+to be hunting strong FVGs for entry" was the explicit ask. Added a second
+piece to `_backfill_day_box_if_needed`: after backfilling, if the
+strategy is still `BUILDING_BOX` and the box is now formed, advance the
+state directly -- mirroring `strategy.py`'s own transition rule exactly,
+just run one step earlier than it otherwise would be. New regression test
+confirms this exact real scenario (backfill sets `formed=True`, state
+must already read `WAIT_BREAKOUT`, not wait for the next bar) plus one
+confirming state correctly stays `BUILDING_BOX` when the box legitimately
+still isn't formed (a restart mid-window, not past it) -- both confirmed
+via revert-and-confirm; full suite at 181 passing.
+
 
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 

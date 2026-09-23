@@ -882,6 +882,31 @@ def test_first_bar_past_the_box_window_backfills_and_unsticks_the_box(tmp_path):
     assert symbol == cfg.instrument.symbol
     assert start.time() == cfg.session.ny_open
     assert end == DAY
+    # Confirmed live 2026-09-23: a real 111-bar backfill correctly set
+    # formed=True, but status.json still reported "BUILDING_BOX" for one
+    # extra live bar -- the strategy's own state only advances inside its
+    # own on_bar, which already ran (and found the box unformed) before
+    # this backfill populated it. Must not require waiting for the next bar.
+    assert runner.day_slot.strategy.state is State.WAIT_BREAKOUT
+
+
+def test_backfill_does_not_advance_state_when_the_box_still_did_not_form(tmp_path):
+    """No historical bars past opening_range_end in this fetch (e.g. the
+    restart happened right at 9:31, mid-window) -- the box legitimately
+    isn't formed yet, so state must stay at BUILDING_BOX, not be forced
+    forward."""
+    cfg = load_test_config()
+    broker = FakeBroker(order_id_to_return="1")
+    historical_bars = [
+        Bar(timestamp=DAY.replace(hour=9, minute=30), open=100.0, high=101.0, low=99.5, close=100.5),
+    ]
+    broker.fetch_historical_bars = lambda symbol, start, end: historical_bars
+    runner = Runner(cfg, broker, logger=TradeLogger(path=str(tmp_path / "trades.csv")))
+
+    runner.on_bar(Bar(timestamp=DAY.replace(hour=9, minute=31), open=105.0, high=105.5, low=104.5, close=105.0))
+
+    assert runner.day_slot.strategy.box.is_formed is False
+    assert runner.day_slot.strategy.state is State.BUILDING_BOX
 
 
 def test_backfill_only_runs_once_per_day_even_across_many_bars(tmp_path):

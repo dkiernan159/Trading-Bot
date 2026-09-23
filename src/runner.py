@@ -15,7 +15,7 @@ from src.logger import TradeLogger
 from src.models import Bar, Direction, Trade
 from src.overnight_strategy import EntrySignal as OvernightEntrySignal, OvernightMomentumStrategy
 from src.risk import DailyRiskState, compute_stop_target, round_to_tick
-from src.strategy import EntrySignal, OpeningRangeStrategy
+from src.strategy import EntrySignal, OpeningRangeStrategy, State
 
 # How many recent 1-minute bars Runner keeps in memory for the dashboard's
 # live chart snapshot (see _write_status) -- 3 hours, enough to see an
@@ -439,6 +439,22 @@ class Runner:
                 f"[LIVE] day: backfilled {len(bars)} historical bar(s) for today's opening-range "
                 f"box (box_high={box.high}, box_low={box.low}, formed={box.is_formed})"
             )
+        # Confirmed live 2026-09-23: box.add_bar above can set is_formed
+        # True, but the strategy's own state only transitions BUILDING_BOX
+        # -> WAIT_BREAKOUT inside its own on_bar (see strategy.py), which
+        # already ran -- and found the box still unformed -- earlier in
+        # this exact bar's processing (backfill runs after day_slot.on_bar,
+        # see _on_bar, so _start_new_day's box reset happens first). Left
+        # alone, the dashboard would keep showing "BUILDING_BOX" for one
+        # extra live bar even though the box itself is already correctly
+        # formed underneath it -- a real gap, not just a display quirk,
+        # confirmed live: a real backfill of 111 bars correctly set
+        # formed=True in the same log line status.json still showed
+        # BUILDING_BOX from. Mirrors strategy.py's own transition exactly
+        # rather than waiting up to a full minute for the next live bar.
+        strategy = self.day_slot.strategy
+        if strategy.state is State.BUILDING_BOX and box.is_formed:
+            strategy.state = State.WAIT_BREAKOUT
 
     def on_bar(self, bar: Bar) -> None:
         # Confirmed live 2026-07-08: an uncaught exception anywhere in
