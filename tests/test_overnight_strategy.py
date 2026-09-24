@@ -8,6 +8,7 @@ from src.config import load_config
 from src.fvg import FairValueGap
 from src.models import Bar, Direction
 from src.overnight_strategy import OvernightMomentumStrategy, State
+from src.zones import Zone
 
 TZ = ZoneInfo("America/New_York")
 # 19:00 ET on a Sunday evening -- t >= asia_start, so this whole overnight
@@ -676,3 +677,125 @@ def test_notify_entry_not_filled_goes_back_to_hunting_instead_of_staying_stuck()
     strategy.notify_entry_not_filled()  # must not raise AttributeError
 
     assert strategy.state is State.WAIT_FVG
+
+
+# ---------- WAIT_ZONE_CONFIRMATION ----------
+# (added 2026-09-24, after a real trade shorted directly into a support
+# zone that had already bounced twice in the prior 3 days and lost -- "we
+# need to factor this in to future trades." Direct-state-injection helper
+# below, same style as test_strategy.py's day-strategy equivalent: isolates
+# the zone-confirmation state machine from the FVG-detection machinery
+# already covered elsewhere in this file.)
+
+
+def make_short_wait_fill_strategy(entry_price: float = 100.0) -> OvernightMomentumStrategy:
+    cfg = load_test_config()
+    strategy = OvernightMomentumStrategy(cfg)
+    strategy._night_date = NIGHT_START.date() + timedelta(days=1)  # matches _night_date()'s own mapping for 19:00 ET
+    strategy.state = State.WAIT_FILL
+    strategy._direction = Direction.SHORT
+    strategy._direction_confirmed_at = NIGHT_START - timedelta(minutes=30)
+    anchor = FairValueGap(
+        direction=Direction.SHORT,
+        gap_low=entry_price - 5,
+        gap_high=entry_price + 5,
+        formed_at=NIGHT_START - timedelta(minutes=20),
+        timeframe_minutes=5,
+    )
+    strategy._anchor_fvg = anchor
+    strategy._anchor_started_at = NIGHT_START - timedelta(minutes=20)
+    strategy._pending_limit_price = entry_price
+    return strategy
+
+
+def make_support_zone() -> Zone:
+    """price == 95.5 -- two touches, well within the real config's
+    tolerance_points (30) of a 100.0 entry."""
+    return Zone(
+        direction=Direction.LONG,
+        touches=[(NIGHT_START - timedelta(days=2), 95.0), (NIGHT_START - timedelta(hours=3), 96.0)],
+    )
+
+
+def test_wait_fill_pauses_when_price_tests_an_opposing_zone():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+
+    signal = strategy.on_bar(bar_at(NIGHT_START, 97.0, 98.0, 96.5, 96.8))  # close within 30pts of zone.price=95.5
+
+    assert signal is None
+    assert strategy.state is State.WAIT_ZONE_CONFIRMATION
+    assert strategy._zone_being_tested is zone
+    assert strategy._zone_confirmation_started_at == NIGHT_START
+
+
+def test_no_pause_when_no_opposing_zone_exists():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+
+    signal = strategy.on_bar(bar_at(NIGHT_START, 99.0, 101.0, 96.0, 96.8))
+
+    assert strategy.state is not State.WAIT_ZONE_CONFIRMATION
+
+
+def test_zone_check_skipped_entirely_when_disabled():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    strategy.cfg.strategy.zones.enabled = False
+    strategy.zone_tracker.support_zones.append(make_support_zone())
+
+    strategy.on_bar(bar_at(NIGHT_START, 99.0, 101.0, 96.0, 96.8))
+
+    assert strategy.state is not State.WAIT_ZONE_CONFIRMATION
+
+
+def test_zone_confirmation_rejected_abandons_the_anchor():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+    strategy.state = State.WAIT_ZONE_CONFIRMATION
+    strategy._zone_being_tested = zone
+    strategy._zone_confirmation_started_at = NIGHT_START
+
+    # zone.price=95.5, tolerance=30 -> rejection needs close > 125.5
+    signal = strategy.on_bar(bar_at(NIGHT_START + timedelta(minutes=5), 130.0, 131.0, 129.0, 130.0))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_FVG
+    assert strategy._anchor_fvg is None
+    assert strategy._zone_being_tested is None
+    assert strategy.anchor_history[-1].outcome == "zone_rejected"
+
+
+def test_zone_confirmation_accepted_resumes_wait_fill():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+    strategy.state = State.WAIT_ZONE_CONFIRMATION
+    strategy._zone_being_tested = zone
+    strategy._zone_confirmation_started_at = NIGHT_START
+
+    # zone.price=95.5, tolerance=30 -> acceptance needs close < 65.5
+    signal = strategy.on_bar(bar_at(NIGHT_START + timedelta(minutes=5), 65.0, 66.0, 59.0, 60.0))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_FILL
+    assert strategy._zone_being_tested is None
+    assert strategy._anchor_fvg is not None
+    assert strategy._pending_limit_price == 100.0
+
+
+def test_zone_confirmation_times_out_and_abandons():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+    strategy.state = State.WAIT_ZONE_CONFIRMATION
+    strategy._zone_being_tested = zone
+    strategy._zone_confirmation_started_at = NIGHT_START
+
+    signal = strategy.on_bar(bar_at(NIGHT_START + timedelta(minutes=15), 100.5, 101.0, 99.5, 100.0))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_FVG
+    assert strategy._anchor_fvg is None
+    assert strategy.anchor_history[-1].outcome == "zone_timeout"
+

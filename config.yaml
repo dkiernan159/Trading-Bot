@@ -167,6 +167,29 @@ strategy:
                                     # contract_size) -- so a breakeven stop-out is still a small real win after
                                     # the buffer, not a guaranteed net loss once commissions/fees are counted.
 
+  zones:                            # Added 2026-09-24 at your explicit request, after a real trade shorted
+                                    # directly into a support zone that had already bounced twice in the prior
+                                    # 3 days and lost -- "we need to factor this in to future trades... sometimes
+                                    # a support zone is created days prior and only retested once." Applies to
+                                    # both day and overnight strategies (your explicit choice). See
+                                    # src/zones.py's ZoneTracker for the detection/confirmation logic.
+    enabled: true
+    timeframe_minutes: 15            # your explicit choice -- matches the 15m chart you were reading when you
+                                    # spotted the zone. Deliberately coarser than strategy.fvg's own 5m, since
+                                    # the whole point is structure the faster timeframe doesn't show.
+    lookback_days: 7                 # ASSUMPTION: how far back a swing point can still count toward/extend a
+                                    # zone. Untested -- the real zone that motivated this spanned 3 days
+                                    # (2026-09-21 to 09-23); watch real results and retune.
+    tolerance_points: 30              # ASSUMPTION: how close two swing points need to be to count as the same
+                                    # zone -- the real touches that formed the zone above ranged from
+                                    # 30615-30690 (~75pts total spread, clustering more tightly within any given
+                                    # ~30pt band). Untested -- watch real results and retune.
+    min_touches: 2                   # your explicit choice: 2+ independent touches counts as a real zone,
+                                    # rather than requiring 3+.
+    confirmation_minutes: 15         # your explicit choice: once price is testing a zone, wait up to this long
+                                    # for a clear rejection (zone holds, thesis invalidated) or acceptance
+                                    # (zone breaks, thesis confirmed) before giving up on the setup entirely.
+
   overnight:                       # ASSUMPTION (added 2026-07-05): a second, parallel strategy for the
                                     # Asia (19:00-23:59 ET prior evening) / London (02:00-05:00 ET) hours,
                                     # per your explicit request to trade overnight while you sleep. Unlike

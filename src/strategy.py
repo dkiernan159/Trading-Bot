@@ -12,6 +12,7 @@ from src.opening_range import OpeningRangeBox
 from src.risk import compute_stop_target, find_structural_stop_price, round_to_tick
 from src.session_levels import SessionLevels, SessionLevelSet
 from src.swing_points import SwingPointTracker
+from src.zones import Zone, ZoneTracker
 
 
 class State(Enum):
@@ -20,6 +21,7 @@ class State(Enum):
     WAIT_BREAKOUT = auto()    # waiting for a close beyond the box high/low
     WAIT_5M_FVG = auto()      # breakout direction set; waiting for a large, unmitigated 5m FVG in that direction
     WAIT_FILL = auto()        # anchor 5m FVG found; limit order resting at a retracement point inside it
+    WAIT_ZONE_CONFIRMATION = auto()  # price is testing a real opposing zone; watching for rejection/acceptance
     IN_TRADE = auto()         # limit order filled, waiting on the runner/broker to close it
     DONE_FOR_DAY = auto()
 
@@ -110,6 +112,12 @@ class OpeningRangeStrategy:
         # strategy) -- only consulted when no strong 5m FVG sits on the
         # stop side of an entry.
         self.swing_tracker = SwingPointTracker()
+        # Added 2026-09-24 at the user's explicit request, after a real
+        # trade shorted directly into a support zone that had already
+        # bounced twice in the prior 3 days and lost -- see zones.py for
+        # the detection/confirmation logic and STRATEGY.md for the real
+        # data that motivated it.
+        self.zone_tracker = ZoneTracker(cfg.strategy.zones, self.tz)
 
         self.state = State.MARKING_LEVELS
         self._trading_date: date | None = None
@@ -131,6 +139,11 @@ class OpeningRangeStrategy:
         self._anchor_fvg: FairValueGap | None = None
         self._anchor_started_at: datetime | None = None
         self._pending_limit_price: float | None = None
+        # See WAIT_ZONE_CONFIRMATION below -- which zone is currently
+        # being watched, and when that watch started (for the
+        # confirmation_minutes timeout).
+        self._zone_being_tested: Zone | None = None
+        self._zone_confirmation_started_at: datetime | None = None
         # Anchors rejected for having no real structural level within the
         # $200 stop budget (see the WAIT_FILL fill check below) -- tracked
         # by identity so a rejected anchor isn't immediately re-picked
@@ -173,6 +186,7 @@ class OpeningRangeStrategy:
             "anchor_gap_low": self._anchor_fvg.gap_low if self._anchor_fvg else None,
             "anchor_gap_high": self._anchor_fvg.gap_high if self._anchor_fvg else None,
             "pending_limit_price": self._pending_limit_price,
+            "zone_price": self._zone_being_tested.price if self._zone_being_tested else None,
         }
 
     def _entry_price(self, gap: FairValueGap) -> float:
@@ -249,6 +263,7 @@ class OpeningRangeStrategy:
         self.fvg_detector_5m.add_bar(bar)
         self.fvg_detector_1m.add_bar(bar)
         self.swing_tracker.add_bar(bar)
+        self.zone_tracker.add_bar(bar)
 
         if self.state is State.DONE_FOR_DAY:
             return None
@@ -267,10 +282,12 @@ class OpeningRangeStrategy:
             self._anchor_fvg = None
             self._anchor_started_at = None
             self._pending_limit_price = None
+            self._zone_being_tested = None
+            self._zone_confirmation_started_at = None
             self.state = State.DONE_FOR_DAY
             return None
 
-        if self.state in (State.WAIT_5M_FVG, State.WAIT_FILL):
+        if self.state in (State.WAIT_5M_FVG, State.WAIT_FILL, State.WAIT_ZONE_CONFIRMATION):
             # The breakout thesis itself can fail: if price closes back
             # through the *opposite* side of the box, the original
             # direction call is no longer valid, no matter how "large" or
@@ -324,6 +341,8 @@ class OpeningRangeStrategy:
                 self._anchor_fvg = None
                 self._anchor_started_at = None
                 self._pending_limit_price = None
+                self._zone_being_tested = None
+                self._zone_confirmation_started_at = None
                 self.state = State.WAIT_BREAKOUT
                 return None
 
@@ -401,6 +420,24 @@ class OpeningRangeStrategy:
             # matters earlier, in the candidate search above -- an
             # already-broken gap is never selected as the anchor in the
             # first place.)
+
+            # Added 2026-09-24 at the user's explicit request, after a
+            # real trade shorted directly into a support zone that had
+            # already bounced twice in the prior 3 days and lost -- "we
+            # need to factor this in to future trades." Before ever
+            # letting a plain retracement fill through, check whether
+            # price is currently testing a real, multi-day opposing zone
+            # (support below this SHORT's entry, or resistance above a
+            # LONG's -- see zones.py). If so, pause and watch which way
+            # it actually resolves instead of blindly taking the fill.
+            if self.cfg.strategy.zones.enabled:
+                zone = self.zone_tracker.opposing_zone(self._breakout_direction, bar.close)
+                if zone is not None:
+                    self._zone_being_tested = zone
+                    self._zone_confirmation_started_at = bar.timestamp
+                    self.state = State.WAIT_ZONE_CONFIRMATION
+                    return None
+
             filled = (
                 bar.low <= self._pending_limit_price
                 if self._breakout_direction is Direction.LONG
@@ -465,6 +502,62 @@ class OpeningRangeStrategy:
                 return signal
             return None
 
+        if self.state is State.WAIT_ZONE_CONFIRMATION:
+            # Watch for up to cfg.strategy.zones.confirmation_minutes:
+            # does price close back away from the zone (rejection -- the
+            # zone held, invalidating the original thesis) or through its
+            # far side (acceptance -- the zone broke, confirming the
+            # original thesis)? For a SHORT testing a support zone below
+            # it, rejection is price bouncing back up (support held,
+            # bullish -- the short was wrong); acceptance is a close
+            # below the zone (a real breakdown, the short was right).
+            # Mirror image for a LONG against a resistance zone above it.
+            # Neither within the window -- give up on this anchor and
+            # resume hunting, same as any other timed-out setup.
+            zone = self._zone_being_tested
+            tol = self.cfg.strategy.zones.tolerance_points
+            if self._breakout_direction is Direction.SHORT:
+                rejected = bar.close > zone.price + tol
+                accepted = bar.close < zone.price - tol
+            else:
+                rejected = bar.close < zone.price - tol
+                accepted = bar.close > zone.price + tol
+
+            if rejected:
+                self._close_anchor("zone_rejected", bar.timestamp)
+                self._rejected_anchor_ids.add(id(self._anchor_fvg))
+                self._anchor_fvg = None
+                self._anchor_started_at = None
+                self._pending_limit_price = None
+                self._zone_being_tested = None
+                self._zone_confirmation_started_at = None
+                self.state = State.WAIT_5M_FVG
+                return None
+
+            if accepted:
+                # The zone broke -- the original thesis is confirmed, not
+                # weakened. Resume WAIT_FILL and re-evaluate the plain
+                # retracement condition next bar (the anchor/entry price
+                # itself is untouched).
+                self._zone_being_tested = None
+                self._zone_confirmation_started_at = None
+                self.state = State.WAIT_FILL
+                return None
+
+            elapsed_minutes = (bar.timestamp - self._zone_confirmation_started_at).total_seconds() / 60
+            if elapsed_minutes >= self.cfg.strategy.zones.confirmation_minutes:
+                self._close_anchor("zone_timeout", bar.timestamp)
+                self._rejected_anchor_ids.add(id(self._anchor_fvg))
+                self._anchor_fvg = None
+                self._anchor_started_at = None
+                self._pending_limit_price = None
+                self._zone_being_tested = None
+                self._zone_confirmation_started_at = None
+                self.state = State.WAIT_5M_FVG
+                return None
+
+            return None
+
         return None
 
     def notify_trade_closed(self, won: bool) -> None:
@@ -482,6 +575,8 @@ class OpeningRangeStrategy:
         self._anchor_fvg = None
         self._anchor_started_at = None
         self._pending_limit_price = None
+        self._zone_being_tested = None
+        self._zone_confirmation_started_at = None
         self.state = State.WAIT_BREAKOUT
 
     def notify_entry_not_filled(self) -> None:
@@ -502,6 +597,8 @@ class OpeningRangeStrategy:
         self._anchor_fvg = None
         self._anchor_started_at = None
         self._pending_limit_price = None
+        self._zone_being_tested = None
+        self._zone_confirmation_started_at = None
         self.state = State.WAIT_5M_FVG
 
     def _start_new_day(self, trading_date: date, bar_timestamp: datetime) -> None:
@@ -525,6 +622,10 @@ class OpeningRangeStrategy:
         self.fvg_detector_5m.clear_active_gaps()
         self.fvg_detector_1m.clear_active_gaps()
         self.swing_tracker.reset()
+        # zone_tracker is deliberately NOT reset here -- a multi-day zone
+        # persisting across this exact reset is the entire point (see
+        # zones.py's ZoneTracker docstring); it only ages out via its own
+        # cfg.lookback_days pruning, never on a day rollover.
         self._rejected_anchor_ids = set()
         self.state = State.MARKING_LEVELS
         self._breakout_direction = None
@@ -533,3 +634,5 @@ class OpeningRangeStrategy:
         self._anchor_fvg = None
         self._anchor_started_at = None
         self._pending_limit_price = None
+        self._zone_being_tested = None
+        self._zone_confirmation_started_at = None

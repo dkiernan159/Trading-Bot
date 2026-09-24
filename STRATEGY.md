@@ -1135,6 +1135,99 @@ confirming state correctly stays `BUILDING_BOX` when the box legitimately
 still isn't formed (a restart mid-window, not past it) -- both confirmed
 via revert-and-confirm; full suite at 181 passing.
 
+## Higher-timeframe support/resistance zones (2026-09-24)
+
+"Lets have a look at this lost trade today, we went past the limit of
+maximum stop loss didnt we?... Todays trade appears to have been purely
+based on FVG retracement if I read it right, but if you look back in the
+chart over the 15 minute or 1 hour timeframe, you can see a large support
+zone around where we took a short... we need to factor this in to future
+trades, sometimes a support zone is created days prior and only retested
+once like what happened today."
+
+**The stop-cap question first, confirmed and closed:** the loss ($241.50,
+40.25pts x 3 contracts) was well under the $300 `max_stop_dollars` cap,
+filled at exactly the intended stop price with zero slippage -- not a bug.
+
+**The zone question required real data, not a guess.** Pulled 21 days of
+1-minute history via `fetch_historical_bars` (had to correct my own
+mistake first -- initially mislabeled the output "1h bars" and framed the
+search around the wrong timezone; the real entry was
+`2026-09-23T17:15:00+00:00` **UTC** = 13:15 ET, not 17:15 ET). Once
+corrected, the data backed up the read completely: the ~30615-30690 area
+had been defended five separate times across three trading days --
+2026-09-21 (~11:50 ET and ~12:39 ET), 09-22 (~04:31 ET), and 09-23
+(~10:26 ET and ~13:04 ET, the bounce that fed directly into the losing
+short's own 13:15 ET entry). None of that structure is visible on the 1m/
+5m timeframes the strategies already run on.
+
+**What got built, at your explicit direction on every real judgment
+call:** a new `src/zones.py` (`ZoneTracker`) detects these -- aggregates
+bars onto a coarser timeframe (`cfg.strategy.zones.timeframe_minutes`,
+15m, your explicit choice matching the chart you were reading) and finds
+the same fractal-pivot swing points `swing_points.py` already looks for
+elsewhere, but clusters them: two or more independent touches within
+`tolerance_points` (30, ASSUMPTION) of each other, within the last
+`lookback_days` (7, ASSUMPTION), count as a real zone (`min_touches: 2`,
+your explicit choice). Unlike every other tracker in this codebase,
+`ZoneTracker` is deliberately **never reset on a day/night rollover** --
+multi-day memory is the entire point; it only ages out via its own
+`lookback_days` pruning.
+
+Both `OpeningRangeStrategy` and `OvernightMomentumStrategy` (your explicit
+choice -- apply to both, not just the day strategy today's trade came
+from) now check `zone_tracker.opposing_zone(direction, bar.close)` on
+every bar in `WAIT_FILL`, right after the existing supersede/BOS-
+invalidation checks and before the plain retracement `filled` condition.
+A resistance zone opposes a LONG; a support zone opposes a SHORT. If price
+is currently testing one, the strategy does **not** take the instant fill
+-- it pauses into a new `WAIT_ZONE_CONFIRMATION` state (your explicit
+choice, the bigger of two designs offered: wait for real confirmation,
+not just filter-and-widen-the-stop) and watches for up to
+`confirmation_minutes` (15, your explicit choice):
+
+- **Rejection** (for a SHORT: price closes back above the zone by more
+  than `tolerance_points` -- support held, bullish) -- the original
+  thesis was wrong. Abandon the anchor (`AnchorRecord` outcome
+  `"zone_rejected"`), same exclusion-by-identity mechanism as every other
+  rejection path, and resume hunting.
+- **Acceptance** (for a SHORT: price closes *below* the zone by more than
+  `tolerance_points` -- a real breakdown) -- the original thesis is
+  confirmed, not weakened. Resume `WAIT_FILL` with the anchor/entry
+  untouched, and let the plain retracement condition fire normally from
+  there.
+- **Timeout** -- neither happens within `confirmation_minutes`: abandon
+  the anchor (`"zone_timeout"`) and resume hunting, same as any other
+  timed-out setup.
+
+Applied to today's real trade, this would have caught it: price was
+already inside the zone's tolerance band well before the 13:15 ET entry
+(the 13:04 ET low at 30646.50 sat right in it), so the strategy would
+have paused into `WAIT_ZONE_CONFIRMATION` before ever resting the losing
+short's entry order, watched the 13:05-13:15 bounce as a rejection, and
+abandoned the setup instead of taking it.
+
+`cfg.strategy.zones.enabled` is the kill switch if this needs to be
+turned off without a redeploy. New `tests/test_zones.py` (9 tests
+covering clustering, tolerance, proximity, direction, and
+`lookback_days` pruning) plus new tests in both `test_strategy.py` and
+`test_overnight_strategy.py` (pause-on-test, no-pause-without-a-zone,
+disabled-skips-it, rejected, accepted, timeout -- direct-state-injection
+style, isolating the zone-confirmation state machine from the FVG-
+detection machinery already covered elsewhere in each file) -- confirmed
+via revert-and-confirm on the core clustering logic and both strategies'
+pause triggers; full suite at 203 passing.
+
+**What this doesn't do:** no automatic re-entry in the opposite
+direction on a rejection (the anchor is simply abandoned, not flipped
+into a long), and no re-pricing of the entry on an acceptance (the
+original anchor's own retracement level is used as-is, which may no
+longer be reachable if price already moved past it during the
+confirmation window -- a real, accepted trade-off of the added caution,
+not a bug). Both `tolerance_points` and `lookback_days` are still
+ASSUMPTIONs, untested at these exact values -- watch real results and
+retune.
+
 
 ## Overnight momentum strategy (Asia/London, added 2026-07-05)
 

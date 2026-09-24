@@ -12,12 +12,14 @@ from src.risk import compute_stop_target, find_structural_stop_price, round_to_t
 from src.session_levels import SessionLevels, SessionLevelSet
 from src.strategy import AnchorRecord
 from src.swing_points import SwingPointTracker
+from src.zones import Zone, ZoneTracker
 
 
 class State(Enum):
     IDLE = auto()          # outside the Asia/London window entirely
     WAIT_FVG = auto()      # in-window; hunting a large, unmitigated pooled 5m/1m FVG in either direction
     WAIT_FILL = auto()     # a qualifying FVG was found; limit order resting at its own retracement point
+    WAIT_ZONE_CONFIRMATION = auto()  # price is testing a real opposing zone; watching for rejection/acceptance
     IN_TRADE = auto()      # limit order filled, waiting on the runner/broker to close it
     DONE_FOR_NIGHT = auto()
 
@@ -88,6 +90,9 @@ class OvernightMomentumStrategy:
         # the stop side is only used as a fallback when no swing point
         # qualifies.
         self.swing_tracker = SwingPointTracker()
+        # Added 2026-09-24, same rationale/mechanism as the day strategy's
+        # own zone_tracker (see strategy.py) -- see zones.py.
+        self.zone_tracker = ZoneTracker(cfg.strategy.zones, self.tz)
 
         self.state = State.IDLE
         self._night_date: date | None = None
@@ -101,6 +106,11 @@ class OvernightMomentumStrategy:
         self._anchor_fvg: FairValueGap | None = None
         self._anchor_started_at: datetime | None = None
         self._pending_limit_price: float | None = None
+        # See WAIT_ZONE_CONFIRMATION below -- which zone is currently
+        # being watched, and when that watch started (for the
+        # confirmation_minutes timeout).
+        self._zone_being_tested: Zone | None = None
+        self._zone_confirmation_started_at: datetime | None = None
         # Anchors rejected for having no real structural stop within
         # budget -- tracked by identity, same rationale as the day
         # strategy's _rejected_anchor_ids (see strategy.py).
@@ -153,6 +163,7 @@ class OvernightMomentumStrategy:
             "anchor_gap_low": self._anchor_fvg.gap_low if self._anchor_fvg else None,
             "anchor_gap_high": self._anchor_fvg.gap_high if self._anchor_fvg else None,
             "pending_limit_price": self._pending_limit_price,
+            "zone_price": self._zone_being_tested.price if self._zone_being_tested else None,
         }
 
     def _entry_price(self, gap: FairValueGap) -> float:
@@ -201,6 +212,8 @@ class OvernightMomentumStrategy:
         self._anchor_fvg = None
         self._anchor_started_at = None
         self._pending_limit_price = None
+        self._zone_being_tested = None
+        self._zone_confirmation_started_at = None
 
     def _start_new_night(self, night_date: date, bar_timestamp: datetime) -> None:
         self._night_date = night_date
@@ -208,6 +221,9 @@ class OvernightMomentumStrategy:
         self.fvg_detector_5m.clear_active_gaps()
         self.fvg_detector_1m.clear_active_gaps()
         self.swing_tracker.reset()
+        # zone_tracker is deliberately NOT reset here -- same rationale as
+        # the day strategy's own _start_new_day (see strategy.py): a
+        # multi-day zone persisting across a night rollover is the point.
         self._rejected_anchor_ids = set()
         self._trades_tonight = 0
         self._reset_hunt_state()
@@ -222,6 +238,7 @@ class OvernightMomentumStrategy:
         self.fvg_detector_5m.add_bar(bar)
         self.fvg_detector_1m.add_bar(bar)
         self.swing_tracker.add_bar(bar)
+        self.zone_tracker.add_bar(bar)
 
         if self.state is State.IN_TRADE:
             # Nothing to do until the runner/backtest harness calls
@@ -319,6 +336,23 @@ class OvernightMomentumStrategy:
                 self.stats["bos_invalidated"] += 1
                 self.state = State.WAIT_FVG
                 return None
+
+            # Added 2026-09-24 at the user's explicit request, after a
+            # real trade shorted directly into a support zone that had
+            # already bounced twice in the prior 3 days and lost -- "we
+            # need to factor this in to future trades." Before ever
+            # letting a plain retracement fill through, check whether
+            # price is currently testing a real, multi-day opposing zone
+            # (support below a SHORT's entry, or resistance above a
+            # LONG's -- see zones.py). If so, pause and watch which way
+            # it actually resolves instead of blindly taking the fill.
+            if self.cfg.strategy.zones.enabled:
+                zone = self.zone_tracker.opposing_zone(self._direction, bar.close)
+                if zone is not None:
+                    self._zone_being_tested = zone
+                    self._zone_confirmation_started_at = bar.timestamp
+                    self.state = State.WAIT_ZONE_CONFIRMATION
+                    return None
 
             # User's explicit instruction, 2026-07-09: don't "hedge the
             # whole night" on the first anchor found -- if price keeps
@@ -419,6 +453,53 @@ class OvernightMomentumStrategy:
                 self._trades_tonight += 1
                 self.stats["fills"] += 1
                 return signal
+            return None
+
+        if self.state is State.WAIT_ZONE_CONFIRMATION:
+            # Same rejection/acceptance/timeout logic as the day
+            # strategy's WAIT_ZONE_CONFIRMATION (see strategy.py) -- see
+            # there for the full reasoning. For a SHORT testing a support
+            # zone below it, rejection is price bouncing back up (support
+            # held, bullish -- the short was wrong); acceptance is a
+            # close below the zone (a real breakdown, the short was
+            # right). Mirror image for a LONG against a resistance zone
+            # above it. Neither within cfg.strategy.zones.confirmation_minutes
+            # -- give up on this anchor and resume hunting, same as any
+            # other timed-out setup.
+            zone = self._zone_being_tested
+            tol = self.cfg.strategy.zones.tolerance_points
+            if self._direction is Direction.SHORT:
+                rejected = bar.close > zone.price + tol
+                accepted = bar.close < zone.price - tol
+            else:
+                rejected = bar.close < zone.price - tol
+                accepted = bar.close > zone.price + tol
+
+            if rejected:
+                self._close_anchor("zone_rejected", bar.timestamp)
+                self._rejected_anchor_ids.add(id(self._anchor_fvg))
+                self._reset_hunt_state()
+                self.state = State.WAIT_FVG
+                return None
+
+            if accepted:
+                # The zone broke -- the original thesis is confirmed, not
+                # weakened. Resume WAIT_FILL and re-evaluate the plain
+                # retracement condition next bar (the anchor/entry price
+                # itself is untouched).
+                self._zone_being_tested = None
+                self._zone_confirmation_started_at = None
+                self.state = State.WAIT_FILL
+                return None
+
+            elapsed_minutes = (bar.timestamp - self._zone_confirmation_started_at).total_seconds() / 60
+            if elapsed_minutes >= self.cfg.strategy.zones.confirmation_minutes:
+                self._close_anchor("zone_timeout", bar.timestamp)
+                self._rejected_anchor_ids.add(id(self._anchor_fvg))
+                self._reset_hunt_state()
+                self.state = State.WAIT_FVG
+                return None
+
             return None
 
         return None

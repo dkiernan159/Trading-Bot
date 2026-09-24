@@ -5,8 +5,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from src.config import load_config
+from src.fvg import FairValueGap
 from src.models import Bar, Direction
 from src.strategy import OpeningRangeStrategy, State
+from src.zones import Zone
 
 TZ = ZoneInfo("America/New_York")
 DAY = datetime(2026, 7, 6, 9, 30, tzinfo=TZ)  # a Monday
@@ -767,3 +769,150 @@ def test_status_snapshot_reflects_current_hunt_state():
     assert waiting_fill["anchor_gap_low"] == pytest.approx(anchor_low)
     assert waiting_fill["anchor_gap_high"] == pytest.approx(anchor_high)
     assert waiting_fill["pending_limit_price"] == pytest.approx((anchor_low + anchor_high) / 2)
+
+
+# ---------- WAIT_ZONE_CONFIRMATION ----------
+# (added 2026-09-24, after a real trade shorted directly into a support
+# zone that had already bounced twice in the prior 3 days and lost -- "we
+# need to factor this in to future trades." Direct-state-injection helper
+# below, same style as test_runner.py's breakeven tests: isolates the
+# zone-confirmation state machine from the box/breakout/FVG-detection
+# machinery already covered elsewhere in this file.)
+
+
+def make_short_wait_fill_strategy(entry_price: float = 100.0) -> OpeningRangeStrategy:
+    cfg = load_test_config()
+    strategy = OpeningRangeStrategy(cfg)
+    strategy._trading_date = DAY.date()
+    strategy.box._trading_date = DAY.date()
+    strategy.box._high = 200.0  # wide enough that these tests' bars never trip the (unrelated) box-invalidation check
+    strategy.box._low = 50.0
+    strategy.box._formed = True
+    strategy.state = State.WAIT_FILL
+    strategy._breakout_direction = Direction.SHORT
+    strategy._breakout_confirmed_at = DAY - timedelta(minutes=30)
+    anchor = FairValueGap(
+        direction=Direction.SHORT,
+        gap_low=entry_price - 5,
+        gap_high=entry_price + 5,
+        formed_at=DAY - timedelta(minutes=20),
+        timeframe_minutes=5,
+    )
+    strategy._anchor_fvg = anchor
+    strategy._anchor_started_at = DAY - timedelta(minutes=20)
+    strategy._pending_limit_price = entry_price
+    return strategy
+
+
+def make_support_zone() -> Zone:
+    """price == 95.5 -- two touches, well within the real config's
+    tolerance_points (30) of a 100.0 entry."""
+    return Zone(direction=Direction.LONG, touches=[(DAY - timedelta(days=2), 95.0), (DAY - timedelta(hours=3), 96.0)])
+
+
+def test_wait_fill_pauses_when_price_tests_an_opposing_zone():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+
+    signal = strategy.on_bar(bar_at(DAY, 97.0, 98.0, 96.5, 96.8))  # close within 30pts of zone.price=95.5
+
+    assert signal is None
+    assert strategy.state is State.WAIT_ZONE_CONFIRMATION
+    assert strategy._zone_being_tested is zone
+    assert strategy._zone_confirmation_started_at == DAY
+
+
+def test_no_pause_when_no_opposing_zone_exists():
+    """Regression safety: the new check must not pause every single
+    fill-eligible bar, only ones actually testing a real zone."""
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+
+    signal = strategy.on_bar(bar_at(DAY, 99.0, 101.0, 96.0, 96.8))
+
+    assert strategy.state is not State.WAIT_ZONE_CONFIRMATION
+
+
+def test_zone_check_skipped_entirely_when_disabled():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    strategy.cfg.strategy.zones.enabled = False
+    strategy.zone_tracker.support_zones.append(make_support_zone())
+
+    strategy.on_bar(bar_at(DAY, 99.0, 101.0, 96.0, 96.8))
+
+    assert strategy.state is not State.WAIT_ZONE_CONFIRMATION
+
+
+def test_zone_confirmation_rejected_abandons_the_anchor():
+    """For a SHORT testing support, rejection is price bouncing back up
+    away from it (support held -- the short was wrong)."""
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+    strategy.state = State.WAIT_ZONE_CONFIRMATION
+    strategy._zone_being_tested = zone
+    strategy._zone_confirmation_started_at = DAY
+
+    # zone.price=95.5, tolerance=30 -> rejection needs close > 125.5
+    signal = strategy.on_bar(bar_at(DAY + timedelta(minutes=5), 130.0, 131.0, 129.0, 130.0))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_5M_FVG
+    assert strategy._anchor_fvg is None
+    assert strategy._zone_being_tested is None
+    assert strategy._zone_confirmation_started_at is None
+    assert strategy.anchor_history[-1].outcome == "zone_rejected"
+
+
+def test_zone_confirmation_accepted_resumes_wait_fill():
+    """A close through the zone's far side (a real breakdown) confirms,
+    not weakens, the original SHORT thesis -- resumes WAIT_FILL with the
+    original anchor/entry untouched."""
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+    strategy.state = State.WAIT_ZONE_CONFIRMATION
+    strategy._zone_being_tested = zone
+    strategy._zone_confirmation_started_at = DAY
+
+    # zone.price=95.5, tolerance=30 -> acceptance needs close < 65.5
+    signal = strategy.on_bar(bar_at(DAY + timedelta(minutes=5), 65.0, 66.0, 59.0, 60.0))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_FILL
+    assert strategy._zone_being_tested is None
+    assert strategy._anchor_fvg is not None
+    assert strategy._pending_limit_price == 100.0
+
+
+def test_zone_confirmation_not_yet_timed_out_stays_watching():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+    strategy.state = State.WAIT_ZONE_CONFIRMATION
+    strategy._zone_being_tested = zone
+    strategy._zone_confirmation_started_at = DAY
+
+    # Neither rejected nor accepted (close stays within the zone's band), and
+    # only 10 of the real config's 15-minute confirmation window has passed.
+    signal = strategy.on_bar(bar_at(DAY + timedelta(minutes=10), 100.5, 101.0, 99.5, 100.0))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_ZONE_CONFIRMATION
+
+
+def test_zone_confirmation_times_out_and_abandons():
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+    strategy.state = State.WAIT_ZONE_CONFIRMATION
+    strategy._zone_being_tested = zone
+    strategy._zone_confirmation_started_at = DAY
+
+    signal = strategy.on_bar(bar_at(DAY + timedelta(minutes=15), 100.5, 101.0, 99.5, 100.0))
+
+    assert signal is None
+    assert strategy.state is State.WAIT_5M_FVG
+    assert strategy._anchor_fvg is None
+    assert strategy.anchor_history[-1].outcome == "zone_timeout"
+

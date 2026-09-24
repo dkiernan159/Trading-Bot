@@ -66,6 +66,23 @@ class BreakevenConfig:
 
 
 @dataclass
+class ZoneConfig:
+    """Added 2026-09-24 at the user's explicit request, after a real
+    trade shorted directly into a support zone that had already bounced
+    twice in the prior 3 days and lost (see STRATEGY.md) -- "we need to
+    factor this in to future trades... sometimes a support zone is
+    created days prior and only retested once." See src/zones.py's
+    ZoneTracker for the detection/confirmation logic."""
+
+    enabled: bool
+    timeframe_minutes: int  # your explicit choice -- matches the 15m chart you were reading when you spotted it
+    lookback_days: int  # ASSUMPTION: how far back a swing point can still count toward/extend a zone
+    tolerance_points: float  # ASSUMPTION: how close two swing points need to be to count as the same zone
+    min_touches: int  # your explicit choice: 2+ independent touches counts as a real zone
+    confirmation_minutes: float  # your explicit choice: ~15 minutes to see rejection/acceptance before giving up
+
+
+@dataclass
 class StrategyConfig:
     reward_risk_ratio: float
     target_dollars_at_reference_size: float
@@ -78,6 +95,7 @@ class StrategyConfig:
     reentry: ReentryConfig
     overnight: OvernightConfig
     breakeven: BreakevenConfig
+    zones: ZoneConfig
 
 
 @dataclass
@@ -155,6 +173,7 @@ def load_config(path: str | Path = "config.yaml") -> BotConfig:
             max_trades_per_night=strat["overnight"]["max_trades_per_night"],
         ),
         breakeven=BreakevenConfig(**strat["breakeven"]),
+        zones=ZoneConfig(**strat["zones"]),
     )
 
     position_sizing = PositionSizingConfig(**raw["position_sizing"])
