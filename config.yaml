@@ -148,20 +148,27 @@ strategy:
                                     # down and hit the original stop. Applies to both day and overnight
                                     # strategies (shared, same as everything else in this strategy: section).
     enabled: true
-    trigger_pct: 0.8                # Raised from 0.5 2026-09-03, your explicit instruction ("Id rather we just
-                                    # let the trade run at this point than take $20 wins here and there"). At
-                                    # 0.5, every single qualifying trade got capped at breakeven+buffer -- the
-                                    # structure-aware hold below (runner.py's _fresh_supporting_structure) never
-                                    # once fired in the entire bot.log history (10 breakeven moves, 0 holds):
-                                    # a confirmed fresh swing point takes more bars to form and confirm than
-                                    # most trades take to run halfway to target, so the "let it run if structure
-                                    # supports it" exception was effectively dead code at this trigger point.
-                                    # 0.8 guards only very late in a trade -- fewer trades get capped early, and
-                                    # the ones that do are close enough to target that giving up the remaining
-                                    # upside for safety is a smaller trade-off. Still untested at this value --
-                                    # watch real results and retune; a lower value locks in breakeven sooner
-                                    # (less giveback on reversals) but risks stopping out trades that would have
-                                    # gone on to hit full target -- which is exactly what was happening at 0.5.
+    trigger_pct: 0.6                # Lowered from 0.8 2026-09-25, your explicit instruction, after an overnight
+                                    # short (entry 30791.75, target 30746.75 = $270 potential on 3 contracts)
+                                    # ran to $150 unrealized (55.6% of the way to target -- under the 0.8
+                                    # trigger, so breakeven never armed) and then fully reversed through
+                                    # breakeven and entry to hit the original stop for a full -$135 loss. Your
+                                    # framing: "why are we not setting break-even take profits when we're $150
+                                    # in green? We should take at least $50 from that trade if not more." Note:
+                                    # 0.6 would NOT actually have saved that specific trade (55.6% < 60%) -- you
+                                    # chose it anyway as the new general trigger, not 0.55 (which was the exact
+                                    # value that would have caught it). Was raised 0.8 from 0.5 2026-09-03 for
+                                    # the opposite reason ("Id rather we just let the trade run at this point
+                                    # than take $20 wins here and there") -- at 0.5, every qualifying trade got
+                                    # capped at breakeven+buffer, and the structure-aware hold below
+                                    # (runner.py's _fresh_supporting_structure) never once fired in the entire
+                                    # bot.log history at that point (10 breakeven moves, 0 holds): a confirmed
+                                    # fresh swing point takes more bars to form than most trades take to run
+                                    # halfway to target, so the "let it run if structure supports it" exception
+                                    # was effectively dead code at 0.5. 0.6 is a middle ground between these two
+                                    # observed failure modes (capped too early at 0.5 vs. round-tripped a real
+                                    # gain to a full loss at 0.8) -- still untested at this value, watch real
+                                    # results and retune.
     buffer_dollars: 20               # your explicit choice: small positive buffer beyond exact breakeven, same
                                     # $-to-points conversion as max_stop_dollars (buffer_dollars / point_value /
                                     # contract_size) -- so a breakeven stop-out is still a small real win after
