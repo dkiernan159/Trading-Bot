@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Ad-hoc analysis tool, not part of live trading. Two parts:
+"""Ad-hoc analysis tool, not part of live trading. Three parts:
 
 1. For every anchor the zone-confirmation layer blocked (zone_rejected /
    zone_timeout), replays real bars forward from the exact bar the pause
@@ -16,7 +16,24 @@ from __future__ import annotations
 
 2. Tallies every anchor's outcome (not just zone-blocked ones) to show
    how often no_valid_stop happens across the whole window, separate
-   from the zone question entirely.
+   from the zone question entirely. Real data 2026-09-29 showed this
+   tally matters on its own: the day strategy's biggest blockers were
+   superseded (34%) + invalidated (33%), zones were a smaller 21%; only
+   1 of 87 day anchors ever filled. The overnight strategy's biggest
+   single blocker was "stale" abandonment at 33%.
+
+3. Overnight-only (day has no stale-abandon mechanism): for every
+   "stale" anchor (overnight_strategy.py's WAIT_FILL abandons an anchor
+   if price runs cfg.strategy.max_stop_dollars/2 points further away
+   from the resting limit without ever retracing back to it), checks
+   whether real price ever DID come back to that same entry level within
+   a longer window after the abandonment, and if so how the setup did
+   from there -- i.e., "was the stale threshold too tight, or was it
+   right to give up." No would_be_* capture exists for "stale" (it's a
+   different WAIT_FILL exit than the zone pause), so this recomputes the
+   entry price directly from the anchor's own gap bounds using the same
+   pure retracement-fraction formula overnight_strategy.py's own
+   _entry_price uses -- no strategy state needed for that part.
 
 live config.yaml disabled strategy.zones.enabled 2026-09-24 real trades
 showed it net costly -- this script forces it back on for its own
@@ -47,11 +64,14 @@ from zoneinfo import ZoneInfo
 
 from src.backtest import fetch_recent_bars, run_backtest, run_overnight_backtest
 from src.broker.projectx_gateway import ProjectXGatewayBroker
-from src.config import load_config
+from src.config import BotConfig, load_config
 from src.models import Bar, Direction
+from src.risk import round_to_tick
+from src.strategy import AnchorRecord
 
 DAYS = 7
 DIRECTIONAL_WINDOW_MINUTES = 60
+STALE_LOOKAHEAD_HOURS = 6
 
 
 def _resolve_outcome(direction: Direction, stop_price: float, target_price: float, bars_after: list[Bar]) -> str:
@@ -94,6 +114,45 @@ def _directional_excursion(direction: Direction, entry_price: float, bars_after:
         max_favorable = max(max_favorable, favorable)
         max_adverse = max(max_adverse, adverse)
     return max_favorable, max_adverse
+
+
+def _recompute_entry_price(cfg: BotConfig, direction: Direction, gap_low: float, gap_high: float) -> float:
+    """Same pure formula as overnight_strategy.py's own _entry_price --
+    depends only on the anchor's gap bounds and config, not any strategy
+    state, so it can be reconstructed after the fact for an anchor that
+    was abandoned as stale (which never captured a would_be_entry, unlike
+    the zone-pause path)."""
+    pct = cfg.strategy.entry_retracement_pct
+    width = gap_high - gap_low
+    price = gap_high - pct * width if direction is Direction.LONG else gap_low + pct * width
+    return round_to_tick(price, cfg.instrument.tick_size)
+
+
+def _analyze_stale_anchor(
+    a: AnchorRecord, cfg: BotConfig, bars: list[Bar]
+) -> tuple[float, float, Bar | None]:
+    """Returns (recomputed entry price, how far price ran further away
+    before ever coming back (0.0 if it came straight back), the bar that
+    finally retraced back to touch entry -- or None if it never did
+    within STALE_LOOKAHEAD_HOURS)."""
+    entry = _recompute_entry_price(cfg, a.direction, a.gap_low, a.gap_high)
+    cutoff = a.ended_at + timedelta(hours=STALE_LOOKAHEAD_HOURS)
+    furthest_away = 0.0
+    for bar in bars:
+        if bar.timestamp <= a.ended_at:
+            continue
+        if bar.timestamp > cutoff:
+            break
+        if a.direction is Direction.LONG:
+            away = bar.high - entry
+            touched = bar.low <= entry
+        else:
+            away = entry - bar.low
+            touched = bar.high >= entry
+        furthest_away = max(furthest_away, away)
+        if touched:
+            return entry, furthest_away, bar
+    return entry, furthest_away, None
 
 
 def main() -> None:
@@ -199,6 +258,37 @@ def main() -> None:
         print("")
         print("Resolved " + str(resolved) + " of " + str(len(blocked)) + " blocked anchors with a real stop/target.")
         print("Total what-if P&L from those resolved trades: $" + str(round(total_whatif_pnl, 2)))
+
+        if label == "OVERNIGHT":
+            stale = [a for a in anchors if a.outcome == "stale"]
+            print("")
+            print("Stale-abandoned anchors: " + str(len(stale)) + "  (threshold: " + str(round(cfg.strategy.max_stop_dollars / 2 / (point_value * contracts), 1)) + "pts)")
+            came_back = 0
+            for a in stale:
+                entry, furthest_away, fill_bar = _analyze_stale_anchor(a, cfg, bars)
+                prefix = (
+                    a.started_at.strftime("%Y-%m-%d %H:%M")
+                    + "  " + a.direction.value.upper().ljust(6)
+                    + " gap=" + str(round(a.gap_low, 2)) + "-" + str(round(a.gap_high, 2))
+                    + "  entry=" + str(round(entry, 2))
+                    + "  abandoned=" + a.ended_at.strftime("%H:%M")
+                )
+                if fill_bar is None:
+                    print(prefix + "  never retraced back within " + str(STALE_LOOKAHEAD_HOURS) + "h (ran up to " + str(round(furthest_away, 2)) + "pts further away) -- correctly abandoned")
+                    continue
+                came_back += 1
+                wait = fill_bar.timestamp - a.ended_at
+                bars_after_fill = [b for b in bars if b.timestamp > fill_bar.timestamp]
+                mfe, mae = _directional_excursion(a.direction, entry, bars_after_fill)
+                verdict = "favorable" if mfe > mae else ("unfavorable" if mae > mfe else "flat")
+                print(
+                    prefix
+                    + "  ran " + str(round(furthest_away, 2)) + "pts further away, then DID retrace back "
+                    + str(wait) + " later -- from there, next " + str(DIRECTIONAL_WINDOW_MINUTES) + "min: "
+                    + "MFE=+" + str(round(mfe, 2)) + "pts  MAE=-" + str(round(mae, 2)) + "pts  -> " + verdict
+                )
+            print("")
+            print(str(came_back) + " of " + str(len(stale)) + " stale-abandoned anchors eventually retraced back to entry within " + str(STALE_LOOKAHEAD_HOURS) + "h.")
 
 
 if __name__ == "__main__":
