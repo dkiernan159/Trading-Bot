@@ -371,8 +371,14 @@ class OvernightMomentumStrategy:
                     # the same entry/stop/target the "filled" branch below
                     # would have computed on this exact bar, so a later
                     # analysis can tell whether pausing here cost a win or
-                    # avoided a loss. No effect on trading decisions -- if
-                    # no valid stop exists, these just stay None.
+                    # avoided a loss. No effect on trading decisions. Entry
+                    # and the timestamp are always known (this bar's own
+                    # resting limit price) even when no valid stop exists
+                    # -- only stop/target stay None then, still leaving a
+                    # real entry point and moment for a directional (no
+                    # formal $ pnl) read of what price did afterward.
+                    self._zone_would_be_entry = self._pending_limit_price
+                    self._zone_would_be_computed_at = bar.timestamp
                     would_be_stop_candidate = find_structural_stop_price(
                         direction=self._direction,
                         entry_price=self._pending_limit_price,
@@ -393,10 +399,8 @@ class OvernightMomentumStrategy:
                         tick_size=self.cfg.instrument.tick_size,
                     )
                     if would_be_bracket is not None:
-                        self._zone_would_be_entry = self._pending_limit_price
                         self._zone_would_be_stop = would_be_bracket.stop_price
                         self._zone_would_be_target = would_be_bracket.target_price
-                        self._zone_would_be_computed_at = bar.timestamp
                     self.state = State.WAIT_ZONE_CONFIRMATION
                     return None
 

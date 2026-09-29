@@ -873,18 +873,21 @@ def test_pausing_captures_the_would_be_bracket_for_later_analysis():
 
 def test_no_valid_stop_at_pause_time_leaves_would_be_fields_none():
     """If no real structural stop exists at the moment of pausing (no FVG,
-    no swing point), the would_be_* fields should just stay None rather
-    than recording a fabricated bracket."""
+    no swing point), would_be_stop/target should stay None rather than
+    recording a fabricated bracket -- but entry and the pause timestamp
+    are always known regardless (this bar's own resting limit price),
+    letting a later analysis still do a directional-only read (see
+    src/compare_zones.py) even without a formal $ stop/target."""
     strategy = make_short_wait_fill_strategy(entry_price=100.0)
     zone = make_support_zone()
     strategy.zone_tracker.support_zones.append(zone)
 
     strategy.on_bar(bar_at(DAY, 97.0, 98.0, 96.5, 96.8))
 
-    assert strategy._zone_would_be_entry is None
+    assert strategy._zone_would_be_entry == 100.0
+    assert strategy._zone_would_be_computed_at == DAY
     assert strategy._zone_would_be_stop is None
     assert strategy._zone_would_be_target is None
-    assert strategy._zone_would_be_computed_at is None
 
 
 def test_no_pause_when_no_opposing_zone_exists():
