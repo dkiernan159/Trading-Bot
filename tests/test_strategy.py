@@ -84,6 +84,14 @@ def load_test_config():
     # assertions keep passing through unaffected; the rounding behavior
     # itself is covered separately in tests/test_risk.py.
     cfg.instrument.tick_size = 0.01
+    # The real config disabled zones 2026-09-29 (see config.yaml) after
+    # real data showed the feature net costly -- but the zone-confirmation
+    # mechanism itself is still real code with its own tests here, so pin
+    # it enabled for this file regardless of the production default
+    # (individual tests that specifically cover the disabled-config path,
+    # e.g. test_zone_check_skipped_entirely_when_disabled, still set it
+    # back to False themselves).
+    cfg.strategy.zones.enabled = True
     return cfg
 
 

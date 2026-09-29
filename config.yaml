@@ -180,7 +180,21 @@ strategy:
                                     # a support zone is created days prior and only retested once." Applies to
                                     # both day and overnight strategies (your explicit choice). See
                                     # src/zones.py's ZoneTracker for the detection/confirmation logic.
-    enabled: true
+                                    #
+                                    # Disabled 2026-09-29, your explicit instruction, after real evidence showed
+                                    # it net costly rather than protective: since deploying, it paused 33 anchors
+                                    # (18 day, 15 overnight), and of the 6 where a real structural stop even
+                                    # existed to evaluate (src/compare_zones.py replays the actual subsequent
+                                    # bars against the entry/stop/target captured at the exact pause moment --
+                                    # see strategy.py's/overnight_strategy.py's would_be_* fields on
+                                    # AnchorRecord), 5 were wins it blocked (+$390 day; +$258, +$261, +$534,
+                                    # +$363 overnight) against just 1 loss it avoided (-$249 overnight), plus one
+                                    # still-unresolved short -- net -$1,557 versus taking every one of those
+                                    # setups plainly. Small sample (6 resolved cases over ~1 week), so this isn't
+                                    # necessarily the final word -- code and tests are left in place (zones.py,
+                                    # the WAIT_ZONE_CONFIRMATION state machine, src/compare_zones.py) in case
+                                    # real data ever supports re-enabling or retuning it.
+    enabled: false
     timeframe_minutes: 15            # your explicit choice -- matches the 15m chart you were reading when you
                                     # spotted the zone. Deliberately coarser than strategy.fvg's own 5m, since
                                     # the whole point is structure the faster timeframe doesn't show.

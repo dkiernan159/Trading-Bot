@@ -29,6 +29,11 @@ def load_test_config():
     # use a much finer one here so this file's exact-value gap-math
     # fixtures aren't shifted by the real 0.25 tick.
     cfg.instrument.tick_size = 0.01
+    # See tests/test_strategy.py's load_test_config: the real config
+    # disabled zones 2026-09-29 after real data showed the feature net
+    # costly, but pin it enabled here so this file's own zone-confirmation
+    # tests aren't silently skipped by that production default.
+    cfg.strategy.zones.enabled = True
     return cfg
 
 
