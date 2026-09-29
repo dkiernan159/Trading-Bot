@@ -1,13 +1,24 @@
 from __future__ import annotations
 
-"""Ad-hoc analysis tool, not part of live trading: replays real recent
-history twice -- once with strategy.zones.enabled as configured, once
-forced off -- to see what would have happened to every anchor the
-zone-confirmation layer blocked (zone_rejected / zone_timeout) if it had
-been allowed to fill instead. Built 2026-09-29 after real logs showed 16
-anchors blocked by zones since the feature deployed on 09-24, with 0 of
-them ever confirmed and let through -- this answers whether those 16
-would have won or lost if zones had never paused them.
+"""Ad-hoc analysis tool, not part of live trading: for every anchor the
+zone-confirmation layer blocked (zone_rejected / zone_timeout), replays
+real bars forward from the exact bar the pause began to see whether the
+entry/stop/target it would have used (captured at that moment -- see
+strategy.py's and overnight_strategy.py's WAIT_FILL pause block, and
+AnchorRecord's would_be_* fields) hit its stop or target first. Built
+2026-09-29.
+
+An earlier version of this script ran two full, independent backtests
+(zones on vs. zones off) and tried to match trades between them by gap
+bounds -- that's unsound: the moment the zones-off run takes its first
+trade, the strategy sits IN_TRADE and stops hunting, so its whole
+timeline diverges from the zones-on run from that point on, and most
+later anchors never even get evaluated in the same way. Only 2 of 33
+blocked anchors matched with that approach. This version avoids the
+problem entirely: it runs the real, single zones-on backtest exactly
+once, and for each blocked anchor just checks the *actual* subsequent
+bars against a bracket already computed at the real pause moment --
+no second diverging timeline needed.
 
 Run on the VPS (needs .env credentials and network access to the
 ProjectX Gateway), same as src/backtest.py:
@@ -20,28 +31,44 @@ from zoneinfo import ZoneInfo
 from src.backtest import fetch_recent_bars, run_backtest, run_overnight_backtest
 from src.broker.projectx_gateway import ProjectXGatewayBroker
 from src.config import load_config
+from src.models import Direction
 
 DAYS = 7
 
 
-def main() -> None:
-    cfg_on = load_config("config.yaml")
-    cfg_off = load_config("config.yaml")
-    cfg_off.strategy.zones.enabled = False
+def _resolve_outcome(direction: Direction, stop_price: float, target_price: float, bars_after) -> str:
+    """Walks the real bars forward from the pause point and reports which
+    of stop/target is hit first, mirroring run_backtest's own
+    hit_stop/hit_target convention (both hit the same bar -> stop first).
+    Returns "WIN", "LOSS", or "UNRESOLVED" if neither is hit before the
+    fetched history runs out."""
+    for bar in bars_after:
+        if direction is Direction.LONG:
+            hit_stop = bar.low <= stop_price
+            hit_target = bar.high >= target_price
+        else:
+            hit_stop = bar.high >= stop_price
+            hit_target = bar.low <= target_price
+        if hit_stop or hit_target:
+            return "LOSS" if hit_stop else "WIN"
+    return "UNRESOLVED"
 
-    tz = ZoneInfo(cfg_on.session.timezone)
+
+def main() -> None:
+    cfg = load_config("config.yaml")
+    tz = ZoneInfo(cfg.session.timezone)
     broker = ProjectXGatewayBroker(
-        base_url=cfg_on.broker.base_url,
-        realtime_base_url=cfg_on.broker.realtime_base_url,
+        base_url=cfg.broker.base_url,
+        realtime_base_url=cfg.broker.realtime_base_url,
         dry_run=True,
     )
     broker.connect()
     print("Fetching " + str(DAYS) + " days of history...")
-    bars = fetch_recent_bars(broker, cfg_on.instrument.symbol, tz, DAYS)
+    bars = fetch_recent_bars(broker, cfg.instrument.symbol, tz, DAYS)
     print("Fetched " + str(len(bars)) + " bars.")
 
-    point_value = cfg_on.instrument.point_value
-    contracts = cfg_on.position_sizing.contract_size
+    point_value = cfg.instrument.point_value
+    contracts = cfg.position_sizing.contract_size
 
     for label, run_fn in (("DAY", run_backtest), ("OVERNIGHT", run_overnight_backtest)):
         print("")
@@ -49,50 +76,63 @@ def main() -> None:
         print(label + " strategy")
         print("=" * 70)
 
-        anchors_on: list = []
-        run_fn(cfg_on, bars, anchor_history_out=anchors_on)
+        anchors: list = []
+        run_fn(cfg, bars, anchor_history_out=anchors)
 
-        anchors_off: list = []
-        results_off = run_fn(cfg_off, bars, anchor_history_out=anchors_off)
-
-        blocked = [a for a in anchors_on if a.outcome in ("zone_rejected", "zone_timeout")]
+        blocked = [a for a in anchors if a.outcome in ("zone_rejected", "zone_timeout")]
         print("")
-        print("Zone-blocked anchors (zones ON): " + str(len(blocked)))
+        print("Zone-blocked anchors: " + str(len(blocked)))
 
-        off_by_key = {}
-        for t in results_off:
-            key = (t["date"], t["direction"], round(t["anchor_gap_low"], 2), round(t["anchor_gap_high"], 2))
-            off_by_key[key] = t
-
-        matched = 0
+        resolved = 0
         total_whatif_pnl = 0.0
 
         for a in blocked:
-            day = a.started_at.astimezone(tz).date()
-            key = (day, a.direction.value, round(a.gap_low, 2), round(a.gap_high, 2))
-            t = off_by_key.get(key)
-            outcome_str = "no matching zones-off trade (setup resolved differently without the pause)"
-            if t is not None:
-                matched += 1
-                if t["direction"] == "long":
-                    pnl_points = (t["target_price"] - t["entry_price"]) if t["won"] else (t["stop_price"] - t["entry_price"])
+            if a.would_be_stop_price is None or a.would_be_computed_at is None:
+                line = (
+                    a.started_at.strftime("%Y-%m-%d %H:%M")
+                    + "  " + a.direction.value.upper().ljust(6)
+                    + " gap=" + str(round(a.gap_low, 2)) + "-" + str(round(a.gap_high, 2))
+                    + "  blocked_as=" + a.outcome.ljust(14)
+                    + "  no valid stop existed at pause time -- can't evaluate"
+                )
+                print(line)
+                continue
+
+            bars_after = [b for b in bars if b.timestamp > a.would_be_computed_at]
+            outcome = _resolve_outcome(a.direction, a.would_be_stop_price, a.would_be_target_price, bars_after)
+
+            outcome_str = outcome
+            if outcome in ("WIN", "LOSS"):
+                resolved += 1
+                if a.direction is Direction.LONG:
+                    pnl_points = (
+                        (a.would_be_target_price - a.would_be_entry_price)
+                        if outcome == "WIN"
+                        else (a.would_be_stop_price - a.would_be_entry_price)
+                    )
                 else:
-                    pnl_points = (t["entry_price"] - t["target_price"]) if t["won"] else (t["entry_price"] - t["stop_price"])
+                    pnl_points = (
+                        (a.would_be_entry_price - a.would_be_target_price)
+                        if outcome == "WIN"
+                        else (a.would_be_entry_price - a.would_be_stop_price)
+                    )
                 pnl_dollars = pnl_points * point_value * contracts
                 total_whatif_pnl += pnl_dollars
-                outcome_str = ("WIN +$" if t["won"] else "LOSS -$") + str(round(abs(pnl_dollars), 2))
+                outcome_str = outcome + " " + ("+$" if pnl_dollars >= 0 else "-$") + str(round(abs(pnl_dollars), 2))
+
             line = (
                 a.started_at.strftime("%Y-%m-%d %H:%M")
                 + "  " + a.direction.value.upper().ljust(6)
                 + " gap=" + str(round(a.gap_low, 2)) + "-" + str(round(a.gap_high, 2))
                 + "  blocked_as=" + a.outcome.ljust(14)
+                + "  entry=" + str(round(a.would_be_entry_price, 2))
                 + "  without_zone_gate: " + outcome_str
             )
             print(line)
 
         print("")
-        print("Matched " + str(matched) + " of " + str(len(blocked)) + " blocked anchors to a zones-off trade.")
-        print("Total what-if P&L from those matched trades: $" + str(round(total_whatif_pnl, 2)))
+        print("Resolved " + str(resolved) + " of " + str(len(blocked)) + " blocked anchors (rest had no valid stop, or ran off the end of fetched history).")
+        print("Total what-if P&L from those resolved trades: $" + str(round(total_whatif_pnl, 2)))
 
 
 if __name__ == "__main__":

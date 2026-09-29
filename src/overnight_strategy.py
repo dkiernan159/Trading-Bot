@@ -108,9 +108,17 @@ class OvernightMomentumStrategy:
         self._pending_limit_price: float | None = None
         # See WAIT_ZONE_CONFIRMATION below -- which zone is currently
         # being watched, and when that watch started (for the
-        # confirmation_minutes timeout).
+        # confirmation_minutes timeout). The three would_be_* fields are
+        # diagnostics only (see src/compare_zones.py and strategy.py's
+        # matching comment): the entry/stop/target this anchor would have
+        # used if it had filled immediately instead of pausing, captured
+        # once at the moment the pause begins.
         self._zone_being_tested: Zone | None = None
         self._zone_confirmation_started_at: datetime | None = None
+        self._zone_would_be_entry: float | None = None
+        self._zone_would_be_stop: float | None = None
+        self._zone_would_be_target: float | None = None
+        self._zone_would_be_computed_at: datetime | None = None
         # Anchors rejected for having no real structural stop within
         # budget -- tracked by identity, same rationale as the day
         # strategy's _rejected_anchor_ids (see strategy.py).
@@ -203,6 +211,10 @@ class OvernightMomentumStrategy:
                 started_at=self._anchor_started_at,
                 ended_at=ended_at,
                 outcome=outcome,
+                would_be_entry_price=self._zone_would_be_entry,
+                would_be_stop_price=self._zone_would_be_stop,
+                would_be_target_price=self._zone_would_be_target,
+                would_be_computed_at=self._zone_would_be_computed_at,
             )
         )
 
@@ -214,6 +226,10 @@ class OvernightMomentumStrategy:
         self._pending_limit_price = None
         self._zone_being_tested = None
         self._zone_confirmation_started_at = None
+        self._zone_would_be_entry = None
+        self._zone_would_be_stop = None
+        self._zone_would_be_target = None
+        self._zone_would_be_computed_at = None
 
     def _start_new_night(self, night_date: date, bar_timestamp: datetime) -> None:
         self._night_date = night_date
@@ -351,6 +367,36 @@ class OvernightMomentumStrategy:
                 if zone is not None:
                     self._zone_being_tested = zone
                     self._zone_confirmation_started_at = bar.timestamp
+                    # Diagnostics only (see src/compare_zones.py): capture
+                    # the same entry/stop/target the "filled" branch below
+                    # would have computed on this exact bar, so a later
+                    # analysis can tell whether pausing here cost a win or
+                    # avoided a loss. No effect on trading decisions -- if
+                    # no valid stop exists, these just stay None.
+                    would_be_stop_candidate = find_structural_stop_price(
+                        direction=self._direction,
+                        entry_price=self._pending_limit_price,
+                        fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._direction),
+                        swing_high=self.swing_tracker.most_recent_swing_high,
+                        swing_low=self.swing_tracker.most_recent_swing_low,
+                        prefer_swing=False,
+                    )
+                    would_be_bracket = compute_stop_target(
+                        direction=self._direction,
+                        entry_price=self._pending_limit_price,
+                        stop_price=would_be_stop_candidate.price if would_be_stop_candidate is not None else None,
+                        max_stop_dollars=self.cfg.strategy.max_stop_dollars,
+                        min_stop_dollars=self.cfg.strategy.min_stop_dollars,
+                        point_value=self.cfg.instrument.point_value,
+                        contracts=self.cfg.position_sizing.contract_size,
+                        reward_risk_ratio=self.cfg.strategy.reward_risk_ratio,
+                        tick_size=self.cfg.instrument.tick_size,
+                    )
+                    if would_be_bracket is not None:
+                        self._zone_would_be_entry = self._pending_limit_price
+                        self._zone_would_be_stop = would_be_bracket.stop_price
+                        self._zone_would_be_target = would_be_bracket.target_price
+                        self._zone_would_be_computed_at = bar.timestamp
                     self.state = State.WAIT_ZONE_CONFIRMATION
                     return None
 

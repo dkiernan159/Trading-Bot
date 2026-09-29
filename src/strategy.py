@@ -57,6 +57,17 @@ class AnchorRecord:
     started_at: datetime
     ended_at: datetime
     outcome: str
+    # Diagnostics only, populated for zone_rejected/zone_timeout outcomes
+    # (see the WAIT_ZONE_CONFIRMATION pause block and src/compare_zones.py)
+    # -- the entry/stop/target this anchor would have used had it filled
+    # immediately instead of pausing, and the bar timestamp that bracket
+    # was computed on (the pause's first bar -- where the fill would have
+    # happened in a zones-off world, letting an analysis replay real bars
+    # forward from exactly that point). None for every other outcome.
+    would_be_entry_price: float | None = None
+    would_be_stop_price: float | None = None
+    would_be_target_price: float | None = None
+    would_be_computed_at: datetime | None = None
 
 
 def _nearest_then_largest(fvgs: list[FairValueGap], current_price: float) -> FairValueGap:
@@ -141,9 +152,20 @@ class OpeningRangeStrategy:
         self._pending_limit_price: float | None = None
         # See WAIT_ZONE_CONFIRMATION below -- which zone is currently
         # being watched, and when that watch started (for the
-        # confirmation_minutes timeout).
+        # confirmation_minutes timeout). The three would_be_* fields are
+        # diagnostics only (see _reset_zone_test and src/compare_zones.py):
+        # the entry/stop/target this anchor would have used if it had
+        # filled immediately instead of pausing, captured once at the
+        # moment the pause begins -- lets a later analysis replay real
+        # bars forward from that point to see whether the paused trade
+        # would have hit its stop or target, without needing a second,
+        # diverging backtest run.
         self._zone_being_tested: Zone | None = None
         self._zone_confirmation_started_at: datetime | None = None
+        self._zone_would_be_entry: float | None = None
+        self._zone_would_be_stop: float | None = None
+        self._zone_would_be_target: float | None = None
+        self._zone_would_be_computed_at: datetime | None = None
         # Anchors rejected for having no real structural level within the
         # $200 stop budget (see the WAIT_FILL fill check below) -- tracked
         # by identity so a rejected anchor isn't immediately re-picked
@@ -167,6 +189,19 @@ class OpeningRangeStrategy:
         # diagnostics only (see AnchorRecord / backtest.py's
         # print_near_miss_anchors), no effect on trading decisions.
         self.anchor_history: list[AnchorRecord] = []
+
+    def _reset_zone_test(self) -> None:
+        """Clears every WAIT_ZONE_CONFIRMATION-related field. Centralized
+        so every reset point (invalidation, cutoff, trade closed, entry
+        not filled, new day, and the zone-confirmation resolution itself)
+        clears all five fields together instead of remembering to update
+        each call site by hand."""
+        self._zone_being_tested = None
+        self._zone_confirmation_started_at = None
+        self._zone_would_be_entry = None
+        self._zone_would_be_stop = None
+        self._zone_would_be_target = None
+        self._zone_would_be_computed_at = None
 
     @property
     def current_session_levels(self) -> SessionLevelSet | None:
@@ -247,6 +282,10 @@ class OpeningRangeStrategy:
                 started_at=self._anchor_started_at,
                 ended_at=ended_at,
                 outcome=outcome,
+                would_be_entry_price=self._zone_would_be_entry,
+                would_be_stop_price=self._zone_would_be_stop,
+                would_be_target_price=self._zone_would_be_target,
+                would_be_computed_at=self._zone_would_be_computed_at,
             )
         )
 
@@ -282,8 +321,7 @@ class OpeningRangeStrategy:
             self._anchor_fvg = None
             self._anchor_started_at = None
             self._pending_limit_price = None
-            self._zone_being_tested = None
-            self._zone_confirmation_started_at = None
+            self._reset_zone_test()
             self.state = State.DONE_FOR_DAY
             return None
 
@@ -341,8 +379,7 @@ class OpeningRangeStrategy:
                 self._anchor_fvg = None
                 self._anchor_started_at = None
                 self._pending_limit_price = None
-                self._zone_being_tested = None
-                self._zone_confirmation_started_at = None
+                self._reset_zone_test()
                 self.state = State.WAIT_BREAKOUT
                 return None
 
@@ -435,6 +472,38 @@ class OpeningRangeStrategy:
                 if zone is not None:
                     self._zone_being_tested = zone
                     self._zone_confirmation_started_at = bar.timestamp
+                    # Diagnostics only (see _reset_zone_test's docstring
+                    # and src/compare_zones.py): capture the same
+                    # entry/stop/target the "filled" branch below would
+                    # have computed on this exact bar, so a later analysis
+                    # can tell whether pausing here cost a win or avoided
+                    # a loss, without needing a second, diverging backtest
+                    # run. No effect on trading decisions -- if no valid
+                    # stop exists, these just stay None.
+                    would_be_stop_candidate = find_structural_stop_price(
+                        direction=self._breakout_direction,
+                        entry_price=self._pending_limit_price,
+                        fvg_candidates=self.fvg_detector_5m.unmitigated_in_direction(self._breakout_direction),
+                        swing_high=self.swing_tracker.most_recent_swing_high,
+                        swing_low=self.swing_tracker.most_recent_swing_low,
+                        prefer_swing=False,
+                    )
+                    would_be_bracket = compute_stop_target(
+                        direction=self._breakout_direction,
+                        entry_price=self._pending_limit_price,
+                        stop_price=would_be_stop_candidate.price if would_be_stop_candidate is not None else None,
+                        max_stop_dollars=self.cfg.strategy.max_stop_dollars,
+                        min_stop_dollars=self.cfg.strategy.min_stop_dollars,
+                        point_value=self.cfg.instrument.point_value,
+                        contracts=self.cfg.position_sizing.contract_size,
+                        reward_risk_ratio=self.cfg.strategy.reward_risk_ratio,
+                        tick_size=self.cfg.instrument.tick_size,
+                    )
+                    if would_be_bracket is not None:
+                        self._zone_would_be_entry = self._pending_limit_price
+                        self._zone_would_be_stop = would_be_bracket.stop_price
+                        self._zone_would_be_target = would_be_bracket.target_price
+                        self._zone_would_be_computed_at = bar.timestamp
                     self.state = State.WAIT_ZONE_CONFIRMATION
                     return None
 
@@ -529,8 +598,7 @@ class OpeningRangeStrategy:
                 self._anchor_fvg = None
                 self._anchor_started_at = None
                 self._pending_limit_price = None
-                self._zone_being_tested = None
-                self._zone_confirmation_started_at = None
+                self._reset_zone_test()
                 self.state = State.WAIT_5M_FVG
                 return None
 
@@ -539,8 +607,7 @@ class OpeningRangeStrategy:
                 # weakened. Resume WAIT_FILL and re-evaluate the plain
                 # retracement condition next bar (the anchor/entry price
                 # itself is untouched).
-                self._zone_being_tested = None
-                self._zone_confirmation_started_at = None
+                self._reset_zone_test()
                 self.state = State.WAIT_FILL
                 return None
 
@@ -551,8 +618,7 @@ class OpeningRangeStrategy:
                 self._anchor_fvg = None
                 self._anchor_started_at = None
                 self._pending_limit_price = None
-                self._zone_being_tested = None
-                self._zone_confirmation_started_at = None
+                self._reset_zone_test()
                 self.state = State.WAIT_5M_FVG
                 return None
 
@@ -575,8 +641,7 @@ class OpeningRangeStrategy:
         self._anchor_fvg = None
         self._anchor_started_at = None
         self._pending_limit_price = None
-        self._zone_being_tested = None
-        self._zone_confirmation_started_at = None
+        self._reset_zone_test()
         self.state = State.WAIT_BREAKOUT
 
     def notify_entry_not_filled(self) -> None:
@@ -597,8 +662,7 @@ class OpeningRangeStrategy:
         self._anchor_fvg = None
         self._anchor_started_at = None
         self._pending_limit_price = None
-        self._zone_being_tested = None
-        self._zone_confirmation_started_at = None
+        self._reset_zone_test()
         self.state = State.WAIT_5M_FVG
 
     def _start_new_day(self, trading_date: date, bar_timestamp: datetime) -> None:
@@ -634,5 +698,4 @@ class OpeningRangeStrategy:
         self._anchor_fvg = None
         self._anchor_started_at = None
         self._pending_limit_price = None
-        self._zone_being_tested = None
-        self._zone_confirmation_started_at = None
+        self._reset_zone_test()

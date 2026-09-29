@@ -738,6 +738,38 @@ def test_no_pause_when_no_opposing_zone_exists():
     assert strategy.state is not State.WAIT_ZONE_CONFIRMATION
 
 
+def test_pausing_captures_the_would_be_bracket_for_later_analysis():
+    """Diagnostics only (see src/compare_zones.py) -- same as the day
+    strategy's matching test in tests/test_strategy.py."""
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+    strategy.swing_tracker.most_recent_swing_high = 110.0
+    strategy.swing_tracker.most_recent_swing_high_at = NIGHT_START - timedelta(minutes=25)
+
+    strategy.on_bar(bar_at(NIGHT_START, 97.0, 98.0, 96.5, 96.8))
+
+    assert strategy._zone_would_be_entry == 100.0
+    assert strategy._zone_would_be_stop == 110.0
+    # reward_risk_ratio=2.0 (real config) x 10pt stop distance = 20pt target, SHORT so below entry
+    assert strategy._zone_would_be_target == 80.0
+    assert strategy._zone_would_be_computed_at == NIGHT_START
+
+    signal = strategy.on_bar(bar_at(NIGHT_START + timedelta(minutes=15), 100.5, 101.0, 99.5, 100.0))
+
+    assert signal is None
+    record = strategy.anchor_history[-1]
+    assert record.outcome == "zone_timeout"
+    assert record.would_be_entry_price == 100.0
+    assert record.would_be_stop_price == 110.0
+    assert record.would_be_target_price == 80.0
+    assert record.would_be_computed_at == NIGHT_START
+    assert strategy._zone_would_be_entry is None
+    assert strategy._zone_would_be_stop is None
+    assert strategy._zone_would_be_target is None
+    assert strategy._zone_would_be_computed_at is None
+
+
 def test_zone_check_skipped_entirely_when_disabled():
     strategy = make_short_wait_fill_strategy(entry_price=100.0)
     strategy.cfg.strategy.zones.enabled = False

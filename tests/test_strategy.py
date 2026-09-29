@@ -823,6 +823,62 @@ def test_wait_fill_pauses_when_price_tests_an_opposing_zone():
     assert strategy._zone_confirmation_started_at == DAY
 
 
+def test_pausing_captures_the_would_be_bracket_for_later_analysis():
+    """Diagnostics only (see src/compare_zones.py): the moment a trade
+    pauses for zone confirmation, the entry/stop/target it would have
+    used if it had filled immediately should be captured, so a later
+    what-if analysis can tell whether the pause avoided a loss or cost a
+    win without needing a second, diverging backtest run."""
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+    # A real swing high 10pts above entry gives find_structural_stop_price
+    # a valid fallback (no FVG candidates exist in this bare fixture).
+    strategy.swing_tracker.most_recent_swing_high = 110.0
+    strategy.swing_tracker.most_recent_swing_high_at = DAY - timedelta(minutes=25)
+
+    strategy.on_bar(bar_at(DAY, 97.0, 98.0, 96.5, 96.8))
+
+    assert strategy._zone_would_be_entry == 100.0
+    assert strategy._zone_would_be_stop == 110.0
+    # reward_risk_ratio=2.0 (real config) x 10pt stop distance = 20pt target, SHORT so below entry
+    assert strategy._zone_would_be_target == 80.0
+    assert strategy._zone_would_be_computed_at == DAY
+
+    # Now let it time out, and confirm the recorded AnchorRecord carries
+    # the same captured bracket through to anchor_history.
+    signal = strategy.on_bar(bar_at(DAY + timedelta(minutes=15), 100.5, 101.0, 99.5, 100.0))
+
+    assert signal is None
+    record = strategy.anchor_history[-1]
+    assert record.outcome == "zone_timeout"
+    assert record.would_be_entry_price == 100.0
+    assert record.would_be_stop_price == 110.0
+    assert record.would_be_target_price == 80.0
+    assert record.would_be_computed_at == DAY
+    # And the fields are cleared afterward, same as every other zone-test reset.
+    assert strategy._zone_would_be_entry is None
+    assert strategy._zone_would_be_stop is None
+    assert strategy._zone_would_be_target is None
+    assert strategy._zone_would_be_computed_at is None
+
+
+def test_no_valid_stop_at_pause_time_leaves_would_be_fields_none():
+    """If no real structural stop exists at the moment of pausing (no FVG,
+    no swing point), the would_be_* fields should just stay None rather
+    than recording a fabricated bracket."""
+    strategy = make_short_wait_fill_strategy(entry_price=100.0)
+    zone = make_support_zone()
+    strategy.zone_tracker.support_zones.append(zone)
+
+    strategy.on_bar(bar_at(DAY, 97.0, 98.0, 96.5, 96.8))
+
+    assert strategy._zone_would_be_entry is None
+    assert strategy._zone_would_be_stop is None
+    assert strategy._zone_would_be_target is None
+    assert strategy._zone_would_be_computed_at is None
+
+
 def test_no_pause_when_no_opposing_zone_exists():
     """Regression safety: the new check must not pause every single
     fill-eligible bar, only ones actually testing a real zone."""
