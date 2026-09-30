@@ -84,6 +84,13 @@ def load_test_config():
     # "halfway" math. Same isolation rationale as test_strategy.py/
     # test_backtest.py pinning contract_size/max_stop_dollars.
     cfg.strategy.breakeven.trigger_pct = 0.5
+    # The real config disabled breakeven entirely 2026-09-30 (see
+    # config.yaml) after real data showed it net costly -- but the
+    # breakeven mechanism itself is still real code with its own tests
+    # here, so pin it enabled for this file regardless of the production
+    # default (test_breakeven_disabled_in_config_never_moves_the_stop
+    # still sets it back to False itself to cover that path).
+    cfg.strategy.breakeven.enabled = True
     return cfg
 
 

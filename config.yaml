@@ -147,7 +147,27 @@ strategy:
                                     # heading for target, move the stop above breakeven so it can't swing back
                                     # down and hit the original stop. Applies to both day and overnight
                                     # strategies (shared, same as everything else in this strategy: section).
-    enabled: true
+                                    #
+                                    # Disabled 2026-09-30, your explicit instruction, after real evidence showed
+                                    # it net costly: src/analyze_breakeven_giveback.py replayed every real
+                                    # breakeven exit across the current + archived trade history (10 unique
+                                    # trades after dedup, 9 of them from the 0.8-trigger era, 1 from the current
+                                    # 0.6) and checked whether price actually went on to hit the original, full
+                                    # target afterward. 7 of 10 (70%) would have -- 6 of those 7 within 1-2
+                                    # minutes of the breakeven exit, i.e. the trade was already finishing, not
+                                    # reversing -- for $2,299.50 of real missed upside. The other 3 never
+                                    # reached target within 8h (arguably genuine saves, though the original
+                                    # pre-breakeven stop price isn't retained once a trade moves, so the exact $
+                                    # avoided on those isn't known -- worst case, assuming all 3 would have hit
+                                    # a full max-stop loss at the old $200 cap, that's at most ~$600 saved
+                                    # against $2,299.50 given up). Net, even under that generous assumption,
+                                    # roughly +$1,700 in favor of never having moved the stop at all. Notably
+                                    # the one 0.6-era sample also gave back a win (missed +$358.50, hit target
+                                    # 2h11m later) -- lowering trigger_pct on 09-25 hadn't fixed this. Code
+                                    # (runner.py's _maybe_move_stop_to_breakeven, _fresh_supporting_structure)
+                                    # is left in place in case real data ever supports re-enabling or retuning
+                                    # it -- only this flag changed.
+    enabled: false
     trigger_pct: 0.6                # Lowered from 0.8 2026-09-25, your explicit instruction, after an overnight
                                     # short (entry 30791.75, target 30746.75 = $270 potential on 3 contracts)
                                     # ran to $150 unrealized (55.6% of the way to target -- under the 0.8
