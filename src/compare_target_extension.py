@@ -40,7 +40,7 @@ from src.config import BotConfig, load_config
 from src.models import Bar, Direction
 from src.zones import Zone, ZoneTracker
 
-DAYS = 14
+DAYS = 30
 # ASSUMPTION: a small buffer so the extended target sits just below/above
 # the zone rather than exactly at it (mirrors breakeven's buffer_dollars
 # in spirit -- a real exit point, not a price that only a perfect wick
